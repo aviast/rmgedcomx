@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/example/rmgedcomx/internal/api"
-	"github.com/example/rmgedcomx/internal/rmdb"
+	"github.com/aviast/rmgedcomx/internal/api"
+	"github.com/aviast/rmgedcomx/internal/rmdb"
 )
 
 func main() {

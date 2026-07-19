@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/example/rmgedcomx/internal/gedcomx"
-	"github.com/example/rmgedcomx/internal/rmdb"
+	"github.com/aviast/rmgedcomx/internal/gedcomx"
+	"github.com/aviast/rmgedcomx/internal/rmdb"
 )
 
 // Config holds server-wide settings.

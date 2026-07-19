@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/example/rmgedcomx/internal/gedcomx"
-	"github.com/example/rmgedcomx/internal/rmdb"
+	"github.com/aviast/rmgedcomx/internal/gedcomx"
+	"github.com/aviast/rmgedcomx/internal/rmdb"
 )
 
 // buildPerson assembles a full gedcomx.Person (identity, names, gender,

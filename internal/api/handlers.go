@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/example/rmgedcomx/internal/gedcomx"
+	"github.com/aviast/rmgedcomx/internal/gedcomx"
 )
 
 // --- Root / entry point ---

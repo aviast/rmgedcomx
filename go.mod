@@ -1,4 +1,4 @@
-module github.com/example/rmgedcomx
+module github.com/aviast/rmgedcomx
 
 go 1.22
 
