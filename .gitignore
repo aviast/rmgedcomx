@@ -1,0 +1,28 @@
+# Go module dependency artifacts
+# Keep go.mod tracked; this project intentionally does not track go.sum.
+go.sum
+vendor/
+
+# Build outputs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+coverage.out
+coverage.txt
+
+# Local environment and editor settings
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
