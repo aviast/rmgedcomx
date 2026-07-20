@@ -2,18 +2,22 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import urllib.request
 import urllib.error
+import urllib.parse
 import json
 
 class GedcomXClientApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("GEDCOM X RS Client")
+        self.root.title("GEDCOM X RS Client (HATEOAS)")
         self.root.geometry("1000x750")
 
         # GEDCOM X RS Standard Accept Header
         self.headers = {
             'Accept': 'application/x-gedcomx-v1+json'
         }
+
+        # Store discovered URLs
+        self.discovered_urls = {}
 
         self.create_widgets()
 
@@ -42,7 +46,6 @@ class GedcomXClientApp:
         self.person_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.person_tab, text="Person")
 
-        # Entity List
         list_frame = ttk.LabelFrame(self.person_tab, text="Persons")
         list_frame.pack(fill=tk.X, padx=5, pady=5)
 
@@ -54,7 +57,6 @@ class GedcomXClientApp:
         self.person_tree.pack(fill=tk.X, padx=5, pady=5)
         self.person_tree.bind("<<TreeviewSelect>>", self.on_person_select)
 
-        # Single-line Query Pane
         query_frame = ttk.LabelFrame(self.person_tab, text="Queries")
         query_frame.pack(fill=tk.X, padx=5, pady=5)
 
@@ -63,13 +65,14 @@ class GedcomXClientApp:
         self.person_id_entry = ttk.Entry(query_frame, textvariable=self.person_id_var, width=20, state='readonly')
         self.person_id_entry.pack(side=tk.LEFT, padx=5, pady=5)
 
+        # Note: A strictly HATEOAS client would also read standard links off the Person resource to find these URLs,
+        # but standard REST conventions are used here as fallbacks for the sub-resources.
         ttk.Button(query_frame, text="Parents", command=lambda: self.fetch_data(f"/persons/{self.person_id_var.get()}/parents", self.person_result_text)).pack(side=tk.LEFT, padx=2)
         ttk.Button(query_frame, text="Children", command=lambda: self.fetch_data(f"/persons/{self.person_id_var.get()}/children", self.person_result_text)).pack(side=tk.LEFT, padx=2)
         ttk.Button(query_frame, text="Spouses", command=lambda: self.fetch_data(f"/persons/{self.person_id_var.get()}/spouses", self.person_result_text)).pack(side=tk.LEFT, padx=2)
         ttk.Button(query_frame, text="Ancestry", command=lambda: self.fetch_data(f"/persons/{self.person_id_var.get()}/ancestry", self.person_result_text)).pack(side=tk.LEFT, padx=2)
         ttk.Button(query_frame, text="Descendancy", command=lambda: self.fetch_data(f"/persons/{self.person_id_var.get()}/descendancy", self.person_result_text)).pack(side=tk.LEFT, padx=2)
 
-        # JSON Response Area
         result_frame = ttk.LabelFrame(self.person_tab, text="JSON Response")
         result_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.person_result_text = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, font=("Consolas", 10))
@@ -97,9 +100,9 @@ class GedcomXClientApp:
 
     def create_source_tab(self):
         self.source_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.source_tab, text="Source")
+        self.notebook.add(self.source_tab, text="Source Description")
 
-        list_frame = ttk.LabelFrame(self.source_tab, text="Sources")
+        list_frame = ttk.LabelFrame(self.source_tab, text="Source Descriptions")
         list_frame.pack(fill=tk.X, padx=5, pady=5)
 
         self.source_tree = ttk.Treeview(list_frame, columns=("ID", "Title"), show="headings", height=5)
@@ -121,7 +124,6 @@ class GedcomXClientApp:
         if selected:
             person_id = self.person_tree.item(selected[0])['values'][0]
             self.person_id_var.set(person_id)
-            # Implements the automatic "Get Person" action when clicked
             self.fetch_data(f"/persons/{person_id}", self.person_result_text)
 
     def on_place_select(self, event):
@@ -134,55 +136,81 @@ class GedcomXClientApp:
         selected = self.source_tree.selection()
         if selected:
             source_id = self.source_tree.item(selected[0])['values'][0]
-            self.fetch_data(f"/sources/{source_id}", self.source_result_text)
+            self.fetch_data(f"/source-descriptions/{source_id}", self.source_result_text)
 
-    # --- Data Fetching ---
+    # --- Data Fetching & HATEOAS Discovery ---
     def load_all_entities(self):
-        """Attempts to fetch collections of entities to pre-populate the trees."""
+        """Discovers endpoints via the Collections root, then fetches the entities."""
         self.person_tree.delete(*self.person_tree.get_children())
         self.place_tree.delete(*self.place_tree.get_children())
         self.source_tree.delete(*self.source_tree.get_children())
+        self.discovered_urls.clear()
 
-        # Load Persons
-        person_data = self.make_request("/persons", self.person_result_text)
-        if person_data and 'persons' in person_data:
-            for p in person_data['persons']:
-                pid = p.get('id', 'Unknown')
-                # Attempt to extract primary name form
-                try:
-                    name = p['names'][0]['nameForms'][0]['fullText']
-                except (KeyError, IndexError):
-                    name = "Unknown Name"
-                self.person_tree.insert("", tk.END, values=(pid, name))
-
-        # Load Places
-        place_data = self.make_request("/places", self.place_result_text)
-        if place_data and 'places' in place_data:
-            for pl in place_data['places']:
-                pl_id = pl.get('id', 'Unknown')
-                try:
-                    name = pl['names'][0]['value']
-                except (KeyError, IndexError):
-                    name = "Unknown Place Name"
-                self.place_tree.insert("", tk.END, values=(pl_id, name))
-
-        # Load Sources (GEDCOMX uses sourceDescriptions)
-        source_data = self.make_request("/sources", self.source_result_text)
-        if source_data and 'sourceDescriptions' in source_data:
-            for src in source_data['sourceDescriptions']:
-                src_id = src.get('id', 'Unknown')
-                try:
-                    title = src['titles'][0]['value']
-                except (KeyError, IndexError):
-                    title = "Unknown Source Title"
-                self.source_tree.insert("", tk.END, values=(src_id, title))
-
-        messagebox.showinfo("Load Complete", "Attempted to load entities. Check JSON output for any server limitations.")
-
-    def make_request(self, endpoint, text_widget):
-        """Helper to fetch data, handle HTTP errors, and output raw data to the specified text widget."""
         base_url = self.url_entry.get().strip().rstrip('/')
-        full_url = f"{base_url}{endpoint}"
+
+        # 1. Fetch Collections to discover links
+        collections_data = self.make_request("/collections", self.person_result_text, is_absolute=False)
+
+        if collections_data and 'collections' in collections_data:
+            for collection in collections_data['collections']:
+                if 'links' in collection:
+                    for link in collection['links']:
+                        rel = link.get('rel')
+                        href = link.get('href')
+                        if rel and href:
+                            # Safely combine the base URL with the href in case the server returns a relative path
+                            self.discovered_urls[rel] = urllib.parse.urljoin(f"{base_url}/", href)
+
+        # Check what we discovered
+        msg = "Discovery Complete:\n"
+        for rel in ["persons", "places", "source-descriptions"]:
+            msg += f"- {rel}: {self.discovered_urls.get(rel, 'Not Found')}\n"
+
+        # 2. Load Persons
+        if 'persons' in self.discovered_urls:
+            person_data = self.make_request(self.discovered_urls['persons'], self.person_result_text, is_absolute=True)
+            if person_data and 'persons' in person_data:
+                for p in person_data['persons']:
+                    pid = p.get('id', 'Unknown')
+                    try:
+                        name = p['names'][0]['nameForms'][0]['fullText']
+                    except (KeyError, IndexError):
+                        name = "Unknown Name"
+                    self.person_tree.insert("", tk.END, values=(pid, name))
+
+        # 3. Load Places
+        if 'places' in self.discovered_urls:
+            place_data = self.make_request(self.discovered_urls['places'], self.place_result_text, is_absolute=True)
+            if place_data and 'places' in place_data:
+                for pl in place_data['places']:
+                    pl_id = pl.get('id', 'Unknown')
+                    try:
+                        name = pl['names'][0]['value']
+                    except (KeyError, IndexError):
+                        name = "Unknown Place Name"
+                    self.place_tree.insert("", tk.END, values=(pl_id, name))
+
+        # 4. Load Source Descriptions
+        if 'source-descriptions' in self.discovered_urls:
+            source_data = self.make_request(self.discovered_urls['source-descriptions'], self.source_result_text, is_absolute=True)
+            if source_data and 'sourceDescriptions' in source_data:
+                for src in source_data['sourceDescriptions']:
+                    src_id = src.get('id', 'Unknown')
+                    try:
+                        title = src['titles'][0]['value']
+                    except (KeyError, IndexError):
+                        title = "Unknown Source Title"
+                    self.source_tree.insert("", tk.END, values=(src_id, title))
+
+        messagebox.showinfo("Load Complete", msg)
+
+    def make_request(self, path_or_url, text_widget, is_absolute=False):
+        """Helper to fetch data, handling both relative paths and absolute URLs discovered via links."""
+        if is_absolute:
+            full_url = path_or_url
+        else:
+            base_url = self.url_entry.get().strip().rstrip('/')
+            full_url = f"{base_url}{path_or_url}"
 
         text_widget.delete(1.0, tk.END)
         text_widget.insert(tk.END, f"Fetching data from: {full_url}\n")
@@ -208,9 +236,9 @@ class GedcomXClientApp:
         except urllib.error.HTTPError as e:
             text_widget.insert(tk.END, f"HTTP Error: {e.code} {e.reason}\n\n")
             if e.code == 404:
-                text_widget.insert(tk.END, "Message: Resource not found. The server may not have implemented this list endpoint.")
+                text_widget.insert(tk.END, "Message: Resource not found.")
             elif e.code in (405, 501):
-                text_widget.insert(tk.END, "Message: The server explicitly states that it does not implement this feature.")
+                text_widget.insert(tk.END, "Message: Feature not implemented by server.")
             else:
                 text_widget.insert(tk.END, f"Details: {e.read().decode('utf-8', errors='ignore')}")
             return None
@@ -227,7 +255,8 @@ class GedcomXClientApp:
             messagebox.showwarning("Input Error", "Please select a valid entity first.")
             return
 
-        self.make_request(endpoint, text_widget)
+        self.make_request(endpoint, text_widget, is_absolute=False)
+
 
 if __name__ == "__main__":
     root = tk.Tk()

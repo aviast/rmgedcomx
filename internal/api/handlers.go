@@ -7,22 +7,52 @@ import (
 	"github.com/aviast/rmgedcomx/internal/gedcomx"
 )
 
-// --- Root / entry point ---
+// --- Root / Collections / Collection ---
 
+// handleRoot serves the Collection state directly at "/", so a client that
+// only knows the base URL gets full HATEOAS discovery immediately (this is
+// how real-world GEDCOM X RS roots, e.g. FamilySearch's, behave). The same
+// content is also available, per the spec, at GET /collections/{id}.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	doc := gedcomx.RootDocument{
-		Title:            "rmgedcomx",
-		Description:      "Read-only GEDCOM X RS API over a RootsMagic database. See SCOPE.md in the repository for what's implemented.",
-		RootsMagicSchema: s.db.SchemaHint(),
-		Links: gedcomx.Links{
-			"persons":             {Href: s.url("/persons")},
-			"person-search":       {Template: s.url("/persons{?name,limit,offset}")},
-			"relationships":       {Href: s.url("/relationships")},
-			"place-descriptions":  {Href: s.url("/places")},
-			"source-descriptions": {Href: s.url("/source-descriptions")},
-		},
+	c, err := s.buildCollection()
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	s.writeJSON(w, http.StatusOK, doc)
+	s.writeJSON(w, http.StatusOK, gedcomx.CollectionDocument{Collections: []gedcomx.Collection{c}, Links: c.Links})
+}
+
+// handleCollections serves the `Collections` state (RS spec Section 4.4):
+// a list of collections. This server only ever exposes one -- the
+// RootsMagic file it was started with -- so the list always has exactly
+// one element.
+func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
+	c, err := s.buildCollection()
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, gedcomx.CollectionsDocument{
+		Results:     1,
+		Collections: []gedcomx.Collection{c},
+		Links:       gedcomx.Links{"collection": {Href: s.url("/collections/" + collectionID)}},
+	})
+}
+
+// handleCollection serves the `Collection` state (RS spec Section 4.5) for
+// a single collection: the RootsMagic database this server is backed by.
+func (s *Server) handleCollection(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id != collectionID {
+		s.notFound(w, "collection", id)
+		return
+	}
+	c, err := s.buildCollection()
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, gedcomx.CollectionDocument{Collections: []gedcomx.Collection{c}, Links: c.Links})
 }
 
 // --- Persons ---

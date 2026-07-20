@@ -1,8 +1,8 @@
 // Package rmdb provides read-only access to a RootsMagic SQLite database. It
 // discovers the actual columns present in each table at startup (rather than
 // hard-coding a single schema version) so that it works unmodified across
-// RootsMagic 7-11 files; see SCOPE.md at the repository root for details and
-// for how older files are handled.
+// RootsMagic 7-11 files; see SCOPE.md at the repository root for details.
+// RootsMagic 6 and earlier are out of scope and are rejected at startup.
 package rmdb
 
 import (
@@ -44,9 +44,9 @@ func registerCollation() {
 }
 
 // requiredTablesAndColumns lists, for each table this server reads, the
-// columns it actually depends on. If a required table or column is missing
-// (e.g. because the file predates RootsMagic 7), Open fails with a clear
-// error rather than silently returning incomplete data.
+// columns it actually depends on. RootsMagic 7 is the minimum supported
+// version (see SCOPE.md); if a required table or column is missing, Open
+// fails with a clear error rather than silently returning incomplete data.
 var requiredTablesAndColumns = map[string][]string{
 	"PersonTable":       {"PersonID", "Sex", "Living", "ParentID", "SpouseID"},
 	"NameTable":         {"NameID", "OwnerID", "Surname", "Given", "Prefix", "Suffix", "Nickname", "NameType", "IsPrimary", "SortDate", "BirthYear", "DeathYear", "Date"},
@@ -81,12 +81,25 @@ type DB struct {
 // empirically (see SCOPE.md's "SQLite driver" section) that this holds
 // regardless of the programmatic open flags the Go driver layer passes in.
 // A write attempt fails with SQLITE_READONLY, and a missing file fails to
-// open at all rather than being silently created. `PRAGMA query_only = 1`
-// is set as well, purely as defense in depth.
+// open at all rather than being silently created.
 func Open(path string) (*DB, error) {
+	return open(path, true)
+}
+
+// open is the single place that decides whether the connection is
+// read-only. Today it's always called with readOnly=true from Open --
+// write support isn't implemented yet (see SCOPE.md) -- but when a
+// `-write` flag is added later, it should thread a bool through to here
+// (e.g. an OpenForWriting, or an Open variant that takes readOnly) rather
+// than have read/write behavior decided in more than one place.
+func open(path string, readOnly bool) (*DB, error) {
 	registerCollation()
 
-	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(1)", path)
+	mode := "rw"
+	if readOnly {
+		mode = "ro"
+	}
+	dsn := fmt.Sprintf("file:%s?mode=%s", path, mode)
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -197,9 +210,8 @@ func (db *DB) checkCapabilities() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf(
-			"this file doesn't look like a RootsMagic 7-11 database: missing %s "+
-				"(RootsMagic 4-6 files use a different citation-linking schema and "+
-				"aren't supported by this build; see SCOPE.md)",
+			"this file doesn't look like a RootsMagic 7 or later database: missing %s "+
+				"(see SCOPE.md)",
 			strings.Join(missing, ", "),
 		)
 	}

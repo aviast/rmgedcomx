@@ -374,3 +374,50 @@ func (db *DB) SourceIDsForOwner(ownerType int, ownerID int64) ([]int64, error) {
 	}
 	return out, rows.Err()
 }
+
+// CollectionStats holds counts of the resource types this server exposes,
+// for the Collection resource's `content` summary.
+type CollectionStats struct {
+	Persons       int
+	Relationships int
+	Places        int
+	Sources       int
+}
+
+// CollectionStats computes cheap COUNT(*)-based totals for each resource
+// type this server exposes. The relationship count mirrors exactly how
+// handleRelationships builds the actual list (one Couple relationship per
+// family with both parents, plus one ParentChild relationship per
+// parent-child pair), so it stays consistent with what GET /relationships
+// actually returns.
+func (db *DB) CollectionStats() (CollectionStats, error) {
+	var s CollectionStats
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM PersonTable`).Scan(&s.Persons); err != nil {
+		return s, fmt.Errorf("counting persons: %w", err)
+	}
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM PlaceTable`).Scan(&s.Places); err != nil {
+		return s, fmt.Errorf("counting places: %w", err)
+	}
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM SourceTable`).Scan(&s.Sources); err != nil {
+		return s, fmt.Errorf("counting sources: %w", err)
+	}
+
+	var couples, fatherChild, motherChild int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM FamilyTable WHERE FatherID != 0 AND MotherID != 0`).Scan(&couples); err != nil {
+		return s, fmt.Errorf("counting couple relationships: %w", err)
+	}
+	if err := db.sql.QueryRow(`
+		SELECT COUNT(*) FROM ChildTable c
+		JOIN FamilyTable f ON f.FamilyID = c.FamilyID
+		WHERE f.FatherID != 0`).Scan(&fatherChild); err != nil {
+		return s, fmt.Errorf("counting father-child relationships: %w", err)
+	}
+	if err := db.sql.QueryRow(`
+		SELECT COUNT(*) FROM ChildTable c
+		JOIN FamilyTable f ON f.FamilyID = c.FamilyID
+		WHERE f.MotherID != 0`).Scan(&motherChild); err != nil {
+		return s, fmt.Errorf("counting mother-child relationships: %w", err)
+	}
+	s.Relationships = couples + fatherChild + motherChild
+	return s, nil
+}

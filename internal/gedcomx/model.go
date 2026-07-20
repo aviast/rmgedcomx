@@ -294,16 +294,49 @@ type DescendancyResultsDocument struct {
 	Links   Links    `json:"links,omitempty"`
 }
 
-// RootDocument is the lightweight, non-normative application entry point
-// served at "/". It is NOT the spec's `Collection` state (that's out of
-// scope; see SCOPE.md) -- it's just a set of links to the entry points this
-// server does implement, per Section 1.3.7 ("It is RECOMMENDED that entry
-// points include Collections, Collection, and Person").
-type RootDocument struct {
-	Title            string `json:"title"`
-	Description      string `json:"description"`
-	RootsMagicSchema string `json:"rootsMagicSchema,omitempty"`
-	Links            Links  `json:"links"`
+// Collection is the GEDCOM X Record Extensions "Collection" data type
+// (http://gedcomx.org/v1/Collection, gedcomx-record spec Section 2.1): a
+// collection of genealogical data. A RootsMagic database file is modeled
+// as exactly one Collection -- see SCOPE.md's "Collection" section.
+type Collection struct {
+	ID      string              `json:"id,omitempty"`
+	Lang    string              `json:"lang,omitempty"`
+	Content []CollectionContent `json:"content,omitempty"`
+	Title   string              `json:"title,omitempty"`
+	Links   Links               `json:"links,omitempty"`
+}
+
+// CollectionContent is the GEDCOM X Record Extensions "CollectionContent"
+// data type (http://gedcomx.org/v1/CollectionContent, gedcomx-record spec
+// Section 2.2): a count of resources of a given type held by a Collection.
+type CollectionContent struct {
+	ResourceType string `json:"resourceType"`
+	Count        int    `json:"count,omitempty"`
+}
+
+// Known resourceType URIs for CollectionContent, taken from the
+// "identifier" declared for each corresponding data type in the GEDCOM X
+// Conceptual Model.
+const (
+	ResourceTypePerson            = "http://gedcomx.org/v1/Person"
+	ResourceTypeRelationship      = "http://gedcomx.org/v1/Relationship"
+	ResourceTypePlaceDescription  = "http://gedcomx.org/v1/PlaceDescription"
+	ResourceTypeSourceDescription = "http://gedcomx.org/v1/SourceDescription"
+)
+
+// CollectionsDocument is the `Collections` application state representation
+// (RS spec Section 4.4): a list of collections.
+type CollectionsDocument struct {
+	Results     int          `json:"results"`
+	Collections []Collection `json:"collections"`
+	Links       Links        `json:"links,omitempty"`
+}
+
+// CollectionDocument wraps a single Collection as the top-level
+// `Collection` application state document (RS spec Section 4.5).
+type CollectionDocument struct {
+	Collections []Collection `json:"collections"`
+	Links       Links        `json:"links,omitempty"`
 }
 
 func boolPtr(b bool) *bool { return &b }

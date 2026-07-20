@@ -195,6 +195,43 @@ func (s *Server) buildDisplayProperties(names []rmdb.Name, sex int) *gedcomx.Dis
 	return disp
 }
 
+// --- Collection ---
+
+// buildCollection assembles the single Collection this server exposes: the
+// RootsMagic database it was started with. See SCOPE.md's "Collection"
+// section for why one RootsMagic file maps to exactly one Collection.
+func (s *Server) buildCollection() (gedcomx.Collection, error) {
+	stats, err := s.db.CollectionStats()
+	if err != nil {
+		return gedcomx.Collection{}, err
+	}
+	return gedcomx.Collection{
+		ID:    collectionID,
+		Title: s.cfg.Title,
+		Content: []gedcomx.CollectionContent{
+			{ResourceType: gedcomx.ResourceTypePerson, Count: stats.Persons},
+			{ResourceType: gedcomx.ResourceTypeRelationship, Count: stats.Relationships},
+			{ResourceType: gedcomx.ResourceTypePlaceDescription, Count: stats.Places},
+			{ResourceType: gedcomx.ResourceTypeSourceDescription, Count: stats.Sources},
+		},
+		Links: gedcomx.Links{
+			"collection":          {Href: s.url("/collections/" + collectionID)},
+			"subcollections":      {Href: s.url("/collections")},
+			"persons":             {Href: s.url("/persons")},
+			"relationships":       {Href: s.url("/relationships")},
+			"source-descriptions": {Href: s.url("/source-descriptions")},
+			// "place-descriptions" isn't one of the formally-defined
+			// Collection transitions in RS spec Section 4.5.4 (there's no
+			// plural rel for the Place Descriptions state anywhere in the
+			// spec's master link-relation table, Section 5.2) but is
+			// included here as a RECOMMENDED "other transition" per that
+			// same section, following the naming convention of the
+			// existing "source-descriptions" rel.
+			"place-descriptions": {Href: s.url("/places")},
+		},
+	}, nil
+}
+
 // --- Relationships ---
 
 func (s *Server) buildCoupleRelationship(f rmdb.Family) (gedcomx.Relationship, error) {

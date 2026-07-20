@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/aviast/rmgedcomx/internal/api"
 	"github.com/aviast/rmgedcomx/internal/rmdb"
@@ -18,6 +20,7 @@ func main() {
 		dbPath             = flag.String("db", "", "path to the RootsMagic .rmtree/.rmgc SQLite file (required)")
 		addr               = flag.String("addr", ":8080", "address to listen on")
 		baseURL            = flag.String("base-url", "http://localhost:8080", "base URL used to build absolute links in responses")
+		title              = flag.String("title", "", "title for the Collection resource (default: the -db file's name, without extension)")
 		defaultGenerations = flag.Int("default-generations", 4, "default number of generations for ancestry/descendancy queries")
 		maxPageSize        = flag.Int("max-page-size", 200, "maximum number of entries returned by a single paged request")
 	)
@@ -29,6 +32,12 @@ func main() {
 		os.Exit(2)
 	}
 
+	collectionTitle := *title
+	if collectionTitle == "" {
+		base := filepath.Base(*dbPath)
+		collectionTitle = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+
 	db, err := rmdb.Open(*dbPath)
 	if err != nil {
 		log.Fatalf("opening RootsMagic database: %v", err)
@@ -38,6 +47,7 @@ func main() {
 
 	srv, err := api.NewServer(db, api.Config{
 		BaseURL:            *baseURL,
+		Title:              collectionTitle,
 		DefaultGenerations: *defaultGenerations,
 		MaxPageSize:        *maxPageSize,
 	})

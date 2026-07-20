@@ -18,9 +18,14 @@ import (
 // Config holds server-wide settings.
 type Config struct {
 	BaseURL            string
+	Title              string
 	DefaultGenerations int
 	MaxPageSize        int
 }
+
+// collectionID is the fixed id of the single Collection this server
+// exposes (one RootsMagic file == one Collection; see SCOPE.md).
+const collectionID = "main"
 
 // Server holds the shared state used by all HTTP handlers.
 type Server struct {
@@ -51,6 +56,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /{$}", s.handleRoot)
+
+	mux.HandleFunc("GET /collections", s.handleCollections)
+	mux.HandleFunc("GET /collections/{id}", s.handleCollection)
 
 	mux.HandleFunc("GET /persons", s.handlePersons)
 	mux.HandleFunc("GET /persons/{id}", s.handlePerson)
@@ -92,12 +100,14 @@ func (s *Server) Handler() http.Handler {
 //     paths" and panics rather than guess.
 //
 //  2. Entire resource families the spec defines that this server never
-//     reads or writes at all: Collections, Records, Artifacts, Agents,
-//     Events, Person Matches, and OAuth2. These get explicit stub routes
-//     at their conventional paths so a client gets a clear "not
-//     implemented" rather than an ambiguous 404.
+//     reads or writes at all: Records, Artifacts, Agents, Events, Person
+//     Matches, and OAuth2. These get explicit stub routes at their
+//     conventional paths so a client gets a clear "not implemented" rather
+//     than an ambiguous 404.
 func (s *Server) registerNotImplemented(mux *http.ServeMux) {
 	readOnlyResources := []string{
+		"/collections",
+		"/collections/{id}",
 		"/persons",
 		"/persons/{id}",
 		"/relationships",
@@ -117,8 +127,6 @@ func (s *Server) registerNotImplemented(mux *http.ServeMux) {
 	}
 
 	unimplementedFamilies := map[string]string{
-		"/collections":          "the Collections/Collection states are not implemented",
-		"/collections/{id}":     "the Collections/Collection states are not implemented",
 		"/records":              "the Records/Record states are not implemented",
 		"/records/{id}":         "the Records/Record states are not implemented",
 		"/artifacts/{id}":       "the Artifacts state is not implemented",
