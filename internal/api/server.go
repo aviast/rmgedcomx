@@ -196,6 +196,15 @@ func (r *statusRecorder) WriteHeader(code int) {
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
+	// HTTP forbids a body on 204 No Content (and a few other statuses) --
+	// net/http enforces this and logs "request method or response status
+	// code does not allow body" if you try anyway. All of this server's
+	// call sites that pass StatusNoContent do so specifically because the
+	// payload is an empty list, so there's nothing meaningful to encode
+	// regardless.
+	if status == http.StatusNoContent {
+		return
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
