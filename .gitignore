@@ -12,6 +12,7 @@ vendor/
 *.prof
 coverage.out
 coverage.txt
+__pycache__/
 
 # Local environment and editor settings
 .env
