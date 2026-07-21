@@ -2,7 +2,7 @@ version: 2
 
 builds:
   - id: rmgedcomx
-    main: ./cmd/rmgedcomx
+    main: ./cmd/server
     binary: rmgedcomx
     goos:
       - windows
