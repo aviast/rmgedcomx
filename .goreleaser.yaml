@@ -1,0 +1,20 @@
+version: 2
+
+builds:
+  - id: rmgedcomx
+    main: ./cmd/rmgedcomx
+    binary: rmgedcomx
+    goos:
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+
+release:
+  github:
+    owner: aviast
+    name: rmgedcomx
