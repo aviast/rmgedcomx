@@ -9,7 +9,7 @@ class GedcomXBrowserApp:
     def __init__(self, root):
         self.root = root
         self.root.title("GEDCOM X RS Hypermedia Browser")
-        self.root.geometry("1150x850")
+        self.root.geometry("1450x850")
 
         self.headers = {'Accept': 'application/x-gedcomx-v1+json'}
         self.server_url_var = tk.StringVar(value="http://localhost:8080")
@@ -47,16 +47,6 @@ class GedcomXBrowserApp:
             anchor="w"
         )
         self.notification_label.pack(side=tk.LEFT, padx=10, fill=tk.BOTH, expand=True)
-
-        # --- Main Toolbar (Navigation) ---
-        toolbar_frame = ttk.Frame(self.root)
-        toolbar_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        self.back_btn = ttk.Button(toolbar_frame, text="⬅ Back", command=self.go_back, state=tk.DISABLED)
-        self.back_btn.pack(side=tk.LEFT, padx=2)
-
-        self.forward_btn = ttk.Button(toolbar_frame, text="Forward ➡", command=self.go_forward, state=tk.DISABLED)
-        self.forward_btn.pack(side=tk.LEFT, padx=2)
 
         # --- Main Layout (PanedWindow) ---
         main_pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -114,11 +104,27 @@ class GedcomXBrowserApp:
         right_frame = ttk.Frame(main_pane)
         main_pane.add(right_frame, weight=3)
 
-        self.links_frame = ttk.LabelFrame(right_frame, text="Available State Transitions (Links)")
+        # State Transitions Container (Houses Nav buttons + Dynamic Links)
+        self.links_frame = ttk.LabelFrame(right_frame, text="Available State Transitions (Active Resource)")
         self.links_frame.pack(fill=tk.X, padx=5, pady=5)
 
+        # Embedded Navigation Buttons (Left side)
+        nav_frame = ttk.Frame(self.links_frame)
+        nav_frame.pack(side=tk.LEFT, padx=(5, 2), pady=5)
+
+        self.back_btn = ttk.Button(nav_frame, text="⬅ Back", command=self.go_back, state=tk.DISABLED, width=8)
+        self.back_btn.pack(side=tk.LEFT, padx=2)
+
+        self.forward_btn = ttk.Button(nav_frame, text="Forward ➡", command=self.go_forward, state=tk.DISABLED, width=10)
+        self.forward_btn.pack(side=tk.LEFT, padx=2)
+
+        # Vertical Separator between Nav Buttons and Dynamic Transition Buttons
+        sep = ttk.Separator(self.links_frame, orient="vertical")
+        sep.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
+
+        # Inner container for dynamic HATEOAS state transition buttons
         self.links_inner_frame = ttk.Frame(self.links_frame)
-        self.links_inner_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.links_inner_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2, pady=5)
 
         self.details_notebook = ttk.Notebook(right_frame)
         self.details_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -242,7 +248,6 @@ class GedcomXBrowserApp:
                         combo_values.append(display_name)
 
                     self.collection_combo['values'] = combo_values
-                    # Menu explicitly defaults to blank
                     self.collection_combo.set("")
                     self.coll_link_combo.set("")
                     self.coll_link_combo['values'] = []
@@ -324,7 +329,6 @@ class GedcomXBrowserApp:
     def tree_scroll_set(self, first, last):
         """Scroll listener for scroll-triggered loading (pagination)."""
         self.tree_scroll.set(first, last)
-        # last == 1.0 indicates scrollbar is at the bottom bounds
         if float(last) >= 0.99:
             self.root.after(50, self.load_next_page)
 
@@ -374,7 +378,6 @@ class GedcomXBrowserApp:
 
                 self.render_link_buttons(self.current_document.get('links', {}), "Active Resource")
 
-                # Render visual and highlight context
                 main_person = None
                 if self.current_document.get('persons'):
                     main_person = self.current_document['persons'][0]
@@ -515,13 +518,13 @@ class GedcomXBrowserApp:
             elif entity_type == "Source":
                 target_relations = ["description", "source", "self"]
 
-            # 1. Iterate through the preferred hypermedia relations first
+            # Iterate through the preferred hypermedia relations first
             for rel in target_relations:
                 href = self._link_href(links, rel)
                 if href:
                     break
 
-            # 2. Fallback for systems that use the 'about' URI for Descriptions
+            # Fallback for systems that use the 'about' URI for Descriptions
             if not href and 'about' in entity_data:
                 href = entity_data['about']
 
@@ -664,19 +667,20 @@ class GedcomXBrowserApp:
         outer_container = ttk.Frame(self.visual_scrollable_frame)
         outer_container.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
 
-        # Generation 1: PARENTS
-        gen1_frame = ttk.LabelFrame(outer_container, text="Parents", padding=10)
+        # Generation 1: PARENTS (Fixed height 190px)
+        gen1_frame = ttk.LabelFrame(outer_container, text="Parents", height=190)
         gen1_frame.pack(fill=tk.X, pady=(0, 10))
+        gen1_frame.pack_propagate(False)
 
         parents_inner = ttk.Frame(gen1_frame)
-        parents_inner.pack(anchor=tk.CENTER)
+        parents_inner.pack(anchor=tk.CENTER, expand=True)
 
         if parents:
             for p in parents:
                 card = self.create_person_card(parents_inner, p, is_selected=False)
                 card.pack(side=tk.LEFT, padx=10, pady=5)
         else:
-            ttk.Label(parents_inner, text="No known parents for this person.", font=("Arial", 9, "italic")).pack(pady=5)
+            ttk.Label(parents_inner, text="No known parents for this person.", font=("Arial", 9, "italic")).pack(expand=True)
 
         # Generation 2: SELECTED PERSON
         gen2_frame = ttk.Frame(outer_container)
@@ -685,12 +689,13 @@ class GedcomXBrowserApp:
         main_card = self.create_person_card(gen2_frame, selected_person, is_selected=True)
         main_card.pack(anchor=tk.CENTER, pady=5)
 
-        # Generation 3: CHILDREN
-        gen3_frame = ttk.LabelFrame(outer_container, text=f"Children ({len(children)})", padding=10)
+        # Generation 3: CHILDREN (Fixed height 210px)
+        gen3_frame = ttk.LabelFrame(outer_container, text=f"Children ({len(children)})", height=210)
         gen3_frame.pack(fill=tk.X, pady=(10, 0))
+        gen3_frame.pack_propagate(False)
 
         if children:
-            child_canvas = tk.Canvas(gen3_frame, height=170, bg="#f5f7fa", highlightthickness=0)
+            child_canvas = tk.Canvas(gen3_frame, height=160, bg="#f5f7fa", highlightthickness=0)
             child_hscrollbar = ttk.Scrollbar(gen3_frame, orient="horizontal", command=child_canvas.xview)
 
             child_inner_frame = ttk.Frame(child_canvas)
@@ -709,7 +714,9 @@ class GedcomXBrowserApp:
                 card = self.create_person_card(child_inner_frame, c, is_selected=False)
                 card.pack(side=tk.LEFT, padx=10, pady=5)
         else:
-            ttk.Label(gen3_frame, text="No known children for this person.", font=("Arial", 9, "italic")).pack(anchor=tk.CENTER, pady=5)
+            children_inner = ttk.Frame(gen3_frame)
+            children_inner.pack(anchor=tk.CENTER, expand=True)
+            ttk.Label(children_inner, text="No known children for this person.", font=("Arial", 9, "italic")).pack(expand=True)
 
 if __name__ == "__main__":
     root = tk.Tk()
