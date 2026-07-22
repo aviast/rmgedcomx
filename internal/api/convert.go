@@ -239,16 +239,17 @@ func (s *Server) buildDisplayProperties(names []rmdb.Name, sex int) *gedcomx.Dis
 
 // --- Collection ---
 
-// buildCollection assembles the single Collection this server exposes: the
-// RootsMagic database it was started with. See SCOPE.md's "Collection"
-// section for why one RootsMagic file maps to exactly one Collection.
+// buildCollection assembles the Collection this Server exposes -- one
+// RootsMagic database. With multiple databases open (multiple -db flags),
+// there's one Server (and one buildCollection) per database; see
+// SCOPE.md's "Multiple databases / Collections" section.
 func (s *Server) buildCollection() (gedcomx.Collection, error) {
 	stats, err := s.db.CollectionStats()
 	if err != nil {
 		return gedcomx.Collection{}, err
 	}
 	return gedcomx.Collection{
-		ID:    collectionID,
+		ID:    s.cfg.ID,
 		Title: s.cfg.Title,
 		Content: []gedcomx.CollectionContent{
 			{ResourceType: gedcomx.ResourceTypePerson, Count: stats.Persons},
@@ -258,8 +259,8 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 			{ResourceType: gedcomx.ResourceTypeDigitalArtifact, Count: stats.Artifacts},
 		},
 		Links: gedcomx.Links{
-			"collection":          {Href: s.url("/collections/" + collectionID)},
-			"subcollections":      {Href: s.url("/collections")},
+			"collection":          {Href: s.collectionBaseURL},
+			"subcollections":      {Href: s.globalURL("/collections")},
 			"persons":             {Href: s.url("/persons")},
 			"relationships":       {Href: s.url("/relationships")},
 			"source-descriptions": {Href: s.url("/source-descriptions")},

@@ -9,54 +9,6 @@ import (
 	"github.com/aviast/rmgedcomx/internal/rmdb"
 )
 
-// --- Root / Collections / Collection ---
-
-// handleRoot serves the Collection state directly at "/", so a client that
-// only knows the base URL gets full HATEOAS discovery immediately (this is
-// how real-world GEDCOM X RS roots, e.g. FamilySearch's, behave). The same
-// content is also available, per the spec, at GET /collections/{id}.
-func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	c, err := s.buildCollection()
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.writeJSON(w, http.StatusOK, gedcomx.CollectionDocument{Collections: []gedcomx.Collection{c}, Links: c.Links})
-}
-
-// handleCollections serves the `Collections` state (RS spec Section 4.4):
-// a list of collections. This server only ever exposes one -- the
-// RootsMagic file it was started with -- so the list always has exactly
-// one element.
-func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
-	c, err := s.buildCollection()
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.writeJSON(w, http.StatusOK, gedcomx.CollectionsDocument{
-		Results:     1,
-		Collections: []gedcomx.Collection{c},
-		Links:       gedcomx.Links{"collection": {Href: s.url("/collections/" + collectionID)}},
-	})
-}
-
-// handleCollection serves the `Collection` state (RS spec Section 4.5) for
-// a single collection: the RootsMagic database this server is backed by.
-func (s *Server) handleCollection(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id != collectionID {
-		s.notFound(w, "collection", id)
-		return
-	}
-	c, err := s.buildCollection()
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.writeJSON(w, http.StatusOK, gedcomx.CollectionDocument{Collections: []gedcomx.Collection{c}, Links: c.Links})
-}
-
 // --- Persons ---
 
 func (s *Server) handlePersons(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +17,7 @@ func (s *Server) handlePersons(w http.ResponseWriter, r *http.Request) {
 
 	rows, total, err := s.db.ListPersons(limit, offset, nameFilter)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -73,7 +25,7 @@ func (s *Server) handlePersons(w http.ResponseWriter, r *http.Request) {
 	for _, rp := range rows {
 		p, err := s.buildPerson(rp)
 		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		persons = append(persons, p)
@@ -83,7 +35,7 @@ func (s *Server) handlePersons(w http.ResponseWriter, r *http.Request) {
 	if len(persons) == 0 {
 		status = http.StatusNoContent
 	}
-	s.writeJSON(w, status, gedcomx.PersonsDocument{
+	writeJSON(w, status, gedcomx.PersonsDocument{
 		Results: len(persons),
 		Persons: persons,
 		Links:   pagingLinks(s, "/persons", limit, offset, total),
@@ -94,24 +46,24 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pid, err := parsePersonID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	rp, err := s.db.GetPerson(pid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if rp == nil {
-		s.notFound(w, "person", id)
+		notFound(w, "person", id)
 		return
 	}
 	p, err := s.buildPerson(*rp)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.writeJSON(w, http.StatusOK, gedcomx.PersonDocument{Persons: []gedcomx.Person{p}, Links: p.Links})
+	writeJSON(w, http.StatusOK, gedcomx.PersonDocument{Persons: []gedcomx.Person{p}, Links: p.Links})
 }
 
 // --- Person Parents / Children / Spouses ---
@@ -120,12 +72,12 @@ func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pid, err := parsePersonID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	childRows, err := s.db.ChildRowsAsChild(pid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -135,7 +87,7 @@ func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 	for _, cr := range childRows {
 		fam, err := s.db.GetFamily(cr.FamilyID)
 		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		if fam == nil {
@@ -148,7 +100,7 @@ func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 			seen[parentID] = true
 			rp, err := s.db.GetPerson(parentID)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			if rp == nil {
@@ -156,7 +108,7 @@ func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 			}
 			p, err := s.buildPerson(*rp)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			persons = append(persons, p)
@@ -173,7 +125,7 @@ func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 	if len(persons) == 0 {
 		status = http.StatusNoContent
 	}
-	s.writeJSON(w, status, gedcomx.PersonRelativesDocument{
+	writeJSON(w, status, gedcomx.PersonRelativesDocument{
 		Results:       len(persons),
 		Persons:       persons,
 		Relationships: rels,
@@ -185,12 +137,12 @@ func (s *Server) handlePersonChildren(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pid, err := parsePersonID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	families, err := s.db.FamiliesAsParent(pid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -201,13 +153,13 @@ func (s *Server) handlePersonChildren(w http.ResponseWriter, r *http.Request) {
 		isFather = fam.FatherID == pid
 		children, err := s.db.ChildRowsOfFamily(fam.FamilyID)
 		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		for _, c := range children {
 			rp, err := s.db.GetPerson(c.ChildID)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			if rp == nil {
@@ -215,7 +167,7 @@ func (s *Server) handlePersonChildren(w http.ResponseWriter, r *http.Request) {
 			}
 			p, err := s.buildPerson(*rp)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			persons = append(persons, p)
@@ -227,7 +179,7 @@ func (s *Server) handlePersonChildren(w http.ResponseWriter, r *http.Request) {
 	if len(persons) == 0 {
 		status = http.StatusNoContent
 	}
-	s.writeJSON(w, status, gedcomx.PersonRelativesDocument{
+	writeJSON(w, status, gedcomx.PersonRelativesDocument{
 		Results:       len(persons),
 		Persons:       persons,
 		Relationships: rels,
@@ -239,12 +191,12 @@ func (s *Server) handlePersonSpouses(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pid, err := parsePersonID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	families, err := s.db.FamiliesAsParent(pid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -260,7 +212,7 @@ func (s *Server) handlePersonSpouses(w http.ResponseWriter, r *http.Request) {
 		}
 		rp, err := s.db.GetPerson(spouseID)
 		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		if rp == nil {
@@ -268,14 +220,14 @@ func (s *Server) handlePersonSpouses(w http.ResponseWriter, r *http.Request) {
 		}
 		p, err := s.buildPerson(*rp)
 		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		persons = append(persons, p)
 		if fam.FatherID != 0 && fam.MotherID != 0 {
 			rel, err := s.buildCoupleRelationship(fam)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			rels = append(rels, rel)
@@ -286,7 +238,7 @@ func (s *Server) handlePersonSpouses(w http.ResponseWriter, r *http.Request) {
 	if len(persons) == 0 {
 		status = http.StatusNoContent
 	}
-	s.writeJSON(w, status, gedcomx.PersonRelativesDocument{
+	writeJSON(w, status, gedcomx.PersonRelativesDocument{
 		Results:       len(persons),
 		Persons:       persons,
 		Relationships: rels,
@@ -305,7 +257,7 @@ func (s *Server) handleAncestry(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pid, err := parsePersonID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	generations := s.cfg.DefaultGenerations
@@ -317,11 +269,11 @@ func (s *Server) handleAncestry(w http.ResponseWriter, r *http.Request) {
 
 	root, err := s.db.GetPerson(pid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if root == nil {
-		s.notFound(w, "person", id)
+		notFound(w, "person", id)
 		return
 	}
 
@@ -332,7 +284,7 @@ func (s *Server) handleAncestry(w http.ResponseWriter, r *http.Request) {
 		for _, node := range frontier {
 			rp, err := s.db.GetPerson(node.personID)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			if rp == nil {
@@ -340,7 +292,7 @@ func (s *Server) handleAncestry(w http.ResponseWriter, r *http.Request) {
 			}
 			p, err := s.buildPerson(*rp)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			if p.Display == nil {
@@ -354,7 +306,7 @@ func (s *Server) handleAncestry(w http.ResponseWriter, r *http.Request) {
 			}
 			childRows, err := s.db.ChildRowsAsChild(node.personID)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			if len(childRows) == 0 {
@@ -362,7 +314,7 @@ func (s *Server) handleAncestry(w http.ResponseWriter, r *http.Request) {
 			}
 			fam, err := s.db.GetFamily(childRows[0].FamilyID)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			if fam == nil {
@@ -378,7 +330,7 @@ func (s *Server) handleAncestry(w http.ResponseWriter, r *http.Request) {
 		frontier = next
 	}
 
-	s.writeJSON(w, http.StatusOK, gedcomx.AncestryResultsDocument{
+	writeJSON(w, http.StatusOK, gedcomx.AncestryResultsDocument{
 		Results: len(persons),
 		Persons: persons,
 		Links:   gedcomx.Links{"person": {Href: s.url("/persons/" + id)}},
@@ -389,7 +341,7 @@ func (s *Server) handleDescendancy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pid, err := parsePersonID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	generations := s.cfg.DefaultGenerations
@@ -401,11 +353,11 @@ func (s *Server) handleDescendancy(w http.ResponseWriter, r *http.Request) {
 
 	root, err := s.db.GetPerson(pid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if root == nil {
-		s.notFound(w, "person", id)
+		notFound(w, "person", id)
 		return
 	}
 
@@ -453,11 +405,11 @@ func (s *Server) handleDescendancy(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 	if err := walk(pid, "1", 1); err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, gedcomx.DescendancyResultsDocument{
+	writeJSON(w, http.StatusOK, gedcomx.DescendancyResultsDocument{
 		Results: len(persons),
 		Persons: persons,
 		Links:   gedcomx.Links{"person": {Href: s.url("/persons/" + id)}},
@@ -470,7 +422,7 @@ func (s *Server) handleRelationships(w http.ResponseWriter, r *http.Request) {
 	limit, offset := s.pagingParams(r)
 	families, total, err := s.db.ListFamilies(limit, offset)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -479,14 +431,14 @@ func (s *Server) handleRelationships(w http.ResponseWriter, r *http.Request) {
 		if fam.FatherID != 0 && fam.MotherID != 0 {
 			rel, err := s.buildCoupleRelationship(fam)
 			if err != nil {
-				s.writeError(w, http.StatusInternalServerError, err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			rels = append(rels, rel)
 		}
 		children, err := s.db.ChildRowsOfFamily(fam.FamilyID)
 		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		for _, c := range children {
@@ -503,7 +455,7 @@ func (s *Server) handleRelationships(w http.ResponseWriter, r *http.Request) {
 	if len(rels) == 0 {
 		status = http.StatusNoContent
 	}
-	s.writeJSON(w, status, gedcomx.RelationshipsDocument{
+	writeJSON(w, status, gedcomx.RelationshipsDocument{
 		Results:       len(rels),
 		Relationships: rels,
 		Links:         pagingLinks(s, "/relationships", limit, offset, total),
@@ -514,30 +466,30 @@ func (s *Server) handleRelationship(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	parsed, err := parseRelationshipID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	fam, err := s.db.GetFamily(parsed.FamilyID)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if fam == nil {
-		s.notFound(w, "relationship", id)
+		notFound(w, "relationship", id)
 		return
 	}
 
 	if parsed.Kind == "couple" {
 		if fam.FatherID == 0 || fam.MotherID == 0 {
-			s.notFound(w, "relationship", id)
+			notFound(w, "relationship", id)
 			return
 		}
 		rel, err := s.buildCoupleRelationship(*fam)
 		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		s.writeJSON(w, http.StatusOK, gedcomx.RelationshipDocument{Relationships: []gedcomx.Relationship{rel}, Links: rel.Links})
+		writeJSON(w, http.StatusOK, gedcomx.RelationshipDocument{Relationships: []gedcomx.Relationship{rel}, Links: rel.Links})
 		return
 	}
 
@@ -546,11 +498,11 @@ func (s *Server) handleRelationship(w http.ResponseWriter, r *http.Request) {
 		parentID = fam.FatherID
 	}
 	if parentID == 0 {
-		s.notFound(w, "relationship", id)
+		notFound(w, "relationship", id)
 		return
 	}
 	rel := s.buildParentChildRelationship(parsed.FamilyID, parentID, parsed.ChildID, parsed.IsFather)
-	s.writeJSON(w, http.StatusOK, gedcomx.RelationshipDocument{Relationships: []gedcomx.Relationship{rel}, Links: rel.Links})
+	writeJSON(w, http.StatusOK, gedcomx.RelationshipDocument{Relationships: []gedcomx.Relationship{rel}, Links: rel.Links})
 }
 
 // --- Places ---
@@ -559,7 +511,7 @@ func (s *Server) handlePlaces(w http.ResponseWriter, r *http.Request) {
 	limit, offset := s.pagingParams(r)
 	rows, total, err := s.db.ListPlaces(limit, offset)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	places := make([]gedcomx.PlaceDescription, 0, len(rows))
@@ -570,7 +522,7 @@ func (s *Server) handlePlaces(w http.ResponseWriter, r *http.Request) {
 	if len(places) == 0 {
 		status = http.StatusNoContent
 	}
-	s.writeJSON(w, status, gedcomx.PlaceDescriptionsDocument{
+	writeJSON(w, status, gedcomx.PlaceDescriptionsDocument{
 		Results: len(places),
 		Places:  places,
 		Links:   pagingLinks(s, "/places", limit, offset, total),
@@ -581,20 +533,20 @@ func (s *Server) handlePlace(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	plid, err := parsePlaceID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	place, err := s.db.GetPlace(plid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if place == nil {
-		s.notFound(w, "place", id)
+		notFound(w, "place", id)
 		return
 	}
 	pd := s.buildPlaceDescription(*place)
-	s.writeJSON(w, http.StatusOK, gedcomx.PlaceDescriptionDocument{Places: []gedcomx.PlaceDescription{pd}, Links: pd.Links})
+	writeJSON(w, http.StatusOK, gedcomx.PlaceDescriptionDocument{Places: []gedcomx.PlaceDescription{pd}, Links: pd.Links})
 }
 
 // --- Source descriptions ---
@@ -603,7 +555,7 @@ func (s *Server) handleSourceDescriptions(w http.ResponseWriter, r *http.Request
 	limit, offset := s.pagingParams(r)
 	rows, total, err := s.db.ListSources(limit, offset)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	descs := make([]gedcomx.SourceDescription, 0, len(rows))
@@ -614,7 +566,7 @@ func (s *Server) handleSourceDescriptions(w http.ResponseWriter, r *http.Request
 	if len(descs) == 0 {
 		status = http.StatusNoContent
 	}
-	s.writeJSON(w, status, gedcomx.SourceDescriptionsDocument{
+	writeJSON(w, status, gedcomx.SourceDescriptionsDocument{
 		Results:            len(descs),
 		SourceDescriptions: descs,
 		Links:              pagingLinks(s, "/source-descriptions", limit, offset, total),
@@ -625,20 +577,20 @@ func (s *Server) handleSourceDescription(w http.ResponseWriter, r *http.Request)
 	id := r.PathValue("id")
 	sid, err := parseSourceID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	src, err := s.db.GetSource(sid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if src == nil {
-		s.notFound(w, "source description", id)
+		notFound(w, "source description", id)
 		return
 	}
 	sd := s.buildSourceDescription(*src)
-	s.writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
+	writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
 }
 
 // --- Artifacts (multimedia) ---
@@ -650,7 +602,7 @@ func (s *Server) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	limit, offset := s.pagingParams(r)
 	rows, total, err := s.db.ListMultimedia(limit, offset)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	descs := make([]gedcomx.SourceDescription, 0, len(rows))
@@ -661,7 +613,7 @@ func (s *Server) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	if len(descs) == 0 {
 		status = http.StatusNoContent
 	}
-	s.writeJSON(w, status, gedcomx.SourceDescriptionsDocument{
+	writeJSON(w, status, gedcomx.SourceDescriptionsDocument{
 		Results:            len(descs),
 		SourceDescriptions: descs,
 		Links:              pagingLinks(s, "/artifacts", limit, offset, total),
@@ -672,20 +624,20 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	mid, err := parseMediaID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	item, err := s.db.GetMultimediaItem(mid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if item == nil {
-		s.notFound(w, "artifact", id)
+		notFound(w, "artifact", id)
 		return
 	}
 	sd := s.buildArtifactDescription(*item)
-	s.writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
+	writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
 }
 
 // handleArtifactContent streams the actual bytes of a multimedia item --
@@ -698,38 +650,38 @@ func (s *Server) handleArtifactContent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	mid, err := parseMediaID(id)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	item, err := s.db.GetMultimediaItem(mid)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if item == nil {
-		s.notFound(w, "artifact", id)
+		notFound(w, "artifact", id)
 		return
 	}
 	if rmdb.LooksLikeExternalReference(item.MediaPath) {
-		s.writeError(w, http.StatusNotFound,
+		writeError(w, http.StatusNotFound,
 			"this artifact references an external location ("+item.MediaPath+"), not a local file; no content is available from this server")
 		return
 	}
 
 	path, err := rmdb.ResolveMediaPath(item.MediaPath, item.MediaFile, s.cfg.Media)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "resolving media path: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "resolving media path: "+err.Error())
 		return
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		s.writeError(w, http.StatusNotFound, "the artifact's file could not be opened at "+path+": "+err.Error())
+		writeError(w, http.StatusNotFound, "the artifact's file could not be opened at "+path+": "+err.Error())
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
