@@ -21,6 +21,7 @@ type Config struct {
 	Title              string
 	DefaultGenerations int
 	MaxPageSize        int
+	Media              rmdb.MediaFolderConfig
 }
 
 // collectionID is the fixed id of the single Collection this server
@@ -77,6 +78,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /source-descriptions", s.handleSourceDescriptions)
 	mux.HandleFunc("GET /source-descriptions/{id}", s.handleSourceDescription)
 
+	mux.HandleFunc("GET /artifacts", s.handleArtifacts)
+	mux.HandleFunc("GET /artifacts/{id}", s.handleArtifact)
+	mux.HandleFunc("GET /artifacts/{id}/content", s.handleArtifactContent)
+
 	s.registerNotImplemented(mux)
 
 	return withLogging(withGedcomXContentType(mux))
@@ -89,21 +94,22 @@ func (s *Server) Handler() http.Handler {
 // Two categories:
 //
 //  1. Write transitions (POST/PUT/DELETE/PATCH) on the resources this
-//     server does read -- Person, Relationship, Place Description, Source
-//     Description all define create/update/delete transitions in the full
-//     spec; this server is read-only by design, so any non-GET on those
-//     paths is a deliberately-unimplemented spec feature, not a bad
-//     request. Each write method is registered explicitly (rather than a
-//     bare, any-method pattern) since a bare pattern for an exact path
+//     server does read -- Collection, Person, Relationship, Place
+//     Description, Source Description, and Artifacts all define
+//     create/update/delete transitions in the full spec; this server is
+//     read-only by design, so any non-GET on those paths is a
+//     deliberately-unimplemented spec feature, not a bad request. Each
+//     write method is registered explicitly (rather than a bare,
+//     any-method pattern) since a bare pattern for an exact path
 //     conflicts with the "GET /" catch-all registered for the root: Go's
 //     ServeMux can't order "matches more methods" against "matches more
 //     paths" and panics rather than guess.
 //
 //  2. Entire resource families the spec defines that this server never
-//     reads or writes at all: Records, Artifacts, Agents, Events, Person
-//     Matches, and OAuth2. These get explicit stub routes at their
-//     conventional paths so a client gets a clear "not implemented" rather
-//     than an ambiguous 404.
+//     reads or writes at all: Records, Agents, Events, Person Matches,
+//     and OAuth2. These get explicit stub routes at their conventional
+//     paths so a client gets a clear "not implemented" rather than an
+//     ambiguous 404.
 func (s *Server) registerNotImplemented(mux *http.ServeMux) {
 	readOnlyResources := []string{
 		"/collections",
@@ -116,6 +122,9 @@ func (s *Server) registerNotImplemented(mux *http.ServeMux) {
 		"/places/{id}",
 		"/source-descriptions",
 		"/source-descriptions/{id}",
+		"/artifacts",
+		"/artifacts/{id}",
+		"/artifacts/{id}/content",
 	}
 	writeMethods := []string{"POST", "PUT", "PATCH", "DELETE"}
 	handler := s.notImplemented(
@@ -129,7 +138,6 @@ func (s *Server) registerNotImplemented(mux *http.ServeMux) {
 	unimplementedFamilies := map[string]string{
 		"/records":              "the Records/Record states are not implemented",
 		"/records/{id}":         "the Records/Record states are not implemented",
-		"/artifacts/{id}":       "the Artifacts state is not implemented",
 		"/agents":               "the Agents/Agent states are not implemented",
 		"/agents/{id}":          "the Agents/Agent states are not implemented",
 		"/events":               "the Events/Event states are not implemented",

@@ -2,9 +2,11 @@ package api
 
 import (
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/aviast/rmgedcomx/internal/gedcomx"
+	"github.com/aviast/rmgedcomx/internal/rmdb"
 )
 
 // --- Root / Collections / Collection ---
@@ -637,4 +639,106 @@ func (s *Server) handleSourceDescription(w http.ResponseWriter, r *http.Request)
 	}
 	sd := s.buildSourceDescription(*src)
 	s.writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
+}
+
+// --- Artifacts (multimedia) ---
+
+// handleArtifacts serves the `Artifacts` state (RS spec Section 4.3): a
+// list of digital artifacts, described as SourceDescriptions, backed by
+// RootsMagic's MultimediaTable.
+func (s *Server) handleArtifacts(w http.ResponseWriter, r *http.Request) {
+	limit, offset := s.pagingParams(r)
+	rows, total, err := s.db.ListMultimedia(limit, offset)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	descs := make([]gedcomx.SourceDescription, 0, len(rows))
+	for _, item := range rows {
+		descs = append(descs, s.buildArtifactDescription(item))
+	}
+	status := http.StatusOK
+	if len(descs) == 0 {
+		status = http.StatusNoContent
+	}
+	s.writeJSON(w, status, gedcomx.SourceDescriptionsDocument{
+		Results:            len(descs),
+		SourceDescriptions: descs,
+		Links:              pagingLinks(s, "/artifacts", limit, offset, total),
+	})
+}
+
+func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	mid, err := parseMediaID(id)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	item, err := s.db.GetMultimediaItem(mid)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if item == nil {
+		s.notFound(w, "artifact", id)
+		return
+	}
+	sd := s.buildArtifactDescription(*item)
+	s.writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
+}
+
+// handleArtifactContent streams the actual bytes of a multimedia item --
+// there's no dedicated state for this in the RS spec (SourceDescription's
+// `about` field is the spec's mechanism for pointing at a resource's
+// actual location; this endpoint is what `about` points to). Not served
+// for items that turn out to be external/web-hint references rather than
+// local files -- see rmdb.LooksLikeExternalReference and SCOPE.md.
+func (s *Server) handleArtifactContent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	mid, err := parseMediaID(id)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	item, err := s.db.GetMultimediaItem(mid)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if item == nil {
+		s.notFound(w, "artifact", id)
+		return
+	}
+	if rmdb.LooksLikeExternalReference(item.MediaPath) {
+		s.writeError(w, http.StatusNotFound,
+			"this artifact references an external location ("+item.MediaPath+"), not a local file; no content is available from this server")
+		return
+	}
+
+	path, err := rmdb.ResolveMediaPath(item.MediaPath, item.MediaFile, s.cfg.Media)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "resolving media path: "+err.Error())
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		s.writeError(w, http.StatusNotFound, "the artifact's file could not be opened at "+path+": "+err.Error())
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Override the server-wide "application/x-gedcomx-v1+json" default
+	// (set by the withGedcomXContentType middleware) -- this response is
+	// the raw file, not a GEDCOM X document.
+	w.Header().Del("Content-Type")
+	if mt := gedcomx.MediaTypeForFilename(item.MediaFile); mt != "" {
+		w.Header().Set("Content-Type", mt)
+	}
+	http.ServeContent(w, r, item.MediaFile, info.ModTime(), f)
 }

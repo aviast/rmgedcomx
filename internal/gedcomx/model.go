@@ -193,12 +193,15 @@ type SourceCitation struct {
 // SourceDescription is a description of/reference to a source of genealogical
 // information.
 type SourceDescription struct {
-	ID        string           `json:"id"`
-	Citations []SourceCitation `json:"citations,omitempty"`
-	Titles    []TextValue      `json:"titles,omitempty"`
-	Notes     []Note           `json:"notes,omitempty"`
-	SortKey   string           `json:"sortKey,omitempty"` // RS extension (Section 3.5)
-	Links     Links            `json:"links,omitempty"`
+	ID           string           `json:"id"`
+	ResourceType string           `json:"resourceType,omitempty"`
+	Citations    []SourceCitation `json:"citations,omitempty"`
+	MediaType    string           `json:"mediaType,omitempty"`
+	About        string           `json:"about,omitempty"`
+	Titles       []TextValue      `json:"titles,omitempty"`
+	Notes        []Note           `json:"notes,omitempty"`
+	SortKey      string           `json:"sortKey,omitempty"` // RS extension (Section 3.5)
+	Links        Links            `json:"links,omitempty"`
 }
 
 // EntryList is a generic paged list envelope used for the Persons,
@@ -323,6 +326,15 @@ const (
 	ResourceTypePlaceDescription  = "http://gedcomx.org/v1/PlaceDescription"
 	ResourceTypeSourceDescription = "http://gedcomx.org/v1/SourceDescription"
 )
+
+// ResourceTypeDigitalArtifact is one of the "known resource types" from the
+// GEDCOM X Conceptual Model, Section 2.3.1 (distinct namespace from the
+// "/v1/" data-type identifiers above -- this one describes what *kind* of
+// thing a SourceDescription is, not which data type it is). Used both as
+// the resourceType of each multimedia-derived SourceDescription and as the
+// CollectionContent.resourceType for the artifacts count, since it's more
+// specific than the generic SourceDescription identifier.
+const ResourceTypeDigitalArtifact = "http://gedcomx.org/DigitalArtifact"
 
 // CollectionsDocument is the `Collections` application state representation
 // (RS spec Section 4.4): a list of collections.

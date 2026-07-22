@@ -93,11 +93,37 @@ type CitationLink struct {
 	SourceID  int64
 }
 
-// OwnerType values for CitationLinkTable.OwnerType (and, where applicable,
-// EventTable.OwnerType).
+// OwnerType values for CitationLinkTable.OwnerType and MediaLinkTable.OwnerType
+// (and, where applicable, EventTable.OwnerType). Both link tables share the
+// same enumeration per the RootsMagic data dictionary.
 const (
-	OwnerTypePerson = 0
-	OwnerTypeFamily = 1
-	OwnerTypeEvent  = 2
-	OwnerTypeName   = 7
+	OwnerTypePerson   = 0
+	OwnerTypeFamily   = 1
+	OwnerTypeEvent    = 2
+	OwnerTypeSource   = 3
+	OwnerTypeCitation = 4
+	OwnerTypeName     = 7
+)
+
+// MultimediaItem is a row from MultimediaTable: a single scanned document,
+// photo, sound, or video file.
+type MultimediaItem struct {
+	MediaID   int64
+	MediaType int // 1=Image, 2=File, 3=Sound, 4=Video
+	MediaPath string
+	MediaFile string
+	Caption   string
+	RefNumber string
+	Date      string
+	// Description is typed Blob/Text in RootsMagic but holds plain text in
+	// practice (a free-form note about the item); read as TEXT.
+	Description string
+}
+
+// MultimediaItem MediaType values (MultimediaTable.MediaType).
+const (
+	MediaTypeImage = 1
+	MediaTypeFile  = 2
+	MediaTypeSound = 3
+	MediaTypeVideo = 4
 )

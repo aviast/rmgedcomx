@@ -21,6 +21,7 @@ func main() {
 		addr               = flag.String("addr", ":8080", "address to listen on")
 		baseURL            = flag.String("base-url", "http://localhost:8080", "base URL used to build absolute links in responses")
 		title              = flag.String("title", "", "title for the Collection resource (default: the -db file's name, without extension)")
+		mediaFolder        = flag.String("media-folder", "", "RootsMagic's configured Media Folder, for resolving multimedia paths that use the '?' symbol (see SCOPE.md's \"Multimedia\" section); leave empty if the file doesn't use it")
 		defaultGenerations = flag.Int("default-generations", 4, "default number of generations for ancestry/descendancy queries")
 		maxPageSize        = flag.Int("max-page-size", 200, "maximum number of entries returned by a single paged request")
 	)
@@ -38,6 +39,15 @@ func main() {
 		collectionTitle = strings.TrimSuffix(base, filepath.Ext(base))
 	}
 
+	dbDir, err := filepath.Abs(filepath.Dir(*dbPath))
+	if err != nil {
+		log.Fatalf("resolving database directory: %v", err)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("warning: couldn't determine home directory (%v); multimedia paths using '~' won't resolve", err)
+	}
+
 	db, err := rmdb.Open(*dbPath)
 	if err != nil {
 		log.Fatalf("opening RootsMagic database: %v", err)
@@ -50,6 +60,11 @@ func main() {
 		Title:              collectionTitle,
 		DefaultGenerations: *defaultGenerations,
 		MaxPageSize:        *maxPageSize,
+		Media: rmdb.MediaFolderConfig{
+			DatabaseDir: dbDir,
+			HomeDir:     homeDir,
+			MediaFolder: *mediaFolder,
+		},
 	})
 	if err != nil {
 		log.Fatalf("initializing server: %v", err)
