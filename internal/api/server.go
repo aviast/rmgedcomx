@@ -17,6 +17,17 @@ import (
 
 // Config holds server-wide settings.
 type Config struct {
+	// ID is this collection's id, used both as its URL path segment
+	// (/collections/{ID}/...) and its Collection.id in responses. See
+	// internal/collectionid and SCOPE.md's "Multiple databases /
+	// Collections" section for how it's derived and why it isn't (and
+	// can't be) guaranteed stable across server restarts.
+	ID string
+	// BaseURL is the GLOBAL server root (e.g. "http://localhost:8080"),
+	// shared by every collection -- not this collection's own URL prefix.
+	// Server derives and stores its own collection-scoped base
+	// (BaseURL + "/collections/" + ID) for building resource links; see
+	// url() and globalURL().
 	BaseURL            string
 	Title              string
 	DefaultGenerations int
@@ -24,15 +35,18 @@ type Config struct {
 	Media              rmdb.MediaFolderConfig
 }
 
-// collectionID is the fixed id of the single Collection this server
-// exposes (one RootsMagic file == one Collection; see SCOPE.md).
-const collectionID = "main"
-
-// Server holds the shared state used by all HTTP handlers.
+// Server holds the shared state used by all HTTP handlers for one
+// collection.
 type Server struct {
 	db        *rmdb.DB
 	factTypes map[int64]rmdb.FactType
 	cfg       Config
+	// collectionBaseURL is cfg.BaseURL + "/collections/" + cfg.ID,
+	// precomputed once. Used by url() for every resource link this
+	// collection's handlers build (persons, relationships, ...); see
+	// globalURL() for the few links that intentionally point outside this
+	// collection's own scope.
+	collectionBaseURL string
 }
 
 // NewServer builds a Server, preloading the (small) FactTypeTable.
@@ -49,17 +63,28 @@ func NewServer(db *rmdb.DB, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{db: db, factTypes: factTypes, cfg: cfg}, nil
+	return &Server{
+		db:                db,
+		factTypes:         factTypes,
+		cfg:               cfg,
+		collectionBaseURL: cfg.BaseURL + "/collections/" + cfg.ID,
+	}, nil
 }
 
-// Handler builds the HTTP route table.
-func (s *Server) Handler() http.Handler {
+// resourceHandler builds the route table for everything that belongs to
+// this one collection: persons, relationships, places, source
+// descriptions, artifacts, and the 501 stubs for what's deliberately
+// unimplemented within a collection's scope. It does NOT include the
+// Collections/Collection discovery states (GET /, /collections,
+// /collections/{id}) or OAuth2 -- those necessarily span every collection
+// this server has open, not just this one, so they're assembled once, at
+// the top level, by NewMultiCollectionHandler, which mounts this handler
+// under /collections/{id}/ for each collection (via http.StripPrefix).
+// Unwrapped by any middleware for the same reason: logging and the
+// default Content-Type are applied once, at the top level, not per
+// collection.
+func (s *Server) resourceHandler() http.Handler {
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /{$}", s.handleRoot)
-
-	mux.HandleFunc("GET /collections", s.handleCollections)
-	mux.HandleFunc("GET /collections/{id}", s.handleCollection)
 
 	mux.HandleFunc("GET /persons", s.handlePersons)
 	mux.HandleFunc("GET /persons/{id}", s.handlePerson)
@@ -82,38 +107,33 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /artifacts/{id}", s.handleArtifact)
 	mux.HandleFunc("GET /artifacts/{id}/content", s.handleArtifactContent)
 
-	s.registerNotImplemented(mux)
+	registerNotImplemented(mux)
 
-	return withLogging(withGedcomXContentType(mux))
+	return mux
 }
 
 // registerNotImplemented wires up HTTP 501 responses for the parts of the
 // GEDCOM X RS specification this server deliberately doesn't implement
-// (see SCOPE.md), rather than letting them fall through to a generic 404.
+// within a collection's scope (see SCOPE.md), rather than letting them
+// fall through to a generic 404. (Collections/Collection's own write
+// methods, and OAuth2, are handled separately at the top level -- see
+// NewMultiCollectionHandler -- since they aren't collection-scoped.)
 //
 // Two categories:
 //
 //  1. Write transitions (POST/PUT/DELETE/PATCH) on the resources this
-//     server does read -- Collection, Person, Relationship, Place
-//     Description, Source Description, and Artifacts all define
-//     create/update/delete transitions in the full spec; this server is
-//     read-only by design, so any non-GET on those paths is a
-//     deliberately-unimplemented spec feature, not a bad request. Each
-//     write method is registered explicitly (rather than a bare,
-//     any-method pattern) since a bare pattern for an exact path
-//     conflicts with the "GET /" catch-all registered for the root: Go's
-//     ServeMux can't order "matches more methods" against "matches more
-//     paths" and panics rather than guess.
+//     server does read -- Person, Relationship, Place Description, Source
+//     Description, and Artifacts all define create/update/delete
+//     transitions in the full spec; this server is read-only by design,
+//     so any non-GET on those paths is a deliberately-unimplemented spec
+//     feature, not a bad request.
 //
 //  2. Entire resource families the spec defines that this server never
-//     reads or writes at all: Records, Agents, Events, Person Matches,
-//     and OAuth2. These get explicit stub routes at their conventional
-//     paths so a client gets a clear "not implemented" rather than an
-//     ambiguous 404.
-func (s *Server) registerNotImplemented(mux *http.ServeMux) {
+//     reads or writes at all: Records, Agents, Events, Person Matches.
+//     These get explicit stub routes at their conventional paths so a
+//     client gets a clear "not implemented" rather than an ambiguous 404.
+func registerNotImplemented(mux *http.ServeMux) {
 	readOnlyResources := []string{
-		"/collections",
-		"/collections/{id}",
 		"/persons",
 		"/persons/{id}",
 		"/relationships",
@@ -127,7 +147,7 @@ func (s *Server) registerNotImplemented(mux *http.ServeMux) {
 		"/artifacts/{id}/content",
 	}
 	writeMethods := []string{"POST", "PUT", "PATCH", "DELETE"}
-	handler := s.notImplemented(
+	handler := notImplemented(
 		"this server is read-only; create/update/delete transitions on this resource are not implemented")
 	for _, path := range readOnlyResources {
 		for _, method := range writeMethods {
@@ -144,11 +164,10 @@ func (s *Server) registerNotImplemented(mux *http.ServeMux) {
 		"/events/{id}":          "the Events/Event states are not implemented",
 		"/persons/{id}/matches": "the Person Matches state is not implemented",
 		"/persons/{id}/matches/{matchId}/working": "the Person Matches Query / Match state is not implemented",
-		"/oauth2/token": "OAuth2 is not implemented; this server has no authentication",
 	}
 	allMethods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
 	for path, reason := range unimplementedFamilies {
-		h := s.notImplemented(reason)
+		h := notImplemented(reason)
 		for _, method := range allMethods {
 			mux.HandleFunc(method+" "+path, h)
 		}
@@ -158,9 +177,9 @@ func (s *Server) registerNotImplemented(mux *http.ServeMux) {
 // notImplemented returns a handler that always responds 501, with a JSON
 // body explaining why and pointing to SCOPE.md for the full list of what's
 // implemented.
-func (s *Server) notImplemented(reason string) http.HandlerFunc {
+func notImplemented(reason string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.writeJSON(w, http.StatusNotImplemented, notImplementedBody{
+		writeJSON(w, http.StatusNotImplemented, notImplementedBody{
 			Error:   "not implemented",
 			Detail:  reason,
 			SeeAlso: "https://github.com/FamilySearch/gedcomx-rs -- see this server's SCOPE.md for the full list of implemented vs. unimplemented resources",
@@ -202,7 +221,7 @@ func (r *statusRecorder) WriteHeader(code int) {
 
 // --- shared response helpers ---
 
-func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	// HTTP forbids a body on 204 No Content (and a few other statuses) --
 	// net/http enforces this and logs "request method or response status
@@ -224,12 +243,12 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
-func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
-	s.writeJSON(w, status, errorBody{Error: msg})
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, errorBody{Error: msg})
 }
 
-func (s *Server) notFound(w http.ResponseWriter, kind, id string) {
-	s.writeError(w, http.StatusNotFound, kind+" "+id+" not found")
+func notFound(w http.ResponseWriter, kind, id string) {
+	writeError(w, http.StatusNotFound, kind+" "+id+" not found")
 }
 
 // pagingParams reads and clamps ?limit=&offset= query parameters.
@@ -252,7 +271,22 @@ func (s *Server) pagingParams(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
+// url builds an absolute URL for a resource within THIS collection (e.g.
+// "/persons/P1" -> "http://host/collections/{id}/persons/P1"). This is
+// what every resource-building function in convert.go uses.
 func (s *Server) url(path string) string {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return s.collectionBaseURL + path
+}
+
+// globalURL builds an absolute URL relative to the server's global root,
+// NOT this collection's own prefix -- for the handful of links that
+// intentionally point outside this collection's scope (currently just
+// "subcollections", which points at the top-level /collections list
+// spanning every collection this server has open).
+func (s *Server) globalURL(path string) string {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}

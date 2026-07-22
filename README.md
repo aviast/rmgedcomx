@@ -53,31 +53,63 @@ go build -o rmgedcomx ./cmd/server
 ./rmgedcomx -db /path/to/YourTree.rmtree -addr :8080
 ```
 
+Or serve several databases at once -- `-db` is repeatable, and each one becomes
+its own, fully independent `Collection`:
+
+```sh
+./rmgedcomx -db Gould.rmtree -db Family.rmtree -db royal92.rmtree
+```
+
+(`royal92.rmtree` is included in this repo as a ready-to-try sample -- a
+public-domain GEDCOM of European royalty, imported into RootsMagic.)
+
+On startup, the server prints a table mapping each collection's id to its
+title and source file:
+
+```
+Collections available this session:
+COLLECTION ID                     TITLE                               DATABASE FILE
+jean-valerie-gould-gould          Jean Valerie Gould (Gould)          Gould.rmtree
+charlotte-mae-henry-family        Charlotte Mae Henry (Family)        Family.rmtree
+victoria-hanover-royal92          Victoria Hanover (royal92)          royal92.rmtree
+```
+
+**A collection's id is not guaranteed to be the same across restarts** -- it's
+derived from RootsMagic's "Home Person" setting (which a user can change) and
+the filename (which can be renamed, copied, or restored from backup), chosen
+to be human-recognizable rather than durable. **No client should persist a
+collection id across sessions** -- discover fresh via `GET /collections` every
+time a client starts (as the example Python client does), and use the startup
+table above to confirm, as a human, which id corresponds to which database for
+the session about to start. See [SCOPE.md](./SCOPE.md#multiple-databases--collections)
+for the full reasoning.
+
 Then browse, e.g.:
 
 ```
 curl http://localhost:8080/
 curl http://localhost:8080/collections
-curl http://localhost:8080/persons?limit=20
-curl http://localhost:8080/persons/P1
-curl http://localhost:8080/persons/P1/ancestry?generations=4
-curl http://localhost:8080/relationships/F3
-curl http://localhost:8080/places/12
-curl http://localhost:8080/source-descriptions/5
-curl http://localhost:8080/artifacts?limit=20
-curl http://localhost:8080/artifacts/M1
-curl http://localhost:8080/artifacts/M1/content -o photo.jpg
+curl http://localhost:8080/collections/jean-valerie-gould-gould
+curl http://localhost:8080/collections/jean-valerie-gould-gould/persons?limit=20
+curl http://localhost:8080/collections/jean-valerie-gould-gould/persons/P1
+curl http://localhost:8080/collections/jean-valerie-gould-gould/persons/P1/ancestry?generations=4
+curl http://localhost:8080/collections/jean-valerie-gould-gould/relationships/F3
+curl http://localhost:8080/collections/jean-valerie-gould-gould/places/12
+curl http://localhost:8080/collections/jean-valerie-gould-gould/source-descriptions/5
+curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts?limit=20
+curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts/M1
+curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts/M1/content -o photo.jpg
 ```
 
 All responses are `application/x-gedcomx-v1+json` (GEDCOM X JSON, with the GEDCOM X RS
-extensions such as `living`, `display`, and `links`), except `GET /artifacts/{id}/content`,
-which streams the raw file with its actual `Content-Type`. `GET /` returns the `Collection`
-state (the discovery root -- see [SCOPE.md](./SCOPE.md#collection) for why), so a client
-that only knows the base URL can find everything else from there. Every `Person`'s and
-`Fact`'s `sources` array includes attached photos/certificates alongside bibliographic
-sources -- see [SCOPE.md](./SCOPE.md#multimedia) for how RootsMagic actually attaches
-media (it's usually via the citation, not the person or fact directly) and for the real
-limits of resolving a `MediaPath` to a file on disk (cloud-drive letters, RootsMagic's
+extensions such as `living`, `display`, and `links`), except `.../artifacts/{id}/content`,
+which streams the raw file with its actual `Content-Type`. `GET /` returns the `Collections`
+list (the discovery root -- see [SCOPE.md](./SCOPE.md#multiple-databases--collections) for
+why), so a client that only knows the base URL can find everything else from there. Every
+`Person`'s and `Fact`'s `sources` array includes attached photos/certificates alongside
+bibliographic sources -- see [SCOPE.md](./SCOPE.md#multimedia) for how RootsMagic actually
+attaches media (it's usually via the citation, not the person or fact directly) and for the
+real limits of resolving a `MediaPath` to a file on disk (cloud-drive letters, RootsMagic's
 "Media Folder" setting, and items that turn out to be external links rather than local
 files).
 
@@ -90,11 +122,10 @@ for the full list.
 
 | flag | default | description |
 |------|---------|--------------|
-| `-db` | *(required)* | Path to the RootsMagic `.rmtree`/`.rmgc` SQLite file |
+| `-db` | *(required, repeatable)* | Path to a RootsMagic `.rmtree`/`.rmgc` SQLite file; pass multiple times to serve multiple databases, each as its own Collection |
 | `-addr` | `:8080` | Address to listen on |
 | `-base-url` | `http://localhost:8080` | Base URL used to build absolute links in responses |
-| `-title` | *(the `-db` file's name)* | Title for the `Collection` resource |
-| `-media-folder` | *(none)* | RootsMagic's configured "Media Folder", if any multimedia paths use it (see [SCOPE.md](./SCOPE.md#multimedia)) |
+| `-media-folder` | *(none)* | RootsMagic's configured "Media Folder", if any multimedia paths use it (see [SCOPE.md](./SCOPE.md#multimedia)); shared by every `-db`, since it's a RootsMagic-installation-wide setting, not a per-database one |
 | `-default-generations` | `4` | Default number of generations for ancestry/descendancy queries |
 | `-max-page-size` | `200` | Maximum number of entries returned by a single paged request |
 

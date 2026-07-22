@@ -28,6 +28,11 @@ class GedcomXBrowserApp:
         self.is_fetching_page = False
         self._ignore_tree_select = False
 
+        self.visual_parents = []
+        self.family_groups = []
+        self.active_family_index = 0
+        self.current_visual_person = None
+
         self.create_widgets()
 
     def create_widgets(self):
@@ -481,7 +486,18 @@ class GedcomXBrowserApp:
 
     def highlight_entity_in_tree(self, entity_id):
         """Visually selects an entity in the list without triggering navigation."""
-        if not entity_id: return
+        if not entity_id:
+            return
+        if self._select_tree_item_if_present(entity_id):
+            return
+        # Not loaded yet -- the left pane only holds whatever pages have been
+        # scrolled into view. Keep pulling pages until we find it or run out.
+        while self.next_page_url and not self.is_fetching_page:
+            self.load_collection_list(self.next_page_url, append=True)
+            if self._select_tree_item_if_present(entity_id):
+                return
+
+    def _select_tree_item_if_present(self, entity_id):
         for item in self.entity_tree.get_children():
             values = self.entity_tree.item(item)['values']
             if len(values) >= 2 and str(values[1]) == str(entity_id):
@@ -490,7 +506,8 @@ class GedcomXBrowserApp:
                 self.entity_tree.see(item)
                 self.root.update()
                 self._ignore_tree_select = False
-                return
+                return True
+        return False
 
     def on_entity_select(self, event):
         """User clicked an entity in the master list - fetch and show its state."""
@@ -636,7 +653,9 @@ class GedcomXBrowserApp:
             return link[0].get("href")
         return None
 
-    def fetch_related_people(self, person_data, relation):
+    def fetch_relatives(self, person_data, relation):
+        """Fetch related persons for a person, paired with their relationship
+        object (may be None if the server omitted it)."""
         href = self._link_href(person_data.get("links", {}), relation)
         if not href:
             return []
@@ -653,21 +672,81 @@ class GedcomXBrowserApp:
             if not raw_data.strip():
                 return []
             document = json.loads(raw_data)
-            return document.get("persons", [])
+            persons = document.get("persons", [])
+            relationships = document.get("relationships", [])
+            return [(p, relationships[i] if i < len(relationships) else None)
+                    for i, p in enumerate(persons)]
         except Exception as e:
             self.show_notification(f"Could not load {relation} for this person: {e}", "warning")
         return []
 
     def draw_3_generation_view(self, selected_person):
-        self.clear_visual_canvas()
+        self.current_visual_person = selected_person
+        self.visual_parents = [p for p, _ in self.fetch_relatives(selected_person, "parents")]
+        self.family_groups = self.build_family_groups(selected_person)
+        self.active_family_index = 0
+        self.render_visual_tab()
 
-        parents = self.fetch_related_people(selected_person, "parents")
-        children = self.fetch_related_people(selected_person, "children")
+    def build_family_groups(self, selected_person):
+        """Group this person's children under the spouse they belong to,
+        using the family id embedded in each relationship's id (e.g. a couple
+        relationship 'F7' and a parent-child relationship 'F7-FC12' share the
+        'F7' family id)."""
+        spouses = self.fetch_relatives(selected_person, "spouses")
+        children = self.fetch_relatives(selected_person, "children")
+
+        groups = []
+        group_by_family_key = {}
+        for spouse, rel in spouses:
+            family_key = rel.get('id') if rel else None
+            group = {"spouse": spouse, "children": []}
+            groups.append(group)
+            if family_key:
+                group_by_family_key[family_key] = group
+
+        other_group = None
+        for child, rel in children:
+            family_key = rel['id'].split('-')[0] if rel and rel.get('id') else None
+            group = group_by_family_key.get(family_key)
+            if group is None:
+                if other_group is None:
+                    other_group = {"spouse": None, "children": []}
+                group = other_group
+            group["children"].append(child)
+
+        if other_group is not None:
+            groups.append(other_group)
+        if not groups:
+            groups.append({"spouse": None, "children": []})
+
+        return groups
+
+    def family_switcher_label(self, group):
+        count = len(group["children"])
+        spouse = group["spouse"]
+        if not spouse:
+            return f"No listed spouse ({count})"
+        name = spouse.get('display', {}).get('name', 'Unknown Name')
+        if name == 'Unknown Name':
+            try: name = spouse['names'][0]['nameForms'][0]['fullText']
+            except Exception: pass
+        return f"⚭ {name} ({count})"
+
+    def on_family_switch(self):
+        self.active_family_index = self.family_switch_var.get()
+        self.render_visual_tab()
+
+    def render_visual_tab(self):
+        """Redraws the visual tab from already-fetched state (self.visual_parents,
+        self.family_groups, self.active_family_index) -- no network calls, so
+        switching the family tab is instant."""
+        self.clear_visual_canvas()
+        selected_person = self.current_visual_person
 
         outer_container = ttk.Frame(self.visual_scrollable_frame)
         outer_container.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
 
-        # Generation 1: PARENTS (Fixed height 190px)
+        # Generation 1: PARENTS
         gen1_frame = ttk.LabelFrame(outer_container, text="Parents", height=190)
         gen1_frame.pack(fill=tk.X, pady=(0, 10))
         gen1_frame.pack_propagate(False)
@@ -675,21 +754,45 @@ class GedcomXBrowserApp:
         parents_inner = ttk.Frame(gen1_frame)
         parents_inner.pack(anchor=tk.CENTER, expand=True)
 
-        if parents:
-            for p in parents:
+        if self.visual_parents:
+            for p in self.visual_parents:
                 card = self.create_person_card(parents_inner, p, is_selected=False)
                 card.pack(side=tk.LEFT, padx=10, pady=5)
         else:
             ttk.Label(parents_inner, text="No known parents for this person.", font=("Arial", 9, "italic")).pack(expand=True)
 
-        # Generation 2: SELECTED PERSON
+        # Family switcher -- only needed when there's more than one family to choose from
+        if len(self.family_groups) > 1:
+            switcher_frame = ttk.Frame(outer_container)
+            switcher_frame.pack(pady=(0, 5))
+            self.family_switch_var = tk.IntVar(value=self.active_family_index)
+            for idx, group in enumerate(self.family_groups):
+                rb = ttk.Radiobutton(
+                    switcher_frame, text=self.family_switcher_label(group),
+                    variable=self.family_switch_var, value=idx,
+                    command=self.on_family_switch #, style="Toolbutton"
+                )
+                rb.pack(side=tk.LEFT, padx=4)
+
+        active_group = self.family_groups[self.active_family_index]
+
+        # Generation 2: SELECTED PERSON + SPOUSE
         gen2_frame = ttk.Frame(outer_container)
         gen2_frame.pack(fill=tk.X, pady=5)
 
-        main_card = self.create_person_card(gen2_frame, selected_person, is_selected=True)
-        main_card.pack(anchor=tk.CENTER, pady=5)
+        couple_inner = ttk.Frame(gen2_frame)
+        couple_inner.pack(anchor=tk.CENTER)
 
-        # Generation 3: CHILDREN (Fixed height 210px)
+        main_card = self.create_person_card(couple_inner, selected_person, is_selected=True)
+        main_card.pack(side=tk.LEFT, padx=10, pady=5)
+
+        if active_group["spouse"]:
+            ttk.Label(couple_inner, text="⚭", font=("Arial", 14)).pack(side=tk.LEFT, padx=4)
+            spouse_card = self.create_person_card(couple_inner, active_group["spouse"], is_selected=False)
+            spouse_card.pack(side=tk.LEFT, padx=10, pady=5)
+
+        # Generation 3: CHILDREN of the active family only
+        children = active_group["children"]
         gen3_frame = ttk.LabelFrame(outer_container, text=f"Children ({len(children)})", height=210)
         gen3_frame.pack(fill=tk.X, pady=(10, 0))
         gen3_frame.pack_propagate(False)

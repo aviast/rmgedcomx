@@ -46,55 +46,144 @@ response, per the spec's fallback rule in Section 4.10.5 ("If no link to
 request"). This avoids needing separate `/persons/{id}/conclusions` endpoints for a
 read-only server.
 
-## Collection
+## Multiple databases / Collections
 
 The `Collection` state (RS spec Section 4.5, data type defined in the
 [GEDCOM X Record Extensions](https://github.com/FamilySearch/gedcomx-record/blob/master/specifications/record-specification.md#collection))
 is the intended discovery root of a GEDCOM X RS API: it's the one state formally
 specified to carry `persons`, `relationships`, `source-descriptions`, and
 `subcollections` links (Section 4.5.4's transitions table), which is exactly the
-set of top-level resources this server exposes. It was left out of the first cut of
-this project on the assumption that "a collection of genealogical data" was a
+set of top-level resources this server exposes. It was left out of the first cut
+of this project on the assumption that "a collection of genealogical data" was a
 better fit for a hosted, multi-tree, multi-contributor service than for a single
-RootsMagic file opened directly off disk -- but that reasoning doesn't hold up: a
+RootsMagic file opened directly off disk -- but that reasoning didn't hold up: a
 `Collection` doesn't have to be a big, sprawling archive. The spec's `Collection`
 data type is just `id` / `title` / `content` (counts by resource type) / `links`,
 which maps onto a single RootsMagic file perfectly well, and a compliant client
 has nowhere else to start from -- without it, there's no spec-defined way to
-discover that this server has `persons`, `relationships`, `place-descriptions`, and
-`source-descriptions` at all.
+discover that this server has `persons`, `relationships`, `place-descriptions`,
+and `source-descriptions` at all.
 
-So: one RootsMagic file == one `Collection`, with a fixed id (`"main"`, since
-there's never more than one). It's addressable three ways, all returning the same
-content:
+**One RootsMagic file == one `Collection`.** `-db` is repeatable -- pass it
+multiple times to serve several databases in one process, each as its own,
+fully independent `Collection`:
 
-- `GET /` -- the root, for a client that only knows the base URL.
-- `GET /collections` -- the formal `Collections` (list) state; always a single-item
-  list, since this server never manages more than one file at a time.
-- `GET /collections/main` -- the formal `Collection` (single) state, individually
-  addressable per the spec.
+```sh
+./rmgedcomx -db Gould.rmtree -db Family.rmtree -db royal92.rmtree
+```
 
-`content` counts (`CollectionStats` in `internal/rmdb/queries.go`) are computed with
-plain `COUNT(*)` SQL, not by materializing the full resource lists, so hitting `/`
-stays cheap even on a large tree. The relationship count deliberately mirrors the
-exact logic `handleRelationships` uses to build the real list (one `Couple`
-relationship per family with both parents present, plus one `ParentChild`
-relationship per parent-child pair) so the number a client sees here always matches
-what `GET /relationships` actually returns.
+Every resource URL is scoped under its collection: `/collections/{id}/persons/P1`,
+`/collections/{id}/relationships/F3`, and so on -- **not** the bare
+`/persons/P1` an earlier version of this server used. That change was made
+deliberately, after realizing the bare form was a real design flaw once more
+than one database could be open at a time: two different databases' `P1`
+would otherwise be indistinguishable, represented by the identical URL,
+which is a much sharper problem than it sounds -- it means a client (or a
+person) has no way to tell which family `P1` even refers to without
+separately tracking which server instance or session they got that URL
+from. Scoping every resource under its collection's id fixes that
+structurally: the id is part of the URL, not implicit context. Discovery
+states span every collection:
 
-One link is a deliberate, documented departure from the spec: `place-descriptions`.
-The formal transitions table for `Collection` (Section 4.5.4) doesn't define a
-plural rel for the Place Descriptions list state, and neither does the master
-link-relation table (Section 5.2) -- there's a singular `description` rel for one
-place description, but nothing for the list. Rather than leave `/places` completely
-undiscoverable from the Collection, `place-descriptions` is added anyway, following
-the `source-descriptions` naming convention, under Section 4.5.4's explicit
-allowance: "other transitions... is RECOMMENDED where applicable." A strict client
-that only walks formally-specified rels won't find `/places` this way; it'll need
-to know the URL, same as before this change.
+- `GET /` -- the root, for a client that only knows the base URL. Serves the
+  `Collections` list (see below), not a single `Collection` -- with
+  potentially more than one collection open, there's no longer a single one
+  for the root to unambiguously be.
+- `GET /collections` -- the formal `Collections` (list) state: every
+  collection currently open, in the order their `-db` flags were given.
+- `GET /collections/{id}` -- the formal `Collection` (single) state for one
+  of them.
 
-The `title` shown is the `-db` file's name (without extension) by default, or
-whatever `-title` is set to.
+Architecturally, this is deliberately *not* implemented by threading a
+collection id through every handler and builder function. Each `*api.Server`
+(in `internal/api/server.go`) stays exactly what it always was: scoped to
+one database, unaware any other might exist. `internal/api/multi.go`
+(`NewMultiCollectionHandler`) is the only thing that knows there can be
+more than one -- it owns the cross-collection `Collections`/`Collection`
+handlers, and mounts each `Server`'s own resource routes
+(`Server.resourceHandler()`) under `/collections/{id}/` via
+`http.StripPrefix`. `Server.url()` builds every resource link against a
+precomputed, collection-scoped base URL (`BaseURL + "/collections/" + ID`),
+so `convert.go` and `handlers.go` needed no changes at all to produce
+correctly-scoped links -- they were already only ever building links
+relative to "this collection's base," which now simply includes the
+`/collections/{id}` prefix. (`Server.globalURL()` is the one exception,
+used only for the `subcollections` link, which intentionally points outside
+the collection's own scope, at the global `/collections` list.)
+
+`content` counts (`CollectionStats` in `internal/rmdb/queries.go`) are
+computed with plain `COUNT(*)` SQL, not by materializing the full resource
+lists, so listing collections stays cheap even with several large trees
+open. The relationship count deliberately mirrors the exact logic
+`handleRelationships` uses to build the real list (one `Couple` relationship
+per family with both parents present, plus one `ParentChild` relationship
+per parent-child pair) so the number a client sees here always matches what
+`GET /collections/{id}/relationships` actually returns.
+
+One link is a deliberate, documented departure from the spec:
+`place-descriptions`. The formal transitions table for `Collection`
+(Section 4.5.4) doesn't define a plural rel for the Place Descriptions list
+state, and neither does the master link-relation table (Section 5.2) --
+there's a singular `description` rel for one place description, but nothing
+for the list. Rather than leave `/places` completely undiscoverable from the
+Collection, `place-descriptions` is added anyway, following the
+`source-descriptions` naming convention, under Section 4.5.4's explicit
+allowance: "other transitions... is RECOMMENDED where applicable." A strict
+client that only walks formally-specified rels won't find `/places` this
+way; it'll need to know the URL, same as before this change.
+
+### Collection ids and titles: human-recognizable, not persistent
+
+`internal/collectionid` derives each collection's id and title from two
+things: the RootsMagic **Home Person** (`RootPerson` in `ConfigTable`,
+read via `rmdb.RootPersonDisplayName()` -- a plain integer PersonID inside
+`ConfigTable`'s Database Configuration record, which is itself plain,
+human-readable XML, not an opaque format; see "SQLite driver" below for
+the same kind of discovery about a different `ConfigTable` record) and the
+database's filename. Both are combined deliberately, not just as a
+fallback: the Home Person's name is what a human actually recognizes a
+family tree by, but the filename is what disambiguates between multiple
+exports/backups of the *same* tree over time, where the Home Person is
+identical between them and only the filename differs. RootsMagic's own
+auto-backup naming embeds a timestamp in the filename for exactly this
+reason (`Gould - 2024 06 24 09-29.rmtree`), and rather than parsing out
+"the timestamp" specifically -- fragile, and only correct for RootsMagic's
+own naming convention -- `Derive` just uses the whole filename stem, which
+captures that case for free and degrades gracefully for any other naming.
+A trivial numeric-suffix pass (`Dedupe`) runs across the whole batch of
+collections at startup as a last resort, only ever visible in the rare
+case two collections would otherwise land on the exact same id.
+
+**This server makes no promise that a given database is represented by the
+same Collection id across restarts, and deliberately doesn't try to.** A
+few concrete ways it can't be, no matter how the id is derived: the Home
+Person is a user-editable setting in RootsMagic, not a fixed property of
+the file; files get renamed, moved, or restored from backup; and which
+`-db` flags are passed, and in what order, is under the user's control
+each time the server starts. A technically stable identifier *does* exist
+-- RootsMagic assigns a `UniqueID` per database at creation
+(`ConfigTable`'s XML again) that never changes -- but it's a meaningless
+opaque string to a human, and the whole point of the id is to be something
+a person glances at and recognizes. Chasing strict persistence would have
+meant either accepting an unrecognizable id, or maintaining a local
+id-to-file mapping across runs -- state this server otherwise has no
+reason to keep, for a guarantee that isn't actually achievable end-to-end
+regardless (a human can always rename a file or change the Home Person
+between one run and the next).
+
+So the design leans the other way entirely: derive the friendliest id
+reasonably possible, accept that it can drift, and make that fact
+impossible to miss. At startup, the server prints a table mapping every
+collection id to its title and source file (see `cmd/server/main.go`,
+`printCollectionTable`); a person reads that table and connects a client
+to the right id for that session. **No client should persist a collection
+id across sessions** -- discover fresh via `GET /collections` every time a
+client starts, the way `gedcomx_browser.py` already does. The README
+states this plainly, not just here.
+
+The `-title` flag from an earlier version of this server is gone --
+title is now always derived the same way as the id (there's no longer a
+single collection for a standalone override to unambiguously apply to).
 
 ## Multimedia
 
@@ -164,22 +253,29 @@ Two real limits worth knowing about, not glossed over:
   isn't some opaque binary format; it's plain, readable XML (confirmed by
   dumping it: `<Root><Version>9000</Version>...`), with ~160 tags covering
   UI column widths, name/place formatting rules, FamilySearch/MyHeritage
-  hint settings, and so on. It was checked exhaustively against two real
-  files, and neither contains anything resembling a media folder path.
-  That's not a gap in this server's parsing -- the Media Folder setting
-  genuinely isn't part of the `.rmtree` file's data model at all. It makes
-  sense once you think about it: a folder path is inherently specific to
-  the machine it's configured on, so it almost certainly lives in a local,
-  per-installation setting (most likely the Windows Registry, or an INI
-  file next to the RootsMagic executable, given RootsMagic's Delphi/Windows
-  heritage) rather than travelling with a database file that gets copied,
-  shared, or opened on a different computer. No amount of blob-parsing
-  could recover a value that was never written to the file -- `-media-folder`
-  isn't a workaround for an unparsed format, it's the only way this
-  information can reach this server at all. If any `MediaPath` in your file
-  uses `?`, pass the folder explicitly with `-media-folder`; without it,
-  those items resolve with a clear error (`GET .../content` returns 500
-  naming the problem) rather than silently pointing at the wrong place.
+  hint settings, and so on -- including, as it turns out, `<RootPerson>`,
+  which this server *does* use (see "Multiple databases / Collections"
+  above). It was checked exhaustively against two real files for anything
+  resembling a media folder path, and found nothing. That's not a gap in
+  this server's parsing -- the Media Folder setting genuinely isn't part
+  of the `.rmtree` file's data model at all, and its real location has
+  since been confirmed directly: `%APPDATA%\RootsMagic\Version 9\RootsMagicUser.xml`,
+  under `<Folders><Media>` -- a separate, per-Windows-user application
+  settings file (also plain XML), entirely outside any database file. That
+  makes sense once you think about it: a folder path is inherently
+  specific to the machine it's configured on, so it can't sensibly travel
+  with a database file that gets copied, shared, or opened on a different
+  computer -- and it also confirms the setting is genuinely one value per
+  RootsMagic installation, not per database, which is exactly why
+  `-media-folder` is a single flag shared across every `-db` given, rather
+  than something you'd configure per collection. No amount of
+  `.rmtree`-blob-parsing could ever have recovered this value, since it
+  was never written there in the first place -- `-media-folder` isn't a
+  workaround for an unparsed format, it's the only way this information
+  can reach this server at all. If any `MediaPath` in your file uses `?`,
+  pass the folder explicitly with `-media-folder`; without it, those items
+  resolve with a clear error (`GET .../content` returns 500 naming the
+  problem) rather than silently pointing at the wrong place.
 - **A Windows absolute path (a drive letter) can't be resolved on a
   non-Windows host, full stop** -- `G:\My Drive\...` means nothing on Linux or
   macOS regardless of how cleverly it's parsed. This server passes such paths
