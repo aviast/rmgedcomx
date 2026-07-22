@@ -11,9 +11,9 @@ support things a single-user desktop database doesn't need:
   `localhost`/LAN use, and would get in the way if you want to hit the API from a
   script. If you do want to expose this server on the open internet, put it behind a
   reverse proxy (e.g. Caddy/nginx) with your own auth, or ask for OAuth to be added.
-- **`Records` / `Artifacts`** — these model a hosted archive of scanned records and
-  user-contributed digital artifacts. RootsMagic doesn't have an equivalent concept;
-  your multimedia is closer to `SourceDescription`s than to `Records`.
+- **`Records`** — this models a hosted archive of historical records (e.g. "the
+  1940 U.S. Census" as a queryable collection in its own right). RootsMagic
+  doesn't have an equivalent concept.
 - **Atom search-result feeds** (`Person Search Results`, `Place Search Results`) — a
   real search implementation (indexing, ranking, paging as Atom/JSON feeds) is a
   project in itself. `GET /persons?name=...` is provided instead, as a simpler
@@ -25,19 +25,20 @@ support things a single-user desktop database doesn't need:
   current read-only enforcement is deliberately centralized in one place to make
   that easy to add later.
 
-`Collections` / `Collection` **are** implemented -- see the "Collection" section
-below for why and how.
+`Collections` / `Collection` and `Artifacts` **are** implemented -- see the
+"Collection" and "Multimedia" sections below for why and how.
 
 ### What is included
 
 The resources that map directly onto what's actually in a RootsMagic file, and that
 are useful for read access from another tool (a family tree viewer, a static site
-generator, a chatbot, etc.):
+generator, a Digital Asset Management tool, a chatbot, etc.):
 
 `Collection`, `Collections`, `Person`, `Persons`, `Person Parents`, `Person Children`,
 `Person Spouses`, `Ancestry Results`, `Descendancy Results`, `Relationship`,
 `Relationships`, `Place Description`, `Place Descriptions`, `Source Description`,
-`Source Descriptions`.
+`Source Descriptions`, `Artifacts` (backed by `MultimediaTable` -- scanned
+certificates, photos, and similar).
 
 Each `Person` embeds its conclusions (names, gender, facts) directly in the same
 response, per the spec's fallback rule in Section 4.10.5 ("If no link to
@@ -94,6 +95,128 @@ to know the URL, same as before this change.
 
 The `title` shown is the `-db` file's name (without extension) by default, or
 whatever `-title` is set to.
+
+## Multimedia
+
+`GET /artifacts` and `GET /artifacts/{id}` implement the RS spec's `Artifacts`
+state (Section 4.3), backed by RootsMagic's `MultimediaTable`. Per Section 4.3.3,
+the data returned is a list of the same `SourceDescription` data type used by
+`/source-descriptions` (`resourceType` is set to the more specific
+`http://gedcomx.org/DigitalArtifact` to distinguish artifacts from bibliographic
+sources -- see the doc comment on `ResourceTypeDigitalArtifact` in
+`internal/gedcomx/model.go`), so `internal/api/handlers.go` reuses the same
+`SourceDescriptionsDocument`/`SourceDescriptionDocument` JSON envelope types for
+both endpoints; that's spec-correct, not a shortcut, since the JSON member name
+(`sourceDescriptions`) is a property of the *data type*, not of which state
+returned it.
+
+There's no formally-specified state for "download the actual bytes" -- the
+spec's mechanism for that is `SourceDescription.about`, "a URI for the resource
+being described." This server points `about` (and a non-spec `digital-artifact`
+link, for convenience) at `GET /artifacts/{id}/content`, which streams the raw
+file with a `Content-Type` inferred from the filename and supports HTTP range
+requests (via `http.ServeContent`) -- useful for a client previewing large
+images or seeking within video.
+
+### How photos/certificates attach to people: citations, not just facts
+
+The naive design -- "look up media attached directly to a person or a fact,
+via `MediaLinkTable`" -- turns out to badly undercount real files. Inspecting
+an actual multi-thousand-item RootsMagic database during development showed
+`MediaLinkTable.OwnerType` breaking down roughly as: ~10% attached directly to
+persons, a handful to events, and **the large majority (roughly 90%) attached
+to *citations*** (`OwnerType = 4`, `OwnerID = CitationTable.CitationID`) --
+e.g. a scanned 1911 census image lives on the "1911 Census" citation attached
+to a residence fact, not on the fact itself.
+
+So `buildSourceReferences` in `internal/api/convert.go` (which populates the
+`sources` array on every `Person` and `Fact`) does three lookups and merges
+them, deduplicated: bibliographic sources cited directly, media attached
+directly to the person/family/event/name, and media attached to *that owner's
+citations*. All three show up together in the same `sources` array, as
+`SourceReference`s pointing at either `/source-descriptions/S{id}` or
+`/artifacts/M{id}` depending on which kind of thing they are -- a client
+doesn't need to know which case it is; the URI shape distinguishes them, and
+GEDCOM X doesn't require a `sources` array to point at only one data type.
+This is currently done for `Person` and `Fact` (the common cases); it isn't
+yet done for `Name` (`OwnerType = 7`), which would need the same treatment if
+you find media specifically attached to alternate names rather than to the
+person or a fact.
+
+### Resolving a file to an actual path on disk
+
+RootsMagic's `MultimediaTable.MediaPath` isn't a plain path -- the data
+dictionary documents a leading-symbol convention (`?` = the "Media Folder"
+configured in RootsMagic's Folder Settings window, `~` = home directory, `*` =
+the folder containing the database file), and in practice you'll also see
+absolute paths with no symbol at all (`C:\Users\...`, `G:\My Drive\...` --
+often a cloud-sync-mapped drive letter). `internal/rmdb/mediapath.go`
+(`ResolveMediaPath`) implements this, normalizing backslashes and handling
+each case; `internal/rmdb/mediapath_test.go` covers all of them against
+concrete examples, including bugs this decoder had and no longer has (an
+early version silently dropped the leading `/` off absolute paths, and
+separately misdetected a Windows drive letter like `C:` as a URI scheme).
+
+Two real limits worth knowing about, not glossed over:
+
+- **The `?` (Media Folder) symbol can't be resolved automatically -- but not
+  for the reason you might expect.** `ConfigTable.DataRec` (`RecType = 1`)
+  isn't some opaque binary format; it's plain, readable XML (confirmed by
+  dumping it: `<Root><Version>9000</Version>...`), with ~160 tags covering
+  UI column widths, name/place formatting rules, FamilySearch/MyHeritage
+  hint settings, and so on. It was checked exhaustively against two real
+  files, and neither contains anything resembling a media folder path.
+  That's not a gap in this server's parsing -- the Media Folder setting
+  genuinely isn't part of the `.rmtree` file's data model at all. It makes
+  sense once you think about it: a folder path is inherently specific to
+  the machine it's configured on, so it almost certainly lives in a local,
+  per-installation setting (most likely the Windows Registry, or an INI
+  file next to the RootsMagic executable, given RootsMagic's Delphi/Windows
+  heritage) rather than travelling with a database file that gets copied,
+  shared, or opened on a different computer. No amount of blob-parsing
+  could recover a value that was never written to the file -- `-media-folder`
+  isn't a workaround for an unparsed format, it's the only way this
+  information can reach this server at all. If any `MediaPath` in your file
+  uses `?`, pass the folder explicitly with `-media-folder`; without it,
+  those items resolve with a clear error (`GET .../content` returns 500
+  naming the problem) rather than silently pointing at the wrong place.
+- **A Windows absolute path (a drive letter) can't be resolved on a
+  non-Windows host, full stop** -- `G:\My Drive\...` means nothing on Linux or
+  macOS regardless of how cleverly it's parsed. This server passes such paths
+  through as-is (best effort: if you're running the server on Windows itself,
+  or the drive is genuinely mounted at that letter, it'll work) and returns a
+  clear 404 naming the exact resolved path it tried, rather than a confusing
+  generic error, when the file isn't actually there.
+
+### Items that are links, not files
+
+Not every `MultimediaTable` row is a local file. Databases built partly from
+online-search integrations can have rows where `MediaPath` is already a
+URL-shaped value from an external provider (a real, observed example:
+`MediaPath = http:\search.findmypast.com{0}\transcript?id=...`, `MediaFile` a
+number that's presumably meant to be substituted into the `{0}` placeholder).
+That substitution rule isn't documented anywhere this server could verify, so
+rather than guess and risk presenting a broken link as if it worked,
+`rmdb.LooksLikeExternalReference` just detects the pattern (a URI-scheme-like
+prefix) and, for those items, `buildArtifactDescription` skips `about` and the
+content link entirely and adds a note explaining why. `GET
+/artifacts/{id}/content` for one of these returns a clear 404 rather than
+trying to open `http:\...` as a local file path. The item's other metadata
+(caption, description, citation) is still returned normally -- only the
+"fetch the bytes" part is unavailable.
+
+### MIME type inference
+
+`MediaType` isn't reliably useful for this (RootsMagic's own `MediaType`
+column is a coarse 4-value enum -- Image/File/Sound/Video -- and its `URL`
+column, which sounds like it'd help, is documented as "Not implemented" and
+was empty in every real file used during development). Instead,
+`gedcomx.MediaTypeForFilename` infers a MIME type from the file extension,
+checking a small built-in table first (covering every extension actually
+observed: jpg/jpeg/png/gif/bmp/tif/pdf/doc/docx/htm/html and a few others)
+before falling back to Go's `mime.TypeByExtension`, so behavior doesn't
+depend on the deployment environment having a populated `/etc/mime.types` --
+fine on a typical dev machine, not guaranteed on a minimal container image.
 
 ## RootsMagic version handling
 
@@ -278,14 +401,13 @@ just wrong." Two cases, both wired up in
 
 - **Write transitions** (`POST`/`PUT`/`PATCH`/`DELETE`) on the resources
   this server reads (`Collection`, `Person`, `Relationship`, `Place
-  Description`, `Source Description`) -- the full spec defines
+  Description`, `Source Description`, `Artifacts`) -- the full spec defines
   create/update/delete transitions for these; this server is read-only by
   design (see "Why 'core resources, read-only'" above), so a write attempt
   is a deliberately-unimplemented feature, not a malformed request.
 - **Resource families never read or written at all**: `Records`,
-  `Artifacts`, `Agents`, `Events`, `Person Matches`, and OAuth2
-  (`/oauth2/token`). These get explicit stub routes at their conventional
-  paths.
+  `Agents`, `Events`, `Person Matches`, and OAuth2 (`/oauth2/token`).
+  These get explicit stub routes at their conventional paths.
 
 A genuinely unrecognized path (anything not in the spec and not one of
 these stubs) still returns a plain `404`, matching ordinary REST API

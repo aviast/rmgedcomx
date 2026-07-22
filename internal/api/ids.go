@@ -16,6 +16,7 @@ func nameRef(id int64) string         { return fmt.Sprintf("N%d", id) }
 func factRef(id int64) string         { return fmt.Sprintf("E%d", id) }
 func placeRef(id int64) string        { return fmt.Sprintf("PL%d", id) }
 func sourceRef(id int64) string       { return fmt.Sprintf("S%d", id) }
+func mediaRef(id int64) string        { return fmt.Sprintf("M%d", id) }
 func coupleRef(familyID int64) string { return fmt.Sprintf("F%d", familyID) }
 func parentChildRef(familyID, childID int64, isFather bool) string {
 	if isFather {
@@ -27,6 +28,7 @@ func parentChildRef(familyID, childID int64, isFather bool) string {
 func parsePersonID(s string) (int64, error) { return parsePrefixedID(s, "P") }
 func parsePlaceID(s string) (int64, error)  { return parsePrefixedID(s, "PL") }
 func parseSourceID(s string) (int64, error) { return parsePrefixedID(s, "S") }
+func parseMediaID(s string) (int64, error)  { return parsePrefixedID(s, "M") }
 
 func parsePrefixedID(s, prefix string) (int64, error) {
 	if !strings.HasPrefix(s, prefix) {

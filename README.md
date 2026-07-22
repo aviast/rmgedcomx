@@ -16,9 +16,10 @@ This server implements the **core genealogy resources** of GEDCOM X RS, as a rea
 - `Relationships` / `Relationship`
 - `Place Descriptions` / `Place Description`
 - `Source Descriptions` / `Source Description`
+- `Artifacts` (scanned certificates, photos, and other multimedia)
 
 Not implemented (out of scope for this build): OAuth2 authentication,
-`Records`, `Artifacts`, Atom search-result feeds, and any write operations (`POST`/`DELETE`).
+`Records`, `Agents`, `Events`, Atom search-result feeds, and any write operations (`POST`/`DELETE`).
 See [SCOPE.md](./SCOPE.md) for details and rationale, and for notes on extending the server
 later if you need any of this.
 
@@ -63,17 +64,27 @@ curl http://localhost:8080/persons/P1/ancestry?generations=4
 curl http://localhost:8080/relationships/F3
 curl http://localhost:8080/places/12
 curl http://localhost:8080/source-descriptions/5
+curl http://localhost:8080/artifacts?limit=20
+curl http://localhost:8080/artifacts/M1
+curl http://localhost:8080/artifacts/M1/content -o photo.jpg
 ```
 
 All responses are `application/x-gedcomx-v1+json` (GEDCOM X JSON, with the GEDCOM X RS
-extensions such as `living`, `display`, and `links`). `GET /` returns the `Collection`
+extensions such as `living`, `display`, and `links`), except `GET /artifacts/{id}/content`,
+which streams the raw file with its actual `Content-Type`. `GET /` returns the `Collection`
 state (the discovery root -- see [SCOPE.md](./SCOPE.md#collection) for why), so a client
-that only knows the base URL can find everything else from there.
+that only knows the base URL can find everything else from there. Every `Person`'s and
+`Fact`'s `sources` array includes attached photos/certificates alongside bibliographic
+sources -- see [SCOPE.md](./SCOPE.md#multimedia) for how RootsMagic actually attaches
+media (it's usually via the citation, not the person or fact directly) and for the real
+limits of resolving a `MediaPath` to a file on disk (cloud-drive letters, RootsMagic's
+"Media Folder" setting, and items that turn out to be external links rather than local
+files).
 
 Anything in the GEDCOM X RS spec this server intentionally doesn't implement
-(writes, `Records`, `Artifacts`, `Agents`, `Events`, `Person
-Matches`, OAuth2) returns `501 Not Implemented` rather than a bare `404` --
-see [SCOPE.md](./SCOPE.md) for the full list.
+(writes, `Records`, `Agents`, `Events`, `Person Matches`, OAuth2) returns
+`501 Not Implemented` rather than a bare `404` -- see [SCOPE.md](./SCOPE.md)
+for the full list.
 
 ### Flags
 
@@ -83,6 +94,7 @@ see [SCOPE.md](./SCOPE.md) for the full list.
 | `-addr` | `:8080` | Address to listen on |
 | `-base-url` | `http://localhost:8080` | Base URL used to build absolute links in responses |
 | `-title` | *(the `-db` file's name)* | Title for the `Collection` resource |
+| `-media-folder` | *(none)* | RootsMagic's configured "Media Folder", if any multimedia paths use it (see [SCOPE.md](./SCOPE.md#multimedia)) |
 | `-default-generations` | `4` | Default number of generations for ancestry/descendancy queries |
 | `-max-page-size` | `200` | Maximum number of entries returned by a single paged request |
 

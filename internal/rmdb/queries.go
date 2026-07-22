@@ -375,6 +375,103 @@ func (db *DB) SourceIDsForOwner(ownerType int, ownerID int64) ([]int64, error) {
 	return out, rows.Err()
 }
 
+// CitationIDsForOwner resolves which citations (CitationTable.CitationID)
+// support a given owner (a person, family, event, or name), via
+// CitationLinkTable. Used to then look up media attached to those
+// citations themselves -- see MediaIDsForOwner and SCOPE.md's
+// "Multimedia" section for why that's the dominant real-world pattern for
+// how scanned records get attached in RootsMagic.
+func (db *DB) CitationIDsForOwner(ownerType int, ownerID int64) ([]int64, error) {
+	rows, err := db.sql.Query(`
+		SELECT CitationID FROM CitationLinkTable
+		WHERE OwnerType = ? AND OwnerID = ?
+		ORDER BY CitationID`, ownerType, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("querying citations for owner (%d,%d): %w", ownerType, ownerID, err)
+	}
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// GetMultimediaItem fetches a single multimedia item by MediaID. Returns
+// (nil, nil) if not found.
+func (db *DB) GetMultimediaItem(id int64) (*MultimediaItem, error) {
+	row := db.sql.QueryRow(`
+		SELECT MediaID, MediaType, MediaPath, MediaFile, Caption, RefNumber, Date, Description
+		FROM MultimediaTable WHERE MediaID = ?`, id)
+	var m MultimediaItem
+	if err := row.Scan(&m.MediaID, &m.MediaType, &m.MediaPath, &m.MediaFile, &m.Caption, &m.RefNumber, &m.Date, &m.Description); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying multimedia item %d: %w", id, err)
+	}
+	return &m, nil
+}
+
+// ListMultimedia returns a page of multimedia items ordered by caption,
+// along with the total count.
+func (db *DB) ListMultimedia(limit, offset int) ([]MultimediaItem, int, error) {
+	rows, err := db.sql.Query(`
+		SELECT MediaID, MediaType, MediaPath, MediaFile, Caption, RefNumber, Date, Description
+		FROM MultimediaTable ORDER BY Caption, MediaID LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing multimedia items: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MultimediaItem
+	for rows.Next() {
+		var m MultimediaItem
+		if err := rows.Scan(&m.MediaID, &m.MediaType, &m.MediaPath, &m.MediaFile, &m.Caption, &m.RefNumber, &m.Date, &m.Description); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var total int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM MultimediaTable`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("counting multimedia items: %w", err)
+	}
+	return out, total, nil
+}
+
+// MediaIDsForOwner resolves which multimedia items (MultimediaTable.MediaID)
+// are attached to a given owner (a person, family, event, name, or source),
+// via MediaLinkTable. Mirrors SourceIDsForOwner's shape.
+func (db *DB) MediaIDsForOwner(ownerType int, ownerID int64) ([]int64, error) {
+	rows, err := db.sql.Query(`
+		SELECT MediaID FROM MediaLinkTable
+		WHERE OwnerType = ? AND OwnerID = ?
+		ORDER BY SortOrder, MediaID`, ownerType, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("querying media links for owner (%d,%d): %w", ownerType, ownerID, err)
+	}
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // CollectionStats holds counts of the resource types this server exposes,
 // for the Collection resource's `content` summary.
 type CollectionStats struct {
@@ -382,6 +479,7 @@ type CollectionStats struct {
 	Relationships int
 	Places        int
 	Sources       int
+	Artifacts     int
 }
 
 // CollectionStats computes cheap COUNT(*)-based totals for each resource
@@ -400,6 +498,9 @@ func (db *DB) CollectionStats() (CollectionStats, error) {
 	}
 	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM SourceTable`).Scan(&s.Sources); err != nil {
 		return s, fmt.Errorf("counting sources: %w", err)
+	}
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM MultimediaTable`).Scan(&s.Artifacts); err != nil {
+		return s, fmt.Errorf("counting multimedia items: %w", err)
 	}
 
 	var couples, fatherChild, motherChild int

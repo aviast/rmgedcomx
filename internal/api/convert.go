@@ -147,15 +147,23 @@ func (s *Server) buildPlaceReference(placeID int64) (*gedcomx.PlaceReference, er
 	}, nil
 }
 
+// buildSourceReferences gathers everything that evidences a given owner
+// (a person, family, event, or name) as GEDCOM X SourceReferences: the
+// bibliographic sources cited (via CitationLinkTable -> CitationTable ->
+// SourceTable, pointing at /source-descriptions/S{id}), any multimedia
+// attached directly to the owner (via MediaLinkTable, pointing at
+// /artifacts/M{id}), and -- this turns out to be the dominant real-world
+// case, not an edge case -- any multimedia attached to the *citations*
+// themselves rather than to the owner directly (e.g. a scanned census page
+// attached to the "1911 Census" citation on a person's residence fact,
+// rather than to the fact itself). See SCOPE.md's "Multimedia" section.
 func (s *Server) buildSourceReferences(ownerType int, ownerID int64) ([]gedcomx.SourceReference, error) {
+	var refs []gedcomx.SourceReference
+
 	sourceIDs, err := s.db.SourceIDsForOwner(ownerType, ownerID)
 	if err != nil {
 		return nil, err
 	}
-	if len(sourceIDs) == 0 {
-		return nil, nil
-	}
-	refs := make([]gedcomx.SourceReference, 0, len(sourceIDs))
 	for _, sid := range sourceIDs {
 		id := sourceRef(sid)
 		refs = append(refs, gedcomx.SourceReference{
@@ -163,6 +171,40 @@ func (s *Server) buildSourceReferences(ownerType int, ownerID int64) ([]gedcomx.
 			DescriptionID: id,
 		})
 	}
+
+	seenMedia := map[int64]bool{}
+	addMedia := func(mediaIDs []int64) {
+		for _, mid := range mediaIDs {
+			if seenMedia[mid] {
+				continue
+			}
+			seenMedia[mid] = true
+			id := mediaRef(mid)
+			refs = append(refs, gedcomx.SourceReference{
+				Description:   s.url("/artifacts/" + id),
+				DescriptionID: id,
+			})
+		}
+	}
+
+	directMedia, err := s.db.MediaIDsForOwner(ownerType, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	addMedia(directMedia)
+
+	citationIDs, err := s.db.CitationIDsForOwner(ownerType, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	for _, cid := range citationIDs {
+		citationMedia, err := s.db.MediaIDsForOwner(rmdb.OwnerTypeCitation, cid)
+		if err != nil {
+			return nil, err
+		}
+		addMedia(citationMedia)
+	}
+
 	return refs, nil
 }
 
@@ -213,6 +255,7 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 			{ResourceType: gedcomx.ResourceTypeRelationship, Count: stats.Relationships},
 			{ResourceType: gedcomx.ResourceTypePlaceDescription, Count: stats.Places},
 			{ResourceType: gedcomx.ResourceTypeSourceDescription, Count: stats.Sources},
+			{ResourceType: gedcomx.ResourceTypeDigitalArtifact, Count: stats.Artifacts},
 		},
 		Links: gedcomx.Links{
 			"collection":          {Href: s.url("/collections/" + collectionID)},
@@ -220,6 +263,7 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 			"persons":             {Href: s.url("/persons")},
 			"relationships":       {Href: s.url("/relationships")},
 			"source-descriptions": {Href: s.url("/source-descriptions")},
+			"artifacts":           {Href: s.url("/artifacts")},
 			// "place-descriptions" isn't one of the formally-defined
 			// Collection transitions in RS spec Section 4.5.4 (there's no
 			// plural rel for the Place Descriptions state anywhere in the
@@ -312,11 +356,71 @@ func (s *Server) buildSourceDescription(src rmdb.Source) gedcomx.SourceDescripti
 		sd.Titles = []gedcomx.TextValue{{Value: src.Name}}
 	}
 	citation := strings.TrimSpace(strings.Join(nonEmpty(src.ActualText, src.RefNumber), " -- "))
-	if citation != "" {
-		sd.Citations = []gedcomx.SourceCitation{{Value: citation}}
+	if citation == "" {
+		// citations is REQUIRED (at least one) per the SourceDescription
+		// data type -- fall back to something rather than emit an empty list.
+		citation = strings.TrimSpace(src.Name)
 	}
+	if citation == "" {
+		citation = fmt.Sprintf("RootsMagic source %d", src.SourceID)
+	}
+	sd.Citations = []gedcomx.SourceCitation{{Value: citation}}
 	if src.Comments != "" {
 		sd.Notes = []gedcomx.Note{{Text: src.Comments}}
 	}
+	return sd
+}
+
+// --- Artifacts (multimedia) ---
+
+// buildArtifactDescription converts a RootsMagic MultimediaTable row into a
+// SourceDescription with resourceType DigitalArtifact, per RS spec Section
+// 4.3.3 ("A list of instances of the SourceDescription Data Type... MUST
+// be provided" for the Artifacts state).
+//
+// Two real-world cases, both observed in actual RootsMagic files during
+// development (see SCOPE.md's "Multimedia" section):
+//
+//   - A genuine local file: `about` and the content link point at
+//     GET /artifacts/{id}/content, which streams the actual bytes (see
+//     handleArtifactContent). mediaType is inferred from the filename.
+//   - A web-hint / external reference (MediaPath already looks like a URL,
+//     e.g. from an online-search integration): this server can't reliably
+//     resolve or serve it (see rmdb.LooksLikeExternalReference), so no
+//     `about`/content link is set, and a note explains why -- rather than
+//     presenting a broken link as if it worked.
+func (s *Server) buildArtifactDescription(item rmdb.MultimediaItem) gedcomx.SourceDescription {
+	id := mediaRef(item.MediaID)
+	sd := gedcomx.SourceDescription{
+		ID:           id,
+		ResourceType: gedcomx.ResourceTypeDigitalArtifact,
+		Links:        gedcomx.Links{"description": {Href: s.url("/artifacts/" + id)}},
+	}
+	if item.Caption != "" {
+		sd.Titles = []gedcomx.TextValue{{Value: item.Caption}}
+	}
+
+	citation := strings.TrimSpace(strings.Join(nonEmpty(item.Caption, item.RefNumber, item.MediaFile), " -- "))
+	if citation == "" {
+		citation = fmt.Sprintf("RootsMagic multimedia item %d", item.MediaID)
+	}
+	sd.Citations = []gedcomx.SourceCitation{{Value: citation}}
+
+	if item.Description != "" {
+		sd.Notes = append(sd.Notes, gedcomx.Note{Text: item.Description})
+	}
+
+	if rmdb.LooksLikeExternalReference(item.MediaPath) {
+		sd.Notes = append(sd.Notes, gedcomx.Note{
+			Text: "This item references an external location (" + item.MediaPath +
+				") rather than a local file; this server can't resolve or serve its bytes.",
+		})
+		return sd
+	}
+
+	sd.MediaType = gedcomx.MediaTypeForFilename(item.MediaFile)
+	contentURL := s.url("/artifacts/" + id + "/content")
+	sd.About = contentURL
+	sd.Links["digital-artifact"] = gedcomx.Link{Href: contentURL, Type: sd.MediaType}
 	return sd
 }

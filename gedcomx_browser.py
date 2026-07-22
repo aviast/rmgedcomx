@@ -9,7 +9,7 @@ class GedcomXBrowserApp:
     def __init__(self, root):
         self.root = root
         self.root.title("GEDCOM X RS Hypermedia Browser")
-        self.root.geometry("1450x850")
+        self.root.geometry("1450x830")
 
         self.headers = {'Accept': 'application/x-gedcomx-v1+json'}
         self.server_url_var = tk.StringVar(value="http://localhost:8080")
