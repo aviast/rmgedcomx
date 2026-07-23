@@ -12,11 +12,13 @@ builds:
       - arm64
 
 archives:
-  - formats: [zip]
-
-files:
-  - royal92.rmtree
-  - gedcomx_browser.py
+  - id: default
+    formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENCE
+      - royal92.rmtree
+      - gedcomx_browser.py
 
 release:
   github:
