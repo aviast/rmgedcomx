@@ -1,0 +1,5 @@
+# Python dependencies for gedcomx_browser.py
+# Pinned for reproducibility -- if you're using conda, prefer
+# `conda env create -f environment.yml` instead, which installs this same
+# pinned version via its pip: section alongside the rest of the environment.
+tkintermapview==1.30

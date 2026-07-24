@@ -22,7 +22,7 @@ type CollectionEntry struct {
 // "Multiple databases / Collections" section for the design this
 // implements.
 //
-// It builds three things:
+// It builds two things:
 //
 //  1. The Collections/Collection discovery states (RS spec Sections 4.4,
 //     4.5), which necessarily span every collection -- these can't live on
@@ -30,10 +30,17 @@ type CollectionEntry struct {
 //     them. GET / serves the same content as GET /collections (the
 //     Collections list) rather than a single Collection: with potentially
 //     more than one collection open, there's no longer a single one for
-//     the root to unambiguously be.
-//  2. A single global 501 stub for OAuth2 (/oauth2/token) -- authentication
-//     isn't a per-collection concept.
-//  3. Each collection's own resource routes (persons, relationships, ...),
+//     the root to unambiguously be. Only GET is registered for either --
+//     see resourceHandler's doc comment for why that's deliberate and
+//     sufficient (Go's ServeMux handles write attempts and HEAD/OPTIONS
+//     correctly without any help). OAuth2 (/oauth2/token) isn't registered
+//     at all: Section 9 of the spec makes authentication a "MAY", not a
+//     requirement, this server has no protected states to gate behind it,
+//     and nothing in this server's own links ever advertises that URL to a
+//     client -- so it's simply absent, a plain 404 like any other
+//     nonexistent path, rather than a stub pretending to be a real,
+//     not-yet-built feature.
+//  2. Each collection's own resource routes (persons, relationships, ...),
 //     mounted under /collections/{id}/ by stripping that prefix and
 //     delegating to that collection's own Server.resourceHandler().
 func NewMultiCollectionHandler(entries []CollectionEntry) http.Handler {
@@ -83,22 +90,10 @@ func NewMultiCollectionHandler(entries []CollectionEntry) http.Handler {
 		writeJSON(w, http.StatusOK, gedcomx.CollectionDocument{Collections: []gedcomx.Collection{c}, Links: c.Links})
 	})
 
-	collectionsNotImplemented := notImplemented(
-		"this server is read-only; create/update/delete transitions on this resource are not implemented")
-	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
-		mux.HandleFunc(method+" /collections", collectionsNotImplemented)
-		mux.HandleFunc(method+" /collections/{id}", collectionsNotImplemented)
-	}
-
-	oauthNotImplemented := notImplemented("OAuth2 is not implemented; this server has no authentication")
-	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
-		mux.HandleFunc(method+" /oauth2/token", oauthNotImplemented)
-	}
-
 	for _, e := range entries {
 		prefix := "/collections/" + e.ID
 		mux.Handle(prefix+"/", http.StripPrefix(prefix, e.Server.resourceHandler()))
 	}
 
-	return withLogging(withGedcomXContentType(mux))
+	return withLogging(withContentNegotiation(mux))
 }

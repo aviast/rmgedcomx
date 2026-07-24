@@ -6,6 +6,13 @@ import urllib.error
 import urllib.parse
 import json
 
+try:
+    from tkintermapview import TkinterMapView
+    MAP_AVAILABLE = True
+except ImportError:
+    TkinterMapView = None
+    MAP_AVAILABLE = False
+
 class GedcomXBrowserApp:
     def __init__(self, root):
         self.root = root
@@ -158,6 +165,10 @@ class GedcomXBrowserApp:
 
         self.ancestry_tab = ttk.Frame(self.details_notebook)
         self.details_notebook.add(self.ancestry_tab, text="Ancestry")
+
+        self.place_tab = ttk.Frame(self.details_notebook)
+        self.details_notebook.add(self.place_tab, text="Place")
+        self.setup_place_tab()
 
         self.json_tab = ttk.Frame(self.details_notebook)
         self.details_notebook.add(self.json_tab, text="Details (JSON)")
@@ -479,19 +490,26 @@ class GedcomXBrowserApp:
                 self.render_link_buttons(self.current_document.get('links', {}), "Active Resource")
 
                 main_person = None
+                main_place = None
                 if self.current_document.get('persons'):
                     main_person = self.current_document['persons'][0]
                     self.draw_3_generation_view(main_person)
                     self.render_person_detail_tab(main_person)
                     self.render_ancestry_tab(main_person)
+                    self.render_place_tab(None)
                 else:
                     self.clear_visual_canvas()
                     self.render_empty_visual_state("No visual representation mapped for this resource.")
                     self.render_person_detail_tab(None)
                     self.ancestry_canvas.delete("all")
+                    if self.current_document.get('places'):
+                        main_place = self.current_document['places'][0]
+                    self.render_place_tab(main_place)
 
                 if main_person:
                     self.highlight_entity_in_tree(main_person.get('id'))
+                elif main_place:
+                    self.highlight_entity_in_tree(main_place.get('id'))
 
                 self.show_notification(f"State loaded successfully from {href}", "success")
 
@@ -563,6 +581,7 @@ class GedcomXBrowserApp:
         self.render_empty_visual_state("Select an entity from the list to view its details.")
         self.render_person_detail_tab(None)
         self._render_ancestry_empty_state("Select an entity from the list to view its details.")
+        self.render_place_tab(None)
 
     # --- Treeview Logic ---
     def sort_entity_tree(self, column):
@@ -889,6 +908,96 @@ class GedcomXBrowserApp:
         sources = person_data.get('sources', [])
         if sources:
             add_row("Sources", f"{len(sources)} attached")
+
+    # --- Place tab: header + embedded OpenStreetMap view ---
+    def setup_place_tab(self):
+        """Builds the Place tab: a small header with the place's name/type/
+        note, and either an embedded OpenStreetMap view (via tkintermapview,
+        when the place has coordinates) or a placeholder message otherwise
+        (no coordinates recorded, nothing selected yet, or tkintermapview
+        isn't installed)."""
+        header = ttk.Frame(self.place_tab)
+        header.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        self.place_title_label = tk.Label(header, text="", font=("Arial", 13, "bold"), anchor="w")
+        self.place_title_label.pack(fill=tk.X)
+
+        self.place_subtitle_label = tk.Label(header, text="", font=("Arial", 9), fg="gray", anchor="w")
+        self.place_subtitle_label.pack(fill=tk.X)
+
+        self.place_map_container = ttk.Frame(self.place_tab)
+        self.place_map_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.place_map_widget = None
+        if MAP_AVAILABLE:
+            self.place_map_widget = TkinterMapView(self.place_map_container, corner_radius=0)
+            # This is already tkintermapview's default tile server, set
+            # explicitly so it's obvious at a glance which provider is in use.
+            self.place_map_widget.set_tile_server("https://a.tile.openstreetmap.org/{z}/{x}/{y}.png", max_zoom=19)
+
+        self.place_map_placeholder = ttk.Label(
+            self.place_map_container, font=("Arial", 11, "italic"),
+            anchor="center", justify=tk.CENTER, wraplength=500
+        )
+
+        self.render_place_tab(None)
+
+    def render_place_tab(self, place_data):
+        """Populates the Place tab from a GEDCOM X PlaceDescription document.
+        Pass None to clear it (switching Collections, or the active resource
+        isn't a Place)."""
+        if not place_data:
+            self.place_title_label.config(text="")
+            self.place_subtitle_label.config(text="")
+            self._show_place_placeholder("Select a Place from the list to view its details.")
+            return
+
+        display = place_data.get('display') or {}
+        name = display.get('fullName') or display.get('name')
+        if not name:
+            try: name = place_data['names'][0]['value']
+            except Exception: name = "Unknown Place"
+        self.place_title_label.config(text=name)
+
+        subtitle_parts = []
+        place_type = display.get('type')
+        if place_type and place_type != "Place":
+            subtitle_parts.append(place_type)
+        try:
+            note_text = place_data['notes'][0]['text']
+            if note_text:
+                subtitle_parts.append(note_text)
+        except Exception:
+            pass
+        self.place_subtitle_label.config(text="  •  ".join(subtitle_parts))
+
+        lat = place_data.get('latitude')
+        lon = place_data.get('longitude')
+
+        if lat is None or lon is None:
+            self._show_place_placeholder("No coordinates recorded for this place.")
+            return
+
+        if not MAP_AVAILABLE:
+            self._show_place_placeholder(
+                f"Coordinates: {lat:.5f}, {lon:.5f}\n\n"
+                "Install the 'tkintermapview' package to display this place on a map:\n"
+                "pip install tkintermapview"
+            )
+            return
+
+        self.place_map_placeholder.pack_forget()
+        self.place_map_widget.pack(fill=tk.BOTH, expand=True)
+        self.place_map_widget.delete_all_marker()
+        self.place_map_widget.set_position(lat, lon)
+        self.place_map_widget.set_marker(lat, lon, text=name)
+        self.place_map_widget.set_zoom(12)
+
+    def _show_place_placeholder(self, message):
+        if self.place_map_widget is not None:
+            self.place_map_widget.pack_forget()
+        self.place_map_placeholder.config(text=message)
+        self.place_map_placeholder.pack(fill=tk.BOTH, expand=True)
 
     def _link_href(self, links, relation):
         link = links.get(relation)
