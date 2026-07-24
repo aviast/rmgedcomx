@@ -101,11 +101,13 @@ curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts/M1
 curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts/M1/content -o photo.jpg
 ```
 
-All responses are `application/x-gedcomx-v1+json` (GEDCOM X JSON, with the GEDCOM X RS
-extensions such as `living`, `display`, and `links`), except `.../artifacts/{id}/content`,
-which streams the raw file with its actual `Content-Type`. `GET /` returns the `Collections`
-list (the discovery root -- see [SCOPE.md](./SCOPE.md#multiple-databases--collections) for
-why), so a client that only knows the base URL can find everything else from there. Every
+Responses use `application/x-gedcomx-v1+json` (GEDCOM X JSON), the one representation this
+server produces -- a request with an `Accept` header that excludes it gets `406 Not
+Acceptable` rather than JSON anyway, and every response carries `Vary: Accept` to say so.
+The one exception is `.../artifacts/{id}/content`, which streams the raw file with its own
+real `Content-Type` and isn't part of the GEDCOM X JSON profile at all. `GET /` returns the
+`Collections` list (the discovery root -- see [SCOPE.md](./SCOPE.md#multiple-databases--collections)
+for why), so a client that only knows the base URL can find everything else from there. Every
 `Person`'s and `Fact`'s `sources` array includes attached photos/certificates alongside
 bibliographic sources -- see [SCOPE.md](./SCOPE.md#multimedia) for how RootsMagic actually
 attaches media (it's usually via the citation, not the person or fact directly) and for the
@@ -113,10 +115,12 @@ real limits of resolving a `MediaPath` to a file on disk (cloud-drive letters, R
 "Media Folder" setting, and items that turn out to be external links rather than local
 files).
 
-Anything in the GEDCOM X RS spec this server intentionally doesn't implement
-(writes, `Records`, `Agents`, `Events`, `Person Matches`, OAuth2) returns
-`501 Not Implemented` rather than a bare `404` -- see [SCOPE.md](./SCOPE.md)
-for the full list.
+Writing to a resource that exists (anything other than `GET`) gets a `405 Method Not
+Allowed` with a correct `Allow` header; a URL this server doesn't implement at all
+(`Records`, `Agents`, `Events`, `Person Matches`, OAuth2) gets a plain `404` -- see
+[SCOPE.md](./SCOPE.md#http-semantics) for the reasoning. Error bodies follow
+[RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) Problem Details (`application/problem+json`:
+`title`, `status`, `detail`), not a bespoke shape.
 
 ### Flags
 

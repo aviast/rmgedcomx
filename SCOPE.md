@@ -486,35 +486,113 @@ the pinned `v1.34.1` version in `go.mod` being retracted or superseded;
 check `https://pkg.go.dev/modernc.org/sqlite?tab=versions` for the current
 recommended version and bump it.
 
-## HTTP 501 for unimplemented spec surface
+## HTTP semantics
 
-Anything in the GEDCOM X RS spec that this server deliberately doesn't
-implement returns `501 Not Implemented` with a small JSON body (`error`,
-`detail`, `seeAlso`), rather than a generic `404`, so a client can tell
-"this exists in the spec but isn't built here" apart from "this URL is
-just wrong." Two cases, both wired up in
-`internal/api/server.go:registerNotImplemented`:
+An external audit of this server (see repo history around the date of this
+section) raised several genuine issues with how it used HTTP -- status
+codes, content negotiation, error bodies, and paging links -- that this
+section addresses. One point from that audit, custom link relations
+(`place-descriptions`), was a conscious, already-documented choice (see
+"Multiple databases / Collections" above) and wasn't changed; everything
+else here was.
 
-- **Write transitions** (`POST`/`PUT`/`PATCH`/`DELETE`) on the resources
-  this server reads (`Collection`, `Person`, `Relationship`, `Place
-  Description`, `Source Description`, `Artifacts`) -- the full spec defines
-  create/update/delete transitions for these; this server is read-only by
-  design (see "Why 'core resources, read-only'" above), so a write attempt
-  is a deliberately-unimplemented feature, not a malformed request.
-- **Resource families never read or written at all**: `Records`,
-  `Agents`, `Events`, `Person Matches`, and OAuth2 (`/oauth2/token`).
-  These get explicit stub routes at their conventional paths.
+### Status codes: 405/404, not 501, for what this server doesn't do
 
-A genuinely unrecognized path (anything not in the spec and not one of
-these stubs) still returns a plain `404`, matching ordinary REST API
-behavior -- this took one bug fix to get right: `net/http`'s router
-treats a bare `"/"` pattern as a catch-all for every unmatched path, not
-just the literal root, so the root handler is registered as `"GET /{$}"`
-(Go 1.22's exact-match syntax) instead.
+An earlier version of this server explicitly registered handlers for
+`POST`/`PUT`/`PATCH`/`DELETE` on every resource, and for whole unimplemented
+resource families (`Records`, `Agents`, `Events`, `Person Matches`,
+`/oauth2/token`), all returning a custom `501 Not Implemented` body. That
+was a genuine misuse of `501`, which per RFC 7231 is about the server not
+supporting a request's functionality *at all* (classically, an unrecognized
+method) -- not the correct code for "this resource exists and I understood
+your request perfectly, I just won't do that here" (`405 Method Not
+Allowed`, which the spec requires to carry an `Allow` header listing what
+*is* supported) or "this URL doesn't correspond to anything on this server"
+(plain `404`).
 
-## Pagination
+The fix ended up being to delete code, not add it. Verified empirically
+(not assumed) against Go 1.22's `net/http.ServeMux`: a path registered only
+for `GET` automatically returns `405` with a correct `Allow: GET, HEAD`
+header for any other method, `HEAD` requests are automatically answered
+from the `GET` handler with the body discarded, and a path that was never
+registered at all returns a plain `404` -- all with zero custom code. So
+`internal/api/server.go`'s `resourceHandler()` and
+`internal/api/multi.go`'s top-level routes now register `GET` only, for
+exactly the resources this server implements, and nothing else --
+including no explicit `/oauth2/token` route at all. That's not an
+oversight: RS spec Section 9 makes authentication a `MAY`, this server has
+no protected states to gate behind it, and nothing in this server's own
+`links` ever advertises that URL to a client, so there's nothing for a
+stub to usefully guard against. A client that goes looking for it anyway
+gets a plain 404, same as any other URL this server was never going to
+recognize -- genuinely, not just nominally: `net/http`'s router treats a
+bare `"/"` pattern as a catch-all for every unmatched path, not just the
+literal root, so `GET /` is registered as `"GET /{$}"` (Go 1.22's
+exact-match syntax) specifically so a typo'd path doesn't quietly get
+served the Collections list instead of a 404.
 
-`Persons`, `Relationships`, `Place Descriptions`, and `Source Descriptions` support
-`?limit=` and `?offset=`, capped by `-max-page-size`. This is a simpler mechanism
-than the spec's full paging-as-links model (Section 7) but follows its spirit
-(`first`/`next`/`prev` links are included when applicable).
+One consequence worth being explicit about: this server no longer
+distinguishes, in its HTTP responses, "a real GEDCOM X RS feature we
+haven't built" from "not a thing at all" -- both are now a plain 404/405.
+That distinction still exists, just relocated to documentation (this file
+and the README) rather than runtime response bodies, which is the more
+correct place for it: a spec-aware client should be consulting a server's
+stated capabilities, not probing error responses to reverse-engineer them.
+
+### Content negotiation: honest about the one format on offer
+
+This server has always produced exactly one representation,
+`application/x-gedcomx-v1+json` -- there's no XML support (a full
+dual-format implementation is disproportionate for what this project
+needs, and nothing has ever asked for it). The gap the audit correctly
+identified: it forced that `Content-Type` on every response regardless of
+what the client's `Accept` header actually asked for, and never sent
+`Vary`. `withContentNegotiation` in `internal/api/server.go` now checks the
+`Accept` header (a plain yes/no check against the one representation this
+server has -- there's nothing to rank with q-values when there's only one
+option) and responds `406 Not Acceptable` if none of it can be satisfied,
+and sets `Vary: Accept` on every response, since the `Content-Type` now
+genuinely does depend on that header. (Not `Vary: Accept-Encoding` too, as
+the audit also suggested -- this server doesn't negotiate encodings at
+all, so claiming it varies on one it doesn't touch would be inaccurate,
+not just incomplete.)
+
+`GET .../artifacts/{id}/content` is deliberately exempt from both checks.
+It isn't a GEDCOM X RS state -- it's this server's own extension for
+serving whatever a `SourceDescription`'s `about` points at (see
+"Multimedia" above) -- and its entire purpose is to return the artifact's
+own real `Content-Type` (`image/jpeg`, `application/pdf`, ...), which has
+nothing to do with this server's GEDCOM X JSON profile.
+
+### Error bodies: RFC 7807, not a bespoke shape
+
+GEDCOM X RS doesn't define an error body schema of its own -- error
+responses are outside the spec's scope, left to general HTTP/REST
+convention. This server's own ad hoc `{"error": "..."}` (and, before that,
+"reason"/"seeAlso" fields on 501s) had no standard behind it. Every error
+response is now [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) Problem
+Details (`internal/api/server.go`'s `problemDetails`, `application/problem+json`):
+`title` (from `http.StatusText`), `status`, and `detail` (the specific,
+human-readable explanation this server always provided anyway). `type` is
+deliberately omitted, which RFC 7807 defines as meaning `about:blank` --
+this server doesn't have a taxonomy of distinct problem-type URIs worth
+inventing and maintaining, just a status code and a message per
+occurrence, and the spec's own default fallback says exactly that
+honestly.
+
+### Paging: `first`/`last` too, not just `prev`/`next`
+
+RS spec Section 7 defines four paging rels: `first`, `next`, `prev`,
+`last`. This server's `pagingLinks` originally only ever produced `first`
+alongside `prev` (so never on the first page, where `first` is arguably
+most useful for a client to confirm it's looking at) and never `last` at
+all. `first` and `last` are now included whenever a resource has more than
+one page, on every page (not just relative to a page boundary) -- unlike
+`prev`/`next`, they mark the fixed ends of the whole list, not a position
+relative to where the client currently is. `last`'s offset is computed
+from `total`, which the caller already has (`((total-1)/limit)*limit`).
+
+This is still a simpler mechanism than the spec's full paging-as-links
+model overall (`?limit=`/`?offset=` query parameters, not opaque
+server-chosen page tokens), just now complete against what Section 7
+itself defines.

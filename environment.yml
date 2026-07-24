@@ -1,0 +1,22 @@
+# Reproducible environment for gedcomx_browser.py.
+#
+# tkintermapview isn't published on conda channels, so it's installed via
+# pip inside this same conda environment (the standard way to mix the two:
+# let conda solve/install everything it can, then hand the rest to pip in
+# one `pip:` block so it's still captured by this single file).
+#
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate rmgedcomx
+#   python gedcomx_browser.py
+#
+# To update after changing dependencies:
+#   conda env update -f environment.yml --prune
+name: rmgedcomx
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - tkintermapview==1.30

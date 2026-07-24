@@ -73,16 +73,32 @@ func NewServer(db *rmdb.DB, cfg Config) (*Server, error) {
 
 // resourceHandler builds the route table for everything that belongs to
 // this one collection: persons, relationships, places, source
-// descriptions, artifacts, and the 501 stubs for what's deliberately
-// unimplemented within a collection's scope. It does NOT include the
-// Collections/Collection discovery states (GET /, /collections,
-// /collections/{id}) or OAuth2 -- those necessarily span every collection
-// this server has open, not just this one, so they're assembled once, at
-// the top level, by NewMultiCollectionHandler, which mounts this handler
-// under /collections/{id}/ for each collection (via http.StripPrefix).
-// Unwrapped by any middleware for the same reason: logging and the
-// default Content-Type are applied once, at the top level, not per
+// descriptions, and artifacts. It does NOT include the Collections/
+// Collection discovery states (GET /, /collections, /collections/{id}) --
+// those necessarily span every collection this server has open, not just
+// this one, so they're assembled once, at the top level, by
+// NewMultiCollectionHandler, which mounts this handler under
+// /collections/{id}/ for each collection (via http.StripPrefix). Unwrapped
+// by any middleware for the same reason: logging, content negotiation, and
+// the default Content-Type are applied once, at the top level, not per
 // collection.
+//
+// Only GET is ever registered, deliberately: this server is read-only, and
+// resource families the spec defines but this server doesn't implement
+// (Records, Agents, Events, Person Matches, and this collection's own
+// write transitions) are simply never registered at all, rather than
+// wired up to custom "not implemented" handlers. That's not a gap --
+// Go's net/http ServeMux (1.22+) already does exactly the right, standard
+// thing on its own once you don't fight it: a request for a registered
+// path with an unregistered method gets a 405 Method Not Allowed with a
+// correct Allow header populated automatically, HEAD requests against a
+// GET-only registration are answered automatically (body discarded, no
+// separate handler needed), and a path that was never registered at all
+// gets a plain 404. All three were verified empirically against Go 1.22's
+// actual behavior during an audit of this server rather than assumed; see
+// SCOPE.md's "HTTP semantics" section for the detail and for why an
+// earlier version of this server did the opposite (custom 501 responses
+// for all of the above) and was wrong to.
 func (s *Server) resourceHandler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -107,97 +123,70 @@ func (s *Server) resourceHandler() http.Handler {
 	mux.HandleFunc("GET /artifacts/{id}", s.handleArtifact)
 	mux.HandleFunc("GET /artifacts/{id}/content", s.handleArtifactContent)
 
-	registerNotImplemented(mux)
-
 	return mux
 }
 
-// registerNotImplemented wires up HTTP 501 responses for the parts of the
-// GEDCOM X RS specification this server deliberately doesn't implement
-// within a collection's scope (see SCOPE.md), rather than letting them
-// fall through to a generic 404. (Collections/Collection's own write
-// methods, and OAuth2, are handled separately at the top level -- see
-// NewMultiCollectionHandler -- since they aren't collection-scoped.)
+// gedcomXMediaType is the one representation this server produces for
+// every GEDCOM X RS state. There's no XML representation (see SCOPE.md) --
+// full JSON+XML dual support is a large undertaking this personal-use
+// server doesn't need, and no client of it has ever asked for XML.
+const gedcomXMediaType = "application/x-gedcomx-v1+json"
+
+// withContentNegotiation sets Vary: Accept (this response's Content-Type
+// genuinely does depend on the Accept header, via the check below, so
+// advertising that is accurate -- unlike Accept-Encoding, which this
+// server doesn't negotiate on at all and so doesn't claim to) and rejects
+// with 406 Not Acceptable any request whose Accept header excludes the one
+// representation this server can produce, rather than silently sending
+// GEDCOM X JSON regardless of what was asked for.
 //
-// Two categories:
-//
-//  1. Write transitions (POST/PUT/DELETE/PATCH) on the resources this
-//     server does read -- Person, Relationship, Place Description, Source
-//     Description, and Artifacts all define create/update/delete
-//     transitions in the full spec; this server is read-only by design,
-//     so any non-GET on those paths is a deliberately-unimplemented spec
-//     feature, not a bad request.
-//
-//  2. Entire resource families the spec defines that this server never
-//     reads or writes at all: Records, Agents, Events, Person Matches.
-//     These get explicit stub routes at their conventional paths so a
-//     client gets a clear "not implemented" rather than an ambiguous 404.
-func registerNotImplemented(mux *http.ServeMux) {
-	readOnlyResources := []string{
-		"/persons",
-		"/persons/{id}",
-		"/relationships",
-		"/relationships/{id}",
-		"/places",
-		"/places/{id}",
-		"/source-descriptions",
-		"/source-descriptions/{id}",
-		"/artifacts",
-		"/artifacts/{id}",
-		"/artifacts/{id}/content",
-	}
-	writeMethods := []string{"POST", "PUT", "PATCH", "DELETE"}
-	handler := notImplemented(
-		"this server is read-only; create/update/delete transitions on this resource are not implemented")
-	for _, path := range readOnlyResources {
-		for _, method := range writeMethods {
-			mux.HandleFunc(method+" "+path, handler)
-		}
-	}
-
-	unimplementedFamilies := map[string]string{
-		"/records":              "the Records/Record states are not implemented",
-		"/records/{id}":         "the Records/Record states are not implemented",
-		"/agents":               "the Agents/Agent states are not implemented",
-		"/agents/{id}":          "the Agents/Agent states are not implemented",
-		"/events":               "the Events/Event states are not implemented",
-		"/events/{id}":          "the Events/Event states are not implemented",
-		"/persons/{id}/matches": "the Person Matches state is not implemented",
-		"/persons/{id}/matches/{matchId}/working": "the Person Matches Query / Match state is not implemented",
-	}
-	allMethods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
-	for path, reason := range unimplementedFamilies {
-		h := notImplemented(reason)
-		for _, method := range allMethods {
-			mux.HandleFunc(method+" "+path, h)
-		}
-	}
-}
-
-// notImplemented returns a handler that always responds 501, with a JSON
-// body explaining why and pointing to SCOPE.md for the full list of what's
-// implemented.
-func notImplemented(reason string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusNotImplemented, notImplementedBody{
-			Error:   "not implemented",
-			Detail:  reason,
-			SeeAlso: "https://github.com/FamilySearch/gedcomx-rs -- see this server's SCOPE.md for the full list of implemented vs. unimplemented resources",
-		})
-	}
-}
-
-type notImplementedBody struct {
-	Error   string `json:"error"`
-	Detail  string `json:"detail"`
-	SeeAlso string `json:"seeAlso"`
-}
-
-func withGedcomXContentType(next http.Handler) http.Handler {
+// GET .../artifacts/{id}/content is exempt from both checks: it isn't a
+// GEDCOM X RS state at all (see SCOPE.md's "Multimedia" section) -- it's
+// this server's own extension for serving whatever a SourceDescription's
+// `about` points at, and its whole purpose is to return the artifact's own
+// real Content-Type (image/jpeg, application/pdf, ...), not GEDCOM X JSON,
+// so neither "must accept our JSON profile" nor "force our JSON
+// Content-Type" applies to it.
+func withContentNegotiation(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/x-gedcomx-v1+json")
+		w.Header().Set("Vary", "Accept")
+		if strings.HasSuffix(r.URL.Path, "/content") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !acceptsGedcomXJSON(r.Header.Get("Accept")) {
+			writeError(w, http.StatusNotAcceptable,
+				"this server only produces "+gedcomXMediaType+"; none of the media types in your Accept header can be satisfied")
+			return
+		}
+		w.Header().Set("Content-Type", gedcomXMediaType)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// acceptsGedcomXJSON reports whether an Accept header value permits this
+// server's one supported representation. A missing/empty header, or any
+// entry that's "*/*", "application/*", "application/json", or the exact
+// GEDCOM X JSON media type (parameters and case ignored), is accepted.
+// This deliberately isn't full RFC 7231 content negotiation (no q-value
+// ranking) -- with exactly one representation to offer, there's nothing to
+// rank, only a yes/no of whether that one representation is acceptable.
+func acceptsGedcomXJSON(accept string) bool {
+	accept = strings.TrimSpace(accept)
+	if accept == "" {
+		return true
+	}
+	for _, part := range strings.Split(accept, ",") {
+		mediaType := part
+		if i := strings.IndexByte(mediaType, ';'); i >= 0 {
+			mediaType = mediaType[:i]
+		}
+		switch strings.ToLower(strings.TrimSpace(mediaType)) {
+		case "*/*", "application/*", "application/json", gedcomXMediaType:
+			return true
+		}
+	}
+	return false
 }
 
 func withLogging(next http.Handler) http.Handler {
@@ -233,18 +222,34 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		return
 	}
 	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
 		log.Printf("error encoding response: %v", err)
 	}
 }
 
-type errorBody struct {
-	Error string `json:"error"`
+// problemDetails is the RFC 7807 "Problem Details for HTTP APIs" JSON
+// representation (media type application/problem+json). GEDCOM X RS
+// doesn't define its own error body schema -- error responses are outside
+// the spec's own scope, left to general HTTP/REST convention -- so this
+// server uses the standard one rather than a bespoke shape. `type` is
+// deliberately omitted: RFC 7807 says a missing `type` means "about:blank"
+// (no further semantics beyond the HTTP status code itself), which is an
+// honest fit here -- this server doesn't have a taxonomy of distinct
+// problem-type URIs to document and maintain, just a status code and a
+// human-readable detail message for each occurrence.
+type problemDetails struct {
+	Title  string `json:"title"`
+	Status int    `json:"status"`
+	Detail string `json:"detail,omitempty"`
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, errorBody{Error: msg})
+func writeError(w http.ResponseWriter, status int, detail string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	writeJSON(w, status, problemDetails{
+		Title:  http.StatusText(status),
+		Status: status,
+		Detail: detail,
+	})
 }
 
 func notFound(w http.ResponseWriter, kind, id string) {
@@ -293,6 +298,11 @@ func (s *Server) globalURL(path string) string {
 	return s.cfg.BaseURL + path
 }
 
+// pagingLinks builds the first/prev/next/last links defined by RS spec
+// Section 7 ("Paged Application States"). first/last are included
+// whenever there's more than one page, regardless of which page you're
+// currently on (they mark the ends of the whole list, not relative to the
+// current position, unlike prev/next).
 func pagingLinks(s *Server, base string, limit, offset, total int) gedcomx.Links {
 	links := gedcomx.Links{}
 	if offset > 0 {
@@ -301,10 +311,14 @@ func pagingLinks(s *Server, base string, limit, offset, total int) gedcomx.Links
 			prevOffset = 0
 		}
 		links["prev"] = gedcomx.Link{Href: s.url(base + "?limit=" + strconv.Itoa(limit) + "&offset=" + strconv.Itoa(prevOffset))}
-		links["first"] = gedcomx.Link{Href: s.url(base + "?limit=" + strconv.Itoa(limit) + "&offset=0")}
 	}
 	if offset+limit < total {
 		links["next"] = gedcomx.Link{Href: s.url(base + "?limit=" + strconv.Itoa(limit) + "&offset=" + strconv.Itoa(offset+limit))}
+	}
+	if total > limit {
+		links["first"] = gedcomx.Link{Href: s.url(base + "?limit=" + strconv.Itoa(limit) + "&offset=0")}
+		lastOffset := ((total - 1) / limit) * limit
+		links["last"] = gedcomx.Link{Href: s.url(base + "?limit=" + strconv.Itoa(limit) + "&offset=" + strconv.Itoa(lastOffset))}
 	}
 	return links
 }
