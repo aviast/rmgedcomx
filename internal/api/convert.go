@@ -248,9 +248,20 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 	if err != nil {
 		return gedcomx.Collection{}, err
 	}
+
+	// Never fatal to building the Collection: same treatment as
+	// RootPersonDisplayName in collectionid derivation -- if RootsMagic's
+	// UniqueID can't be determined, the Collection is still built, just
+	// without an identifiers entry, rather than failing the whole request.
+	var identifiers gedcomx.Identifiers
+	if uid, err := s.db.UniqueID(); err == nil && uid != "" {
+		identifiers = gedcomx.Identifiers{gedcomx.IdentifierTypeRootsMagicUniqueID: {uid}}
+	}
+
 	return gedcomx.Collection{
-		ID:    s.cfg.ID,
-		Title: s.cfg.Title,
+		ID:          s.cfg.ID,
+		Title:       s.cfg.Title,
+		Identifiers: identifiers,
 		Content: []gedcomx.CollectionContent{
 			{ResourceType: gedcomx.ResourceTypePerson, Count: stats.Persons},
 			{ResourceType: gedcomx.ResourceTypeRelationship, Count: stats.Relationships},

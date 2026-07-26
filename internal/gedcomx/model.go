@@ -297,16 +297,33 @@ type DescendancyResultsDocument struct {
 	Links   Links    `json:"links,omitempty"`
 }
 
+// IdentifierTypeRootsMagicUniqueID is a custom identifier type URI for
+// RootsMagic's own per-database <UniqueID> (see rmdb.UniqueID), exposed on
+// Collection.identifiers. Not part of the GEDCOM X RS spec -- Collection's
+// defined fields (gedcomx-record spec Section 2.1) are id/lang/content/
+// title/size/attribution, with no identifiers field -- but `identifiers`
+// itself is a standard, reusable GEDCOM X JSON mechanism (used elsewhere
+// in this server on Person), and a stable per-database identifier is
+// useful supplementary metadata for a client sophisticated enough to want
+// one, alongside (never instead of) Collection.id -- see SCOPE.md's
+// "Multiple databases / Collections" section for why id itself is
+// deliberately human-recognizable rather than durable. Follows the same
+// custom-URI convention already used for fact types (facttypes.go):
+// http://rootsmagic.local/...
+const IdentifierTypeRootsMagicUniqueID = "http://rootsmagic.local/unique-id"
+
 // Collection is the GEDCOM X Record Extensions "Collection" data type
 // (http://gedcomx.org/v1/Collection, gedcomx-record spec Section 2.1): a
 // collection of genealogical data. A RootsMagic database file is modeled
-// as exactly one Collection -- see SCOPE.md's "Collection" section.
+// as exactly one Collection -- see SCOPE.md's "Multiple databases /
+// Collections" section.
 type Collection struct {
-	ID      string              `json:"id,omitempty"`
-	Lang    string              `json:"lang,omitempty"`
-	Content []CollectionContent `json:"content,omitempty"`
-	Title   string              `json:"title,omitempty"`
-	Links   Links               `json:"links,omitempty"`
+	ID          string              `json:"id,omitempty"`
+	Lang        string              `json:"lang,omitempty"`
+	Content     []CollectionContent `json:"content,omitempty"`
+	Title       string              `json:"title,omitempty"`
+	Identifiers Identifiers         `json:"identifiers,omitempty"`
+	Links       Links               `json:"links,omitempty"`
 }
 
 // CollectionContent is the GEDCOM X Record Extensions "CollectionContent"
