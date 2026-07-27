@@ -36,10 +36,18 @@ class GedcomXBrowserApp:
         self.is_fetching_page = False
         self._ignore_tree_select = False
 
+        # State for Family Tab
         self.visual_parents = []
         self.family_groups = []
         self.active_family_index = 0
         self.current_visual_person = None
+
+        # State for Descendancy Tab
+        self.descendancy_person = None
+        self.descendancy_family_groups = []
+        self.descendancy_active_family_index = 0
+        self.descendancy_active_child = None
+        self.descendancy_grandchildren = []
 
         self.is_busy = False
 
@@ -166,6 +174,9 @@ class GedcomXBrowserApp:
         self.ancestry_tab = ttk.Frame(self.details_notebook)
         self.details_notebook.add(self.ancestry_tab, text="Ancestry")
 
+        self.descendancy_tab = ttk.Frame(self.details_notebook)
+        self.details_notebook.add(self.descendancy_tab, text="Descendancy")
+
         self.place_tab = ttk.Frame(self.details_notebook)
         self.details_notebook.add(self.place_tab, text="Place")
         self.setup_place_tab()
@@ -177,6 +188,7 @@ class GedcomXBrowserApp:
 
         self.setup_visual_canvas()
         self.setup_ancestry_canvas()
+        self.setup_descendancy_canvas()
 
         # The Ancestry canvas can't get accurate geometry until its tab has
         # actually been shown at least once (see _center_ancestry_view) --
@@ -275,6 +287,23 @@ class GedcomXBrowserApp:
         ancestry_hscroll.grid(row=1, column=0, sticky="ew")
         self.ancestry_tab.rowconfigure(0, weight=1)
         self.ancestry_tab.columnconfigure(0, weight=1)
+
+    def setup_descendancy_canvas(self):
+        """Builds a top-to-bottom scrollable area for Descendancy similar to Family"""
+        self.descendancy_canvas = tk.Canvas(self.descendancy_tab, bg="#f5f7fa")
+        self.desc_scrollbar_y = ttk.Scrollbar(self.descendancy_tab, orient="vertical", command=self.descendancy_canvas.yview)
+
+        self.desc_scrollable_frame = ttk.Frame(self.descendancy_canvas)
+        self.desc_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.descendancy_canvas.configure(scrollregion=self.descendancy_canvas.bbox("all"))
+        )
+        self.desc_canvas_window = self.descendancy_canvas.create_window((0, 0), window=self.desc_scrollable_frame, anchor="nw")
+        self.descendancy_canvas.configure(yscrollcommand=self.desc_scrollbar_y.set)
+        self.descendancy_canvas.bind('<Configure>', lambda e: self.descendancy_canvas.itemconfig(self.desc_canvas_window, width=e.width))
+
+        self.descendancy_canvas.pack(side="left", fill="both", expand=True)
+        self.desc_scrollbar_y.pack(side="right", fill="y")
 
     def show_notification(self, message, level="info"):
         colors = {
@@ -496,11 +525,13 @@ class GedcomXBrowserApp:
                     self.draw_3_generation_view(main_person)
                     self.render_person_detail_tab(main_person)
                     self.render_ancestry_tab(main_person)
+                    self.render_descendancy_tab(main_person)
                     self.render_place_tab(None)
                 else:
                     self.clear_visual_canvas()
                     self.render_empty_visual_state("No visual representation mapped for this resource.")
                     self.render_person_detail_tab(None)
+                    self._render_descendancy_empty_state("No visual representation mapped for this resource.")
                     self.ancestry_canvas.delete("all")
                     if self.current_document.get('places'):
                         main_place = self.current_document['places'][0]
@@ -581,6 +612,14 @@ class GedcomXBrowserApp:
         self.render_empty_visual_state("Select an entity from the list to view its details.")
         self.render_person_detail_tab(None)
         self._render_ancestry_empty_state("Select an entity from the list to view its details.")
+
+        self.descendancy_person = None
+        self.descendancy_family_groups = []
+        self.descendancy_active_family_index = 0
+        self.descendancy_active_child = None
+        self.descendancy_grandchildren = []
+        self._render_descendancy_empty_state("Select an entity from the list to view its details.")
+
         self.render_place_tab(None)
 
     # --- Treeview Logic ---
@@ -590,7 +629,6 @@ class GedcomXBrowserApp:
         else:
             self._entity_sort_column = column
             self._entity_sort_reverse = False
-
         self._execute_sort()
 
     def _apply_current_sort(self):
@@ -701,7 +739,6 @@ class GedcomXBrowserApp:
         """User clicked an entity in the master list - fetch and show its state."""
         if self._ignore_tree_select or self.is_busy:
             return
-
         selection = self.entity_tree.selection()
         if not selection:
             return
@@ -716,6 +753,7 @@ class GedcomXBrowserApp:
 
             # Map entity types to their standard GEDCOM X link relations
             target_relations = []
+
             if entity_type == "Person":
                 target_relations = ["person", "self"]
             elif entity_type == "Place":
@@ -768,7 +806,7 @@ class GedcomXBrowserApp:
         center_container.pack(expand=True, fill=tk.BOTH, pady=100)
         ttk.Label(center_container, text=message, font=("Arial", 12, "italic")).pack(anchor=tk.CENTER)
 
-    def create_person_card(self, parent_widget, person_data, is_selected=False):
+    def create_person_card(self, parent_widget, person_data, is_selected=False, on_click=None, on_double_click=None, role_override=None):
         border_color = "#2b5c8f" if is_selected else "#bdc3c7"
         bg_color = "#ebf5fb" if is_selected else "#ffffff"
         border_width = 3 if is_selected else 1
@@ -799,7 +837,7 @@ class GedcomXBrowserApp:
             try: gender = person_data['gender']['type'].split('/')[-1]
             except: pass
 
-        role_text = "Active Person" if is_selected else "Person"
+        role_text = role_override if role_override else ("Active Person" if is_selected else "Person")
         lbl_role = tk.Label(card, text=role_text.upper(), font=("Arial", 8, "bold"), fg="#2b5c8f" if is_selected else "gray", bg=bg_color)
         lbl_role.pack(anchor=tk.W)
 
@@ -818,17 +856,39 @@ class GedcomXBrowserApp:
         pid = person_data.get('id', 'N/A')
         lbl_id = tk.Label(card, text=f"ID: {pid}", font=("Arial", 8), fg="gray", bg=bg_color)
         lbl_id.pack(anchor=tk.W)
-
         clickable_widgets.extend((lbl_gen, lbl_id))
-        if is_selected:
-            # This card already IS the active resource -- clicking it again
-            # would just re-fetch and re-display the exact same thing (the
-            # pointless reload loop). Jump to the Person tab instead.
-            click_handler = lambda e, person=person_data: self.show_person_detail_tab(person)
-        else:
-            click_handler = lambda e, person=person_data: self.open_person_card(person)
+
+        # Dynamic handler defaulting backwards to Family/Ancestry logic if no strict override was passed
+        if on_click is None:
+            if is_selected:
+                on_click = lambda e, person=person_data: self.show_person_detail_tab(person)
+            else:
+                on_click = lambda e, person=person_data: self.open_person_card(person)
+
+        card._click_timer = None
+
+        def handle_click(e, handler=on_click):
+            if on_double_click:
+                if card._click_timer is not None:
+                    card.after_cancel(card._click_timer)
+                card._click_timer = card.after(250, lambda: execute_click(e, handler))
+            else:
+                execute_click(e, handler)
+
+        def execute_click(e, handler):
+            card._click_timer = None
+            handler(e)
+
+        def handle_double_click(e, handler=on_double_click):
+            if card._click_timer is not None:
+                card.after_cancel(card._click_timer)
+                card._click_timer = None
+            handler(e)
+
         for widget in clickable_widgets:
-            widget.bind("<Button-1>", click_handler)
+            widget.bind("<Button-1>", handle_click)
+            if on_double_click:
+                widget.bind("<Double-Button-1>", handle_double_click)
 
         return card
 
@@ -855,7 +915,6 @@ class GedcomXBrowserApp:
         Person document. Pass None to clear it."""
         for item in self.person_detail_tree.get_children():
             self.person_detail_tree.delete(item)
-
         if not person_data:
             return
 
@@ -864,7 +923,6 @@ class GedcomXBrowserApp:
                 self.person_detail_tree.insert("", tk.END, values=(field, value))
 
         display = person_data.get('display', {})
-
         name = display.get('name')
         if not name:
             try: name = person_data['names'][0]['nameForms'][0]['fullText']
@@ -918,10 +976,8 @@ class GedcomXBrowserApp:
         isn't installed)."""
         header = ttk.Frame(self.place_tab)
         header.pack(fill=tk.X, padx=10, pady=(10, 5))
-
         self.place_title_label = tk.Label(header, text="", font=("Arial", 13, "bold"), anchor="w")
         self.place_title_label.pack(fill=tk.X)
-
         self.place_subtitle_label = tk.Label(header, text="", font=("Arial", 9), fg="gray", anchor="w")
         self.place_subtitle_label.pack(fill=tk.X)
 
@@ -939,7 +995,6 @@ class GedcomXBrowserApp:
             self.place_map_container, font=("Arial", 11, "italic"),
             anchor="center", justify=tk.CENTER, wraplength=500
         )
-
         self.render_place_tab(None)
 
     def render_place_tab(self, place_data):
@@ -1034,6 +1089,7 @@ class GedcomXBrowserApp:
             self.show_notification(f"Could not load {relation} for this person: {e}", "warning")
         return []
 
+    # --- Visual Family Tab Integration ---
     def draw_3_generation_view(self, selected_person):
         self.current_visual_person = selected_person
         self.visual_parents = [p for p, _ in self.fetch_relatives(selected_person, "parents")]
@@ -1142,10 +1198,10 @@ class GedcomXBrowserApp:
 
         if active_group["spouse"]:
             ttk.Label(couple_inner, text="⚭", font=("Arial", 14)).pack(side=tk.LEFT, padx=4)
-            spouse_card = self.create_person_card(couple_inner, active_group["spouse"], is_selected=False)
+            spouse_card = self.create_person_card(couple_inner, active_group["spouse"], is_selected=False, role_override="Partner")
             spouse_card.pack(side=tk.LEFT, padx=10, pady=5)
 
-        # Generation 3: CHILDREN of the active family only
+        # Generation 3: CHILDREN
         children = active_group["children"]
         gen3_frame = ttk.LabelFrame(outer_container, text=f"Children ({len(children)})", height=210)
         gen3_frame.pack(fill=tk.X, pady=(10, 0))
@@ -1174,6 +1230,190 @@ class GedcomXBrowserApp:
             children_inner = ttk.Frame(gen3_frame)
             children_inner.pack(anchor=tk.CENTER, expand=True)
             ttk.Label(children_inner, text="No known children for this person.", font=("Arial", 9, "italic")).pack(expand=True)
+
+    # --- Descendancy Tab Rendering (Top-To-Bottom Generational Flow) ---
+    def render_descendancy_tab(self, selected_person):
+        self.descendancy_person = selected_person
+        self.descendancy_family_groups = self.build_family_groups(selected_person)
+        self.descendancy_active_family_index = 0
+        self.descendancy_active_child = None
+        self.descendancy_grandchildren = []
+        self.draw_descendancy_view()
+
+    def on_descendancy_family_switch(self):
+        self.descendancy_active_family_index = self.desc_family_switch_var.get()
+        self.descendancy_active_child = None
+        self.descendancy_grandchildren = []
+        self.draw_descendancy_view()
+
+    def on_descendancy_child_click(self, child_person):
+        if self.is_busy:
+            return
+        self.set_busy(True, "Loading grandchildren...")
+        try:
+            self.descendancy_active_child = child_person
+            children_rels = self.fetch_relatives(child_person, "children")
+            self.descendancy_grandchildren = [c for c, _ in children_rels]
+            self.draw_descendancy_view()
+        finally:
+            self.set_busy(False)
+
+    def on_descendancy_child_double_click(self, child_person):
+        self.open_person_card(child_person)
+
+    def on_descendancy_grandchild_click(self, grandchild_person):
+        """Clicking a grandchild descends one generation within the tab
+        (no full navigation/reload): the current Active Child is promoted
+        to Active Person, and the clicked grandchild becomes the new
+        Active Child, with its own children fetched as the new
+        grandchildren row -- same idea as on_descendancy_child_click, just
+        shifted one generation down."""
+        if self.is_busy or not self.descendancy_active_child:
+            return
+        self.set_busy(True, "Loading...")
+        try:
+            new_active_person = self.descendancy_active_child
+            self.descendancy_person = new_active_person
+            self.descendancy_family_groups = self.build_family_groups(new_active_person)
+
+            # Select whichever family group actually contains the clicked
+            # grandchild as a child, so it shows up (and is highlighted)
+            # in the new Children row rather than defaulting to group 0.
+            grandchild_id = grandchild_person.get('id')
+            match_index = 0
+            for idx, group in enumerate(self.descendancy_family_groups):
+                if any(c.get('id') == grandchild_id for c in group.get('children', [])):
+                    match_index = idx
+                    break
+            self.descendancy_active_family_index = match_index
+
+            self.descendancy_active_child = grandchild_person
+            children_rels = self.fetch_relatives(grandchild_person, "children")
+            self.descendancy_grandchildren = [c for c, _ in children_rels]
+            self.draw_descendancy_view()
+        finally:
+            self.set_busy(False)
+
+    def draw_descendancy_view(self):
+        for widget in self.desc_scrollable_frame.winfo_children():
+            widget.destroy()
+
+        if not self.descendancy_person:
+            return
+
+        outer_container = ttk.Frame(self.desc_scrollable_frame)
+        outer_container.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+
+        # Family switcher -- placed above the couple row (matching the
+        # Family tab), only shown when there's more than one family to
+        # choose from. The couple row below is now a plain, unbordered
+        # Frame with no fixed height (also matching the Family tab), which
+        # is what frees up the room this needed.
+        if len(self.descendancy_family_groups) > 1:
+            switcher_frame = ttk.Frame(outer_container)
+            switcher_frame.pack(pady=(0, 5))
+            self.desc_family_switch_var = tk.IntVar(value=self.descendancy_active_family_index)
+            for idx, group in enumerate(self.descendancy_family_groups):
+                rb = ttk.Radiobutton(
+                    switcher_frame, text=self.family_switcher_label(group),
+                    variable=self.desc_family_switch_var, value=idx,
+                    command=self.on_descendancy_family_switch
+                )
+                rb.pack(side=tk.LEFT, padx=4)
+
+        # Generation 1: ACTIVE PERSON & SPOUSE
+        gen1_frame = ttk.Frame(outer_container)
+        gen1_frame.pack(fill=tk.X, pady=5)
+
+        couple_inner = ttk.Frame(gen1_frame)
+        couple_inner.pack(anchor=tk.CENTER)
+
+        main_card = self.create_person_card(couple_inner, self.descendancy_person, is_selected=True)
+        main_card.pack(side=tk.LEFT, padx=10, pady=5)
+
+        active_group = None
+        if self.descendancy_family_groups:
+            active_group = self.descendancy_family_groups[self.descendancy_active_family_index]
+            if active_group["spouse"]:
+                ttk.Label(couple_inner, text="⚭", font=("Arial", 14)).pack(side=tk.LEFT, padx=4)
+                spouse_card = self.create_person_card(couple_inner, active_group["spouse"], is_selected=False, role_override="Partner")
+                spouse_card.pack(side=tk.LEFT, padx=10, pady=5)
+
+        # Generation 2: CHILDREN
+        children = active_group["children"] if active_group else []
+        gen2_frame = ttk.LabelFrame(outer_container, text=f"Children ({len(children)}) - Double-click to descend, Click to view grandchildren", height=210)
+        gen2_frame.pack(fill=tk.X, pady=(0, 10))
+        gen2_frame.pack_propagate(False)
+
+        if children:
+            child_canvas = tk.Canvas(gen2_frame, height=160, bg="#f5f7fa", highlightthickness=0)
+            child_hscrollbar = ttk.Scrollbar(gen2_frame, orient="horizontal", command=child_canvas.xview)
+
+            child_inner_frame = ttk.Frame(child_canvas)
+            child_inner_frame.bind(
+                "<Configure>",
+                lambda e: child_canvas.configure(scrollregion=child_canvas.bbox("all"))
+            )
+            child_canvas.create_window((0, 0), window=child_inner_frame, anchor="nw")
+            child_canvas.configure(xscrollcommand=child_hscrollbar.set)
+            child_canvas.pack(fill=tk.X, expand=True)
+            child_hscrollbar.pack(fill=tk.X)
+
+            for c in children:
+                is_active = self.descendancy_active_child and c.get('id') == self.descendancy_active_child.get('id')
+                role_text = "Active Child" if is_active else "Child"
+                card = self.create_person_card(
+                    child_inner_frame, c, is_selected=is_active,
+                    on_click=lambda e, p=c: self.on_descendancy_child_click(p),
+                    on_double_click=lambda e, p=c: self.on_descendancy_child_double_click(p),
+                    role_override=role_text
+                )
+                card.pack(side=tk.LEFT, padx=10, pady=5)
+        else:
+            ttk.Label(gen2_frame, text="No known children for this relationship.", font=("Arial", 9, "italic")).pack(expand=True)
+
+        # Generation 3: GRANDCHILDREN
+        gen3_frame = ttk.LabelFrame(outer_container, text="Grandchildren", height=210)
+        gen3_frame.pack(fill=tk.X, pady=(0, 10))
+        gen3_frame.pack_propagate(False)
+
+        if self.descendancy_active_child:
+            g_children = self.descendancy_grandchildren
+            active_child_name = self.descendancy_active_child.get('display', {}).get('name', 'Unknown')
+            gen3_frame.config(text=f"Grandchildren (Children of {active_child_name}) ({len(g_children)})")
+
+            if g_children:
+                g_child_canvas = tk.Canvas(gen3_frame, height=160, bg="#f5f7fa", highlightthickness=0)
+                g_child_hscrollbar = ttk.Scrollbar(gen3_frame, orient="horizontal", command=g_child_canvas.xview)
+
+                g_child_inner_frame = ttk.Frame(g_child_canvas)
+                g_child_inner_frame.bind(
+                    "<Configure>",
+                    lambda e: g_child_canvas.configure(scrollregion=g_child_canvas.bbox("all"))
+                )
+                g_child_canvas.create_window((0, 0), window=g_child_inner_frame, anchor="nw")
+                g_child_canvas.configure(xscrollcommand=g_child_hscrollbar.set)
+                g_child_canvas.pack(fill=tk.X, expand=True)
+                g_child_hscrollbar.pack(fill=tk.X)
+
+                for gc in g_children:
+                    card = self.create_person_card(
+                        g_child_inner_frame, gc, is_selected=False,
+                        on_click=lambda e, p=gc: self.on_descendancy_grandchild_click(p),
+                        role_override="Grandchild"
+                    )
+                    card.pack(side=tk.LEFT, padx=10, pady=5)
+            else:
+                ttk.Label(gen3_frame, text=f"No known children for {active_child_name}.", font=("Arial", 9, "italic")).pack(expand=True)
+        else:
+            ttk.Label(gen3_frame, text="Select a child above to view their children.", font=("Arial", 9, "italic")).pack(expand=True)
+
+    def _render_descendancy_empty_state(self, message):
+        for widget in self.desc_scrollable_frame.winfo_children():
+            widget.destroy()
+        center_container = ttk.Frame(self.desc_scrollable_frame)
+        center_container.pack(expand=True, fill=tk.BOTH, pady=100)
+        ttk.Label(center_container, text=message, font=("Arial", 12, "italic")).pack(anchor=tk.CENTER)
 
     # --- Ancestry tab: a left-to-right pedigree tree ---
     ANCESTRY_MAX_GENERATIONS = 5
