@@ -17,9 +17,10 @@ This server implements the **core genealogy resources** of GEDCOM X RS, as a rea
 - `Place Descriptions` / `Place Description`
 - `Source Descriptions` / `Source Description`
 - `Artifacts` (scanned certificates, photos, and other multimedia)
+- `Events` / `Event` (shared events with multiple participants, e.g. a marriage with witnesses)
 
 Not implemented (out of scope for this build): OAuth2 authentication,
-`Records`, `Agents`, `Events`, Atom search-result feeds, and any write operations (`POST`/`DELETE`).
+`Records`, `Agents`, Atom search-result feeds, and any write operations (`POST`/`DELETE`).
 See [SCOPE.md](./SCOPE.md) for details and rationale, and for notes on extending the server
 later if you need any of this.
 
@@ -99,6 +100,8 @@ curl http://localhost:8080/collections/jean-valerie-gould-gould/source-descripti
 curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts?limit=20
 curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts/M1
 curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts/M1/content -o photo.jpg
+curl http://localhost:8080/collections/jean-valerie-gould-gould/events?limit=20
+curl http://localhost:8080/collections/jean-valerie-gould-gould/events/E2188
 ```
 
 Responses use `application/x-gedcomx-v1+json` (GEDCOM X JSON), the one representation this
@@ -117,7 +120,7 @@ files).
 
 Writing to a resource that exists (anything other than `GET`) gets a `405 Method Not
 Allowed` with a correct `Allow` header; a URL this server doesn't implement at all
-(`Records`, `Agents`, `Events`, `Person Matches`, OAuth2) gets a plain `404` -- see
+(`Records`, `Agents`, `Person Matches`, OAuth2) gets a plain `404` -- see
 [SCOPE.md](./SCOPE.md#http-semantics) for the reasoning. Error bodies follow
 [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) Problem Details (`application/problem+json`:
 `title`, `status`, `detail`), not a bespoke shape.

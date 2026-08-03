@@ -30,6 +30,14 @@ func parsePlaceID(s string) (int64, error)  { return parsePrefixedID(s, "PL") }
 func parseSourceID(s string) (int64, error) { return parsePrefixedID(s, "S") }
 func parseMediaID(s string) (int64, error)  { return parsePrefixedID(s, "M") }
 
+// parseEventID parses the standalone Event resource's id, which
+// deliberately reuses the same "E{EventID}" scheme as factRef -- a Fact
+// nested inside a Person/Relationship and the standalone Event built from
+// the same underlying EventTable row share the same numeric id on
+// purpose, as a discoverable cross-reference between the two (see
+// SCOPE.md's "Events" section).
+func parseEventID(s string) (int64, error) { return parsePrefixedID(s, "E") }
+
 func parsePrefixedID(s, prefix string) (int64, error) {
 	if !strings.HasPrefix(s, prefix) {
 		return 0, fmt.Errorf("invalid id %q: expected prefix %q", s, prefix)

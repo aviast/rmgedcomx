@@ -127,3 +127,35 @@ const (
 	MediaTypeSound = 3
 	MediaTypeVideo = 4
 )
+
+// Witness is a row from WitnessTable: an additional participant in an
+// event, beyond the event's own owner (a Person, or a Family's two
+// parents for a couple event like a marriage). Used to build a GEDCOM X
+// Event's `roles` -- see SCOPE.md's "Events" section.
+type Witness struct {
+	WitnessID int64
+	EventID   int64
+	// PersonID is 0 if this witness is NOT a person recorded in this
+	// database -- RootsMagic then stores their name as free text instead,
+	// in Given/Surname. This matters: GEDCOM X's EventRole.person is
+	// REQUIRED and must resolve to a real Person resource, which a
+	// PersonID=0 witness structurally can't satisfy. See SCOPE.md.
+	PersonID int64
+	RoleID   int64 // RoleTable.RoleID
+	Given    string
+	Surname  string
+	// Note is a substantive free-text note about this witness's
+	// participation (from RootsMagic's "Edit Witness" pane) -- distinct
+	// from Sentence (a display-sentence override, not surfaced by this
+	// server, same treatment as FactTypeTable.Sentence elsewhere).
+	Note string
+}
+
+// Role is a row from RoleTable: a role a witness can play in an event of a
+// given RootsMagic fact type (e.g. "Witness", "Best Man", "Officiant" --
+// free text the user defines via RootsMagic's Edit Role Type window).
+type Role struct {
+	RoleID    int64
+	RoleName  string
+	EventType int64 // FactTypeTable.FactTypeID this role applies to
+}

@@ -5,6 +5,8 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import json
+import re
+import calendar
 
 try:
     from tkintermapview import TkinterMapView
@@ -36,10 +38,18 @@ class GedcomXBrowserApp:
         self.is_fetching_page = False
         self._ignore_tree_select = False
 
+        # State for Family Tab
         self.visual_parents = []
         self.family_groups = []
         self.active_family_index = 0
         self.current_visual_person = None
+
+        # State for Descendancy Tab
+        self.descendancy_person = None
+        self.descendancy_family_groups = []
+        self.descendancy_active_family_index = 0
+        self.descendancy_active_child = None
+        self.descendancy_grandchildren = []
 
         self.is_busy = False
 
@@ -152,10 +162,14 @@ class GedcomXBrowserApp:
         person_tree_frame = ttk.Frame(self.person_tab)
         person_tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.person_detail_tree = ttk.Treeview(
-            person_tree_frame, columns=("Field", "Value"), show="headings", selectmode="none"
+            person_tree_frame, columns=("Date", "Age", "Field", "Value"), show="headings", selectmode="none"
         )
+        self.person_detail_tree.heading("Date", text="Date")
+        self.person_detail_tree.heading("Age", text="Age")
         self.person_detail_tree.heading("Field", text="Field")
         self.person_detail_tree.heading("Value", text="Value")
+        self.person_detail_tree.column("Date", width=110, stretch=False, anchor=tk.W)
+        self.person_detail_tree.column("Age", width=70, stretch=False, anchor=tk.CENTER)
         self.person_detail_tree.column("Field", width=140, stretch=False, anchor=tk.W)
         self.person_detail_tree.column("Value", width=600, anchor=tk.W)
         person_tree_scroll = ttk.Scrollbar(person_tree_frame, orient="vertical", command=self.person_detail_tree.yview)
@@ -165,6 +179,9 @@ class GedcomXBrowserApp:
 
         self.ancestry_tab = ttk.Frame(self.details_notebook)
         self.details_notebook.add(self.ancestry_tab, text="Ancestry")
+
+        self.descendancy_tab = ttk.Frame(self.details_notebook)
+        self.details_notebook.add(self.descendancy_tab, text="Descendancy")
 
         self.place_tab = ttk.Frame(self.details_notebook)
         self.details_notebook.add(self.place_tab, text="Place")
@@ -177,6 +194,7 @@ class GedcomXBrowserApp:
 
         self.setup_visual_canvas()
         self.setup_ancestry_canvas()
+        self.setup_descendancy_canvas()
 
         # The Ancestry canvas can't get accurate geometry until its tab has
         # actually been shown at least once (see _center_ancestry_view) --
@@ -275,6 +293,23 @@ class GedcomXBrowserApp:
         ancestry_hscroll.grid(row=1, column=0, sticky="ew")
         self.ancestry_tab.rowconfigure(0, weight=1)
         self.ancestry_tab.columnconfigure(0, weight=1)
+
+    def setup_descendancy_canvas(self):
+        """Builds a top-to-bottom scrollable area for Descendancy similar to Family"""
+        self.descendancy_canvas = tk.Canvas(self.descendancy_tab, bg="#f5f7fa")
+        self.desc_scrollbar_y = ttk.Scrollbar(self.descendancy_tab, orient="vertical", command=self.descendancy_canvas.yview)
+
+        self.desc_scrollable_frame = ttk.Frame(self.descendancy_canvas)
+        self.desc_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.descendancy_canvas.configure(scrollregion=self.descendancy_canvas.bbox("all"))
+        )
+        self.desc_canvas_window = self.descendancy_canvas.create_window((0, 0), window=self.desc_scrollable_frame, anchor="nw")
+        self.descendancy_canvas.configure(yscrollcommand=self.desc_scrollbar_y.set)
+        self.descendancy_canvas.bind('<Configure>', lambda e: self.descendancy_canvas.itemconfig(self.desc_canvas_window, width=e.width))
+
+        self.descendancy_canvas.pack(side="left", fill="both", expand=True)
+        self.desc_scrollbar_y.pack(side="right", fill="y")
 
     def show_notification(self, message, level="info"):
         colors = {
@@ -496,11 +531,13 @@ class GedcomXBrowserApp:
                     self.draw_3_generation_view(main_person)
                     self.render_person_detail_tab(main_person)
                     self.render_ancestry_tab(main_person)
+                    self.render_descendancy_tab(main_person)
                     self.render_place_tab(None)
                 else:
                     self.clear_visual_canvas()
                     self.render_empty_visual_state("No visual representation mapped for this resource.")
                     self.render_person_detail_tab(None)
+                    self._render_descendancy_empty_state("No visual representation mapped for this resource.")
                     self.ancestry_canvas.delete("all")
                     if self.current_document.get('places'):
                         main_place = self.current_document['places'][0]
@@ -581,6 +618,14 @@ class GedcomXBrowserApp:
         self.render_empty_visual_state("Select an entity from the list to view its details.")
         self.render_person_detail_tab(None)
         self._render_ancestry_empty_state("Select an entity from the list to view its details.")
+
+        self.descendancy_person = None
+        self.descendancy_family_groups = []
+        self.descendancy_active_family_index = 0
+        self.descendancy_active_child = None
+        self.descendancy_grandchildren = []
+        self._render_descendancy_empty_state("Select an entity from the list to view its details.")
+
         self.render_place_tab(None)
 
     # --- Treeview Logic ---
@@ -590,7 +635,6 @@ class GedcomXBrowserApp:
         else:
             self._entity_sort_column = column
             self._entity_sort_reverse = False
-
         self._execute_sort()
 
     def _apply_current_sort(self):
@@ -660,6 +704,19 @@ class GedcomXBrowserApp:
             tree_id = self.entity_tree.insert("", tk.END, values=("Relationship", rid, summary))
             self.loaded_entities[tree_id] = ("Relationship", rel)
 
+        for ev in doc.get('events', []):
+            eid = ev.get('id', 'Unknown')
+            ev_type = ev.get('type', '')
+            type_label = ev_type.rsplit('/', 1)[-1] if ev_type else 'Event'
+            detail_parts = []
+            date_text = (ev.get('date') or {}).get('original')
+            place_text = (ev.get('place') or {}).get('original')
+            if date_text: detail_parts.append(date_text)
+            if place_text: detail_parts.append(place_text)
+            summary = f"{type_label}: {', '.join(detail_parts)}" if detail_parts else type_label
+            tree_id = self.entity_tree.insert("", tk.END, values=("Event", eid, summary))
+            self.loaded_entities[tree_id] = ("Event", ev)
+
     def highlight_entity_in_tree(self, entity_id):
         """Visually selects an entity in the list without triggering navigation."""
         if not entity_id:
@@ -701,7 +758,6 @@ class GedcomXBrowserApp:
         """User clicked an entity in the master list - fetch and show its state."""
         if self._ignore_tree_select or self.is_busy:
             return
-
         selection = self.entity_tree.selection()
         if not selection:
             return
@@ -716,6 +772,7 @@ class GedcomXBrowserApp:
 
             # Map entity types to their standard GEDCOM X link relations
             target_relations = []
+
             if entity_type == "Person":
                 target_relations = ["person", "self"]
             elif entity_type == "Place":
@@ -724,6 +781,8 @@ class GedcomXBrowserApp:
                 target_relations = ["description", "source", "self"]
             elif entity_type == "Relationship":
                 target_relations = ["relationship", "self"]
+            elif entity_type == "Event":
+                target_relations = ["event", "self"]
 
             # Iterate through the preferred hypermedia relations first
             for rel in target_relations:
@@ -768,7 +827,7 @@ class GedcomXBrowserApp:
         center_container.pack(expand=True, fill=tk.BOTH, pady=100)
         ttk.Label(center_container, text=message, font=("Arial", 12, "italic")).pack(anchor=tk.CENTER)
 
-    def create_person_card(self, parent_widget, person_data, is_selected=False):
+    def create_person_card(self, parent_widget, person_data, is_selected=False, on_click=None, on_double_click=None, role_override=None):
         border_color = "#2b5c8f" if is_selected else "#bdc3c7"
         bg_color = "#ebf5fb" if is_selected else "#ffffff"
         border_width = 3 if is_selected else 1
@@ -799,7 +858,7 @@ class GedcomXBrowserApp:
             try: gender = person_data['gender']['type'].split('/')[-1]
             except: pass
 
-        role_text = "Active Person" if is_selected else "Person"
+        role_text = role_override if role_override else ("Active Person" if is_selected else "Person")
         lbl_role = tk.Label(card, text=role_text.upper(), font=("Arial", 8, "bold"), fg="#2b5c8f" if is_selected else "gray", bg=bg_color)
         lbl_role.pack(anchor=tk.W)
 
@@ -818,17 +877,39 @@ class GedcomXBrowserApp:
         pid = person_data.get('id', 'N/A')
         lbl_id = tk.Label(card, text=f"ID: {pid}", font=("Arial", 8), fg="gray", bg=bg_color)
         lbl_id.pack(anchor=tk.W)
-
         clickable_widgets.extend((lbl_gen, lbl_id))
-        if is_selected:
-            # This card already IS the active resource -- clicking it again
-            # would just re-fetch and re-display the exact same thing (the
-            # pointless reload loop). Jump to the Person tab instead.
-            click_handler = lambda e, person=person_data: self.show_person_detail_tab(person)
-        else:
-            click_handler = lambda e, person=person_data: self.open_person_card(person)
+
+        # Dynamic handler defaulting backwards to Family/Ancestry logic if no strict override was passed
+        if on_click is None:
+            if is_selected:
+                on_click = lambda e, person=person_data: self.show_person_detail_tab(person)
+            else:
+                on_click = lambda e, person=person_data: self.open_person_card(person)
+
+        card._click_timer = None
+
+        def handle_click(e, handler=on_click):
+            if on_double_click:
+                if card._click_timer is not None:
+                    card.after_cancel(card._click_timer)
+                card._click_timer = card.after(250, lambda: execute_click(e, handler))
+            else:
+                execute_click(e, handler)
+
+        def execute_click(e, handler):
+            card._click_timer = None
+            handler(e)
+
+        def handle_double_click(e, handler=on_double_click):
+            if card._click_timer is not None:
+                card.after_cancel(card._click_timer)
+                card._click_timer = None
+            handler(e)
+
         for widget in clickable_widgets:
-            widget.bind("<Button-1>", click_handler)
+            widget.bind("<Button-1>", handle_click)
+            if on_double_click:
+                widget.bind("<Double-Button-1>", handle_double_click)
 
         return card
 
@@ -850,64 +931,267 @@ class GedcomXBrowserApp:
         self.render_person_detail_tab(person_data)
         self.details_notebook.select(self.person_tab)
 
+    # Matches the leading "+YYYY", "+YYYY-MM", or "+YYYY-MM-DD" out of a
+    # GEDCOM X formal date value (also tolerates a bare 4-digit year pulled
+    # out of free-text "original" as a fallback) -- used to build a
+    # chronological sort key for the Person tab's timeline rows.
+    _DATE_YEAR_RE = re.compile(r'(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?')
+
+    def _date_sort_key(self, date_obj):
+        """Returns a sortable (has_no_date, year, month, day) tuple from a
+        GEDCOM X Date object, preferring the machine-readable 'formal' field
+        and falling back to a year pulled out of 'original' text. Dates that
+        can't be parsed at all sort after every dated row."""
+        if date_obj:
+            for text in (date_obj.get('formal'), date_obj.get('original')):
+                if not text:
+                    continue
+                m = self._DATE_YEAR_RE.search(text)
+                if m:
+                    year = int(m.group(1))
+                    month = int(m.group(2)) if m.group(2) else 1
+                    day = int(m.group(3)) if m.group(3) else 1
+                    return (0, year, month, day)
+        return (1, 0, 0, 0)
+
+    def _parse_date_precision(self, date_obj):
+        """Returns (year, month, day) from a GEDCOM X Date object, with
+        month/day as None when the source date didn't specify them (unlike
+        _date_sort_key, which defaults missing parts to 1 for ordering
+        purposes -- the Age column needs to know the difference, since an
+        unknown month/day widens the possible age into a range). Returns
+        None if no year at all can be determined."""
+        if date_obj:
+            formal = date_obj.get('formal')
+            if formal:
+                m = self._DATE_YEAR_RE.search(formal)
+                if m:
+                    year = int(m.group(1))
+                    month = int(m.group(2)) if m.group(2) else None
+                    day = int(m.group(3)) if m.group(3) else None
+                    return (year, month, day)
+            original = date_obj.get('original')
+            if original:
+                m = re.search(r'(\d{4})', original)
+                if m:
+                    return (int(m.group(1)), None, None)
+        return None
+
+    @staticmethod
+    def _date_bounds(year, month, day):
+        """Given a possibly-partial (year, month, day), returns the earliest
+        and latest full (y, m, d) dates consistent with it -- e.g. (1950,
+        None, None) spans all of 1950; (1950, 6, None) spans all of June
+        1950. Used to turn missing precision into an age range."""
+        if month is None:
+            return (year, 1, 1), (year, 12, 31)
+        if day is None:
+            last_day = calendar.monthrange(year, month)[1]
+            return (year, month, 1), (year, month, last_day)
+        return (year, month, day), (year, month, day)
+
+    @staticmethod
+    def _age_in_years(event_ymd, birth_ymd):
+        age = event_ymd[0] - birth_ymd[0]
+        if (event_ymd[1], event_ymd[2]) < (birth_ymd[1], birth_ymd[2]):
+            age -= 1
+        return age
+
+    def _compute_age_text(self, event_date_obj, birth_bounds):
+        """Returns the individual's age at event_date_obj, as a single
+        number when both dates are precise enough to pin it down exactly,
+        or a 'lo-hi' range when either date's precision (year-only or
+        month-only) leaves it ambiguous. Returns '' when the event has no
+        usable date, or when it falls entirely before the birth date (e.g.
+        a parent's death shortly before a posthumous birth) -- ages can't
+        be negative."""
+        parsed = self._parse_date_precision(event_date_obj)
+        if not parsed:
+            return ''
+        event_earliest, event_latest = self._date_bounds(*parsed)
+        birth_earliest, birth_latest = birth_bounds
+
+        lo = self._age_in_years(event_earliest, birth_latest)
+        hi = self._age_in_years(event_latest, birth_earliest)
+        if hi < 0:
+            return ''
+        lo = max(lo, 0)
+        return str(lo) if lo == hi else f"{lo}-{hi}"
+
     def render_person_detail_tab(self, person_data):
-        """Populates the Person tab's Field/Value table from a GEDCOM X
-        Person document. Pass None to clear it."""
+        """Populates the Person tab's Date/Age/Field/Value table from a
+        GEDCOM X Person document. Pass None to clear it.
+
+        Rows fall into three groups: undated biographical rows (Name,
+        Gender, ID, ...) stay pinned at the top in their natural order;
+        dated rows -- facts, plus marriage/couple facts pulled from each
+        spouse relationship -- are sorted chronologically in the middle so
+        the table reads as a timeline; Notes/Sources stay pinned at the
+        bottom. Facts without a usable date sort to the end of the
+        timeline group rather than being dropped."""
         for item in self.person_detail_tree.get_children():
             self.person_detail_tree.delete(item)
-
         if not person_data:
             return
 
-        def add_row(field, value):
+        header_rows = []
+        timeline_rows = []
+        trailing_rows = []
+
+        # Pull this person's own Birth/Death facts up front -- Birth anchors
+        # the Age column below, Death bounds "during this person's lifetime"
+        # for the family-death rows further down.
+        person_birth_date = None
+        person_death_key = (1, 0, 0, 0)  # sentinel: "no usable death date"
+        for fact in person_data.get('facts', []):
+            fact_type = fact.get('type', '')
+            label = fact_type.split('/')[-1] if fact_type else ''
+            if label == 'Birth' and person_birth_date is None:
+                person_birth_date = fact.get('date')
+            elif label == 'Death':
+                key = self._date_sort_key(fact.get('date'))
+                if key < person_death_key:
+                    person_death_key = key
+        # True only when this person's own death has a usable date -- that's
+        # the cutoff for "during this person's lifetime" below. If it's
+        # unknown (still living, or a death with no parseable date), there's
+        # no upper bound and every dated family death qualifies.
+        has_dated_death = person_death_key[0] == 0
+
+        birth_precision = self._parse_date_precision(person_birth_date)
+        birth_bounds = self._date_bounds(*birth_precision) if birth_precision else None
+
+        def add_header(field, value):
             if value:
-                self.person_detail_tree.insert("", tk.END, values=(field, value))
+                header_rows.append((field, value))
+
+        def add_trailing(field, value):
+            if value:
+                trailing_rows.append((field, value))
+
+        def add_timeline(date_obj, field, value):
+            if not value:
+                return
+            date_text = (date_obj or {}).get('original', '')
+            age_text = self._compute_age_text(date_obj, birth_bounds) if birth_bounds else ''
+            timeline_rows.append((self._date_sort_key(date_obj), date_text, age_text, field, value))
 
         display = person_data.get('display', {})
-
         name = display.get('name')
         if not name:
             try: name = person_data['names'][0]['nameForms'][0]['fullText']
             except Exception: name = None
-        add_row("Name", name)
+        add_header("Name", name)
 
         for n in person_data.get('names', []):
             try: full_text = n['nameForms'][0]['fullText']
             except Exception: full_text = None
             if full_text and full_text != name:
                 label = f"{n['type'].split('/')[-1]} name" if n.get('type') else "Alternate name"
-                add_row(label, full_text)
+                add_header(label, full_text)
 
         gender = display.get('gender')
         if not gender:
             try: gender = person_data['gender']['type'].split('/')[-1]
             except Exception: gender = None
-        add_row("Gender", gender)
+        add_header("Gender", gender)
 
         if person_data.get('living') is not None:
-            add_row("Living", "Yes" if person_data['living'] else "No")
+            add_header("Living", "Yes" if person_data['living'] else "No")
 
-        add_row("Lifespan", display.get('lifespan'))
-        add_row("ID", person_data.get('id'))
+        add_header("Lifespan", display.get('lifespan'))
+        add_header("ID", person_data.get('id'))
 
         for fact in person_data.get('facts', []):
             fact_type = fact.get('type', '')
             label = fact_type.split('/')[-1] if fact_type else "Fact"
             parts = []
-            date = (fact.get('date') or {}).get('original')
             place = (fact.get('place') or {}).get('original')
             value = fact.get('value')
-            if date: parts.append(date)
             if place: parts.append(place)
             if value: parts.append(value)
-            add_row(label, " — ".join(parts) if parts else "(no detail recorded)")
+            add_timeline(fact.get('date'), label, " — ".join(parts) if parts else "(no detail recorded)")
+
+        # Marriage (and any other Couple-relationship) facts live on the
+        # spouse relationship, not the person, so they need their own fetch.
+        spouses = self.fetch_relatives(person_data, "spouses")
+        for spouse, rel in spouses:
+            spouse_name = spouse.get('display', {}).get('name', 'Unknown Name')
+            if spouse_name == 'Unknown Name':
+                try: spouse_name = spouse['names'][0]['nameForms'][0]['fullText']
+                except Exception: pass
+            for fact in (rel.get('facts', []) if rel else []):
+                fact_type = fact.get('type', '')
+                label = fact_type.split('/')[-1] if fact_type else "Marriage"
+                parts = [f"to {spouse_name}"]
+                place = (fact.get('place') or {}).get('original')
+                value = fact.get('value')
+                if place: parts.append(place)
+                if value: parts.append(value)
+                add_timeline(fact.get('date'), label, " — ".join(parts))
+
+        # Children's births -- like marriage facts, these live on a
+        # different resource (each child's own Person document) rather
+        # than on this person, so they need their own fetch too.
+        children = self.fetch_relatives(person_data, "children")
+        for child, _rel in children:
+            child_name = child.get('display', {}).get('name', 'Unknown Name')
+            if child_name == 'Unknown Name':
+                try: child_name = child['names'][0]['nameForms'][0]['fullText']
+                except Exception: pass
+            for fact in child.get('facts', []):
+                fact_type = fact.get('type', '')
+                if (fact_type.rsplit('/', 1)[-1] if fact_type else '') != 'Birth':
+                    continue
+                place = (fact.get('place') or {}).get('original')
+                parts = [child_name]
+                if place: parts.append(place)
+                add_timeline(fact.get('date'), "Birth of Child", " — ".join(parts))
+
+        # Deaths of immediate family (parents, spouse, children) that
+        # happened during this person's own lifetime -- i.e. strictly
+        # before their own death, when that's known. Spouses and children
+        # are reused from the fetches above; only parents needs a new one.
+        parents = self.fetch_relatives(person_data, "parents")
+        family_members = (
+            [(p, "Parent") for p, _ in parents]
+            + [(s, "Spouse") for s, _ in spouses]
+            + [(c, "Child") for c, _ in children]
+        )
+        for member, relation_label in family_members:
+            member_name = member.get('display', {}).get('name', 'Unknown Name')
+            if member_name == 'Unknown Name':
+                try: member_name = member['names'][0]['nameForms'][0]['fullText']
+                except Exception: pass
+            for fact in member.get('facts', []):
+                fact_type = fact.get('type', '')
+                if (fact_type.rsplit('/', 1)[-1] if fact_type else '') != 'Death':
+                    continue
+                death_key = self._date_sort_key(fact.get('date'))
+                if death_key[0] != 0:
+                    continue  # no usable date -- can't confirm it was "during", so skip
+                if has_dated_death and not (death_key < person_death_key):
+                    continue  # on or after this person's own death
+                place = (fact.get('place') or {}).get('original')
+                parts = [member_name]
+                if place: parts.append(place)
+                add_timeline(fact.get('date'), f"Death of {relation_label}", " — ".join(parts))
 
         for note in person_data.get('notes', []):
-            add_row("Note", note.get('text'))
+            add_trailing("Note", note.get('text'))
 
         sources = person_data.get('sources', [])
         if sources:
-            add_row("Sources", f"{len(sources)} attached")
+            add_trailing("Sources", f"{len(sources)} attached")
+
+        timeline_rows.sort(key=lambda row: row[0])
+
+        for field, value in header_rows:
+            self.person_detail_tree.insert("", tk.END, values=("", "", field, value))
+        for _, date_text, age_text, field, value in timeline_rows:
+            self.person_detail_tree.insert("", tk.END, values=(date_text, age_text, field, value))
+        for field, value in trailing_rows:
+            self.person_detail_tree.insert("", tk.END, values=("", "", field, value))
 
     # --- Place tab: header + embedded OpenStreetMap view ---
     def setup_place_tab(self):
@@ -918,10 +1202,8 @@ class GedcomXBrowserApp:
         isn't installed)."""
         header = ttk.Frame(self.place_tab)
         header.pack(fill=tk.X, padx=10, pady=(10, 5))
-
         self.place_title_label = tk.Label(header, text="", font=("Arial", 13, "bold"), anchor="w")
         self.place_title_label.pack(fill=tk.X)
-
         self.place_subtitle_label = tk.Label(header, text="", font=("Arial", 9), fg="gray", anchor="w")
         self.place_subtitle_label.pack(fill=tk.X)
 
@@ -939,7 +1221,6 @@ class GedcomXBrowserApp:
             self.place_map_container, font=("Arial", 11, "italic"),
             anchor="center", justify=tk.CENTER, wraplength=500
         )
-
         self.render_place_tab(None)
 
     def render_place_tab(self, place_data):
@@ -1034,6 +1315,7 @@ class GedcomXBrowserApp:
             self.show_notification(f"Could not load {relation} for this person: {e}", "warning")
         return []
 
+    # --- Visual Family Tab Integration ---
     def draw_3_generation_view(self, selected_person):
         self.current_visual_person = selected_person
         self.visual_parents = [p for p, _ in self.fetch_relatives(selected_person, "parents")]
@@ -1142,10 +1424,10 @@ class GedcomXBrowserApp:
 
         if active_group["spouse"]:
             ttk.Label(couple_inner, text="⚭", font=("Arial", 14)).pack(side=tk.LEFT, padx=4)
-            spouse_card = self.create_person_card(couple_inner, active_group["spouse"], is_selected=False)
+            spouse_card = self.create_person_card(couple_inner, active_group["spouse"], is_selected=False, role_override="Partner")
             spouse_card.pack(side=tk.LEFT, padx=10, pady=5)
 
-        # Generation 3: CHILDREN of the active family only
+        # Generation 3: CHILDREN
         children = active_group["children"]
         gen3_frame = ttk.LabelFrame(outer_container, text=f"Children ({len(children)})", height=210)
         gen3_frame.pack(fill=tk.X, pady=(10, 0))
@@ -1174,6 +1456,190 @@ class GedcomXBrowserApp:
             children_inner = ttk.Frame(gen3_frame)
             children_inner.pack(anchor=tk.CENTER, expand=True)
             ttk.Label(children_inner, text="No known children for this person.", font=("Arial", 9, "italic")).pack(expand=True)
+
+    # --- Descendancy Tab Rendering (Top-To-Bottom Generational Flow) ---
+    def render_descendancy_tab(self, selected_person):
+        self.descendancy_person = selected_person
+        self.descendancy_family_groups = self.build_family_groups(selected_person)
+        self.descendancy_active_family_index = 0
+        self.descendancy_active_child = None
+        self.descendancy_grandchildren = []
+        self.draw_descendancy_view()
+
+    def on_descendancy_family_switch(self):
+        self.descendancy_active_family_index = self.desc_family_switch_var.get()
+        self.descendancy_active_child = None
+        self.descendancy_grandchildren = []
+        self.draw_descendancy_view()
+
+    def on_descendancy_child_click(self, child_person):
+        if self.is_busy:
+            return
+        self.set_busy(True, "Loading grandchildren...")
+        try:
+            self.descendancy_active_child = child_person
+            children_rels = self.fetch_relatives(child_person, "children")
+            self.descendancy_grandchildren = [c for c, _ in children_rels]
+            self.draw_descendancy_view()
+        finally:
+            self.set_busy(False)
+
+    def on_descendancy_child_double_click(self, child_person):
+        self.open_person_card(child_person)
+
+    def on_descendancy_grandchild_click(self, grandchild_person):
+        """Clicking a grandchild descends one generation within the tab
+        (no full navigation/reload): the current Active Child is promoted
+        to Active Person, and the clicked grandchild becomes the new
+        Active Child, with its own children fetched as the new
+        grandchildren row -- same idea as on_descendancy_child_click, just
+        shifted one generation down."""
+        if self.is_busy or not self.descendancy_active_child:
+            return
+        self.set_busy(True, "Loading...")
+        try:
+            new_active_person = self.descendancy_active_child
+            self.descendancy_person = new_active_person
+            self.descendancy_family_groups = self.build_family_groups(new_active_person)
+
+            # Select whichever family group actually contains the clicked
+            # grandchild as a child, so it shows up (and is highlighted)
+            # in the new Children row rather than defaulting to group 0.
+            grandchild_id = grandchild_person.get('id')
+            match_index = 0
+            for idx, group in enumerate(self.descendancy_family_groups):
+                if any(c.get('id') == grandchild_id for c in group.get('children', [])):
+                    match_index = idx
+                    break
+            self.descendancy_active_family_index = match_index
+
+            self.descendancy_active_child = grandchild_person
+            children_rels = self.fetch_relatives(grandchild_person, "children")
+            self.descendancy_grandchildren = [c for c, _ in children_rels]
+            self.draw_descendancy_view()
+        finally:
+            self.set_busy(False)
+
+    def draw_descendancy_view(self):
+        for widget in self.desc_scrollable_frame.winfo_children():
+            widget.destroy()
+
+        if not self.descendancy_person:
+            return
+
+        outer_container = ttk.Frame(self.desc_scrollable_frame)
+        outer_container.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+
+        # Family switcher -- placed above the couple row (matching the
+        # Family tab), only shown when there's more than one family to
+        # choose from. The couple row below is now a plain, unbordered
+        # Frame with no fixed height (also matching the Family tab), which
+        # is what frees up the room this needed.
+        if len(self.descendancy_family_groups) > 1:
+            switcher_frame = ttk.Frame(outer_container)
+            switcher_frame.pack(pady=(0, 5))
+            self.desc_family_switch_var = tk.IntVar(value=self.descendancy_active_family_index)
+            for idx, group in enumerate(self.descendancy_family_groups):
+                rb = ttk.Radiobutton(
+                    switcher_frame, text=self.family_switcher_label(group),
+                    variable=self.desc_family_switch_var, value=idx,
+                    command=self.on_descendancy_family_switch
+                )
+                rb.pack(side=tk.LEFT, padx=4)
+
+        # Generation 1: ACTIVE PERSON & SPOUSE
+        gen1_frame = ttk.Frame(outer_container)
+        gen1_frame.pack(fill=tk.X, pady=5)
+
+        couple_inner = ttk.Frame(gen1_frame)
+        couple_inner.pack(anchor=tk.CENTER)
+
+        main_card = self.create_person_card(couple_inner, self.descendancy_person, is_selected=True)
+        main_card.pack(side=tk.LEFT, padx=10, pady=5)
+
+        active_group = None
+        if self.descendancy_family_groups:
+            active_group = self.descendancy_family_groups[self.descendancy_active_family_index]
+            if active_group["spouse"]:
+                ttk.Label(couple_inner, text="⚭", font=("Arial", 14)).pack(side=tk.LEFT, padx=4)
+                spouse_card = self.create_person_card(couple_inner, active_group["spouse"], is_selected=False, role_override="Partner")
+                spouse_card.pack(side=tk.LEFT, padx=10, pady=5)
+
+        # Generation 2: CHILDREN
+        children = active_group["children"] if active_group else []
+        gen2_frame = ttk.LabelFrame(outer_container, text=f"Children ({len(children)}) - Double-click to descend, Click to view grandchildren", height=210)
+        gen2_frame.pack(fill=tk.X, pady=(0, 10))
+        gen2_frame.pack_propagate(False)
+
+        if children:
+            child_canvas = tk.Canvas(gen2_frame, height=160, bg="#f5f7fa", highlightthickness=0)
+            child_hscrollbar = ttk.Scrollbar(gen2_frame, orient="horizontal", command=child_canvas.xview)
+
+            child_inner_frame = ttk.Frame(child_canvas)
+            child_inner_frame.bind(
+                "<Configure>",
+                lambda e: child_canvas.configure(scrollregion=child_canvas.bbox("all"))
+            )
+            child_canvas.create_window((0, 0), window=child_inner_frame, anchor="nw")
+            child_canvas.configure(xscrollcommand=child_hscrollbar.set)
+            child_canvas.pack(fill=tk.X, expand=True)
+            child_hscrollbar.pack(fill=tk.X)
+
+            for c in children:
+                is_active = self.descendancy_active_child and c.get('id') == self.descendancy_active_child.get('id')
+                role_text = "Active Child" if is_active else "Child"
+                card = self.create_person_card(
+                    child_inner_frame, c, is_selected=is_active,
+                    on_click=lambda e, p=c: self.on_descendancy_child_click(p),
+                    on_double_click=lambda e, p=c: self.on_descendancy_child_double_click(p),
+                    role_override=role_text
+                )
+                card.pack(side=tk.LEFT, padx=10, pady=5)
+        else:
+            ttk.Label(gen2_frame, text="No known children for this relationship.", font=("Arial", 9, "italic")).pack(expand=True)
+
+        # Generation 3: GRANDCHILDREN
+        gen3_frame = ttk.LabelFrame(outer_container, text="Grandchildren", height=210)
+        gen3_frame.pack(fill=tk.X, pady=(0, 10))
+        gen3_frame.pack_propagate(False)
+
+        if self.descendancy_active_child:
+            g_children = self.descendancy_grandchildren
+            active_child_name = self.descendancy_active_child.get('display', {}).get('name', 'Unknown')
+            gen3_frame.config(text=f"Grandchildren (Children of {active_child_name}) ({len(g_children)})")
+
+            if g_children:
+                g_child_canvas = tk.Canvas(gen3_frame, height=160, bg="#f5f7fa", highlightthickness=0)
+                g_child_hscrollbar = ttk.Scrollbar(gen3_frame, orient="horizontal", command=g_child_canvas.xview)
+
+                g_child_inner_frame = ttk.Frame(g_child_canvas)
+                g_child_inner_frame.bind(
+                    "<Configure>",
+                    lambda e: g_child_canvas.configure(scrollregion=g_child_canvas.bbox("all"))
+                )
+                g_child_canvas.create_window((0, 0), window=g_child_inner_frame, anchor="nw")
+                g_child_canvas.configure(xscrollcommand=g_child_hscrollbar.set)
+                g_child_canvas.pack(fill=tk.X, expand=True)
+                g_child_hscrollbar.pack(fill=tk.X)
+
+                for gc in g_children:
+                    card = self.create_person_card(
+                        g_child_inner_frame, gc, is_selected=False,
+                        on_click=lambda e, p=gc: self.on_descendancy_grandchild_click(p),
+                        role_override="Grandchild"
+                    )
+                    card.pack(side=tk.LEFT, padx=10, pady=5)
+            else:
+                ttk.Label(gen3_frame, text=f"No known children for {active_child_name}.", font=("Arial", 9, "italic")).pack(expand=True)
+        else:
+            ttk.Label(gen3_frame, text="Select a child above to view their children.", font=("Arial", 9, "italic")).pack(expand=True)
+
+    def _render_descendancy_empty_state(self, message):
+        for widget in self.desc_scrollable_frame.winfo_children():
+            widget.destroy()
+        center_container = ttk.Frame(self.desc_scrollable_frame)
+        center_container.pack(expand=True, fill=tk.BOTH, pady=100)
+        ttk.Label(center_container, text=message, font=("Arial", 12, "italic")).pack(anchor=tk.CENTER)
 
     # --- Ancestry tab: a left-to-right pedigree tree ---
     ANCESTRY_MAX_GENERATIONS = 5

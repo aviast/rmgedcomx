@@ -140,6 +140,100 @@ func (db *DB) GetEvents(ownerType int, ownerID int64) ([]Event, error) {
 	return out, rows.Err()
 }
 
+// GetEvent fetches a single EventTable row by EventID, regardless of
+// owner. Returns (nil, nil) if not found. Used for the standalone GEDCOM X
+// `Event` resource (see SCOPE.md's "Events" section) -- distinct from
+// GetEvents above, which fetches a particular owner's facts.
+func (db *DB) GetEvent(id int64) (*Event, error) {
+	row := db.sql.QueryRow(`
+		SELECT EventID, EventType, OwnerType, OwnerID, FamilyID, PlaceID, Date, IsPrimary, Details, Note
+		FROM EventTable WHERE EventID = ?`, id)
+	var e Event
+	if err := row.Scan(&e.EventID, &e.EventType, &e.OwnerType, &e.OwnerID, &e.FamilyID, &e.PlaceID, &e.Date, &e.IsPrimary, &e.Details, &e.Note); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying event %d: %w", id, err)
+	}
+	return &e, nil
+}
+
+// ListEvents returns a page of EventTable rows ordered by EventID,
+// regardless of owner, along with the total count. Used for the
+// standalone GEDCOM X `Events` resource.
+func (db *DB) ListEvents(limit, offset int) ([]Event, int, error) {
+	rows, err := db.sql.Query(`
+		SELECT EventID, EventType, OwnerType, OwnerID, FamilyID, PlaceID, Date, IsPrimary, Details, Note
+		FROM EventTable ORDER BY EventID LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing events: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.EventID, &e.EventType, &e.OwnerType, &e.OwnerID, &e.FamilyID, &e.PlaceID, &e.Date, &e.IsPrimary, &e.Details, &e.Note); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var total int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM EventTable`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("counting events: %w", err)
+	}
+	return out, total, nil
+}
+
+// GetWitnesses returns WitnessTable rows for a given event, ordered by
+// WitnessID (WitnessTable.WitnessOrder is documented in the RootsMagic
+// data dictionary as "Not Implemented", so insertion order via WitnessID
+// is the honest choice rather than relying on a column that isn't
+// actually maintained).
+func (db *DB) GetWitnesses(eventID int64) ([]Witness, error) {
+	rows, err := db.sql.Query(`
+		SELECT WitnessID, EventID, PersonID, Role, Given, Surname, Note
+		FROM WitnessTable WHERE EventID = ? ORDER BY WitnessID`, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("querying witnesses for event %d: %w", eventID, err)
+	}
+	defer rows.Close()
+
+	var out []Witness
+	for rows.Next() {
+		var w Witness
+		if err := rows.Scan(&w.WitnessID, &w.EventID, &w.PersonID, &w.RoleID, &w.Given, &w.Surname, &w.Note); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// AllRoles loads the entire RoleTable (small, like FactTypeTable) into
+// memory once, keyed by RoleID.
+func (db *DB) AllRoles() (map[int64]Role, error) {
+	rows, err := db.sql.Query(`SELECT RoleID, RoleName, EventType FROM RoleTable`)
+	if err != nil {
+		return nil, fmt.Errorf("querying roles: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]Role{}
+	for rows.Next() {
+		var r Role
+		if err := rows.Scan(&r.RoleID, &r.RoleName, &r.EventType); err != nil {
+			return nil, err
+		}
+		out[r.RoleID] = r
+	}
+	return out, rows.Err()
+}
+
 // AllFactTypes loads the entire FactTypeTable (small: typically well under a
 // few hundred rows) into memory once, keyed by FactTypeID.
 func (db *DB) AllFactTypes() (map[int64]FactType, error) {
@@ -480,6 +574,7 @@ type CollectionStats struct {
 	Places        int
 	Sources       int
 	Artifacts     int
+	Events        int
 }
 
 // CollectionStats computes cheap COUNT(*)-based totals for each resource
@@ -501,6 +596,9 @@ func (db *DB) CollectionStats() (CollectionStats, error) {
 	}
 	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM MultimediaTable`).Scan(&s.Artifacts); err != nil {
 		return s, fmt.Errorf("counting multimedia items: %w", err)
+	}
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM EventTable`).Scan(&s.Events); err != nil {
+		return s, fmt.Errorf("counting events: %w", err)
 	}
 
 	var couples, fatherChild, motherChild int

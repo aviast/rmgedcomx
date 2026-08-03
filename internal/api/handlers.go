@@ -694,3 +694,64 @@ func (s *Server) handleArtifactContent(w http.ResponseWriter, r *http.Request) {
 	}
 	http.ServeContent(w, r, item.MediaFile, info.ModTime(), f)
 }
+
+// --- Events ---
+
+// handleEvents serves the `Events` state (RS spec Section 4.7): a list of
+// events, backed by every row in RootsMagic's EventTable (not just ones
+// with witnesses -- see SCOPE.md's "Events" section for why this server
+// exposes the full set rather than filtering to "interesting" ones).
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	limit, offset := s.pagingParams(r)
+	rows, total, err := s.db.ListEvents(limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	events := make([]gedcomx.Event, 0, len(rows))
+	for _, e := range rows {
+		ev, err := s.buildEvent(e)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		events = append(events, ev)
+	}
+	status := http.StatusOK
+	if len(events) == 0 {
+		status = http.StatusNoContent
+	}
+	writeJSON(w, status, gedcomx.EventsDocument{
+		Results: len(events),
+		Events:  events,
+		Links:   pagingLinks(s, "/events", limit, offset, total),
+	})
+}
+
+// handleEvent serves the `Event` state (RS spec Section 4.8) for a single
+// event. Its id is the same "E{EventID}" used for the corresponding Fact
+// on whichever Person or Relationship this event also belongs to -- see
+// parseEventID's doc comment.
+func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	eid, err := parseEventID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	e, err := s.db.GetEvent(eid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if e == nil {
+		notFound(w, "event", id)
+		return
+	}
+	ev, err := s.buildEvent(*e)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, gedcomx.EventDocument{Events: []gedcomx.Event{ev}, Links: ev.Links})
+}
