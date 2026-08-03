@@ -60,6 +60,8 @@ var requiredTablesAndColumns = map[string][]string{
 	"CitationLinkTable": {"LinkID", "CitationID", "OwnerType", "OwnerID"},
 	"MultimediaTable":   {"MediaID", "MediaType", "MediaPath", "MediaFile", "Caption", "RefNumber", "Date", "Description"},
 	"MediaLinkTable":    {"LinkID", "MediaID", "OwnerType", "OwnerID"},
+	"WitnessTable":      {"WitnessID", "EventID", "PersonID", "Role", "Given", "Surname", "Note"},
+	"RoleTable":         {"RoleID", "RoleName", "EventType"},
 }
 
 // optionalMarkerTables are used only to produce a best-effort, informational

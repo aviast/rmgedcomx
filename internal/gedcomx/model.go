@@ -342,6 +342,7 @@ const (
 	ResourceTypeRelationship      = "http://gedcomx.org/v1/Relationship"
 	ResourceTypePlaceDescription  = "http://gedcomx.org/v1/PlaceDescription"
 	ResourceTypeSourceDescription = "http://gedcomx.org/v1/SourceDescription"
+	ResourceTypeEvent             = "http://gedcomx.org/v1/Event"
 )
 
 // ResourceTypeDigitalArtifact is one of the "known resource types" from the
@@ -366,6 +367,56 @@ type CollectionsDocument struct {
 type CollectionDocument struct {
 	Collections []Collection `json:"collections"`
 	Links       Links        `json:"links,omitempty"`
+}
+
+// Event is the GEDCOM X Conceptual Model "Event" data type
+// (http://gedcomx.org/v1/Event, Section 2.5): a description of a
+// historical event, extending Subject (id/sources/notes/etc., per the
+// Conclusion/Subject inheritance chain -- Event doesn't get its own
+// distinct extra Subject fields modeled here, since RootsMagic has no
+// data backing extracted/evidence/media/identifiers for a shared event).
+//
+// This is deliberately a different concept from Fact (Section 2.5.2 of the
+// spec draws the distinction explicitly: "this specification dictates that
+// the two concepts are described independently"). A Fact belongs to and is
+// meaningless outside the context of one Person or Relationship; an Event
+// exists independently and can have multiple participants in different
+// roles -- exactly the case RootsMagic's WitnessTable exists for. See
+// SCOPE.md's "Events" section for how the two map onto the same
+// underlying RootsMagic EventTable row.
+type Event struct {
+	ID      string            `json:"id,omitempty"`
+	Type    string            `json:"type,omitempty"`
+	Date    *Date             `json:"date,omitempty"`
+	Place   *PlaceReference   `json:"place,omitempty"`
+	Roles   []EventRole       `json:"roles,omitempty"`
+	Sources []SourceReference `json:"sources,omitempty"`
+	Notes   []Note            `json:"notes,omitempty"`
+	Links   Links             `json:"links,omitempty"`
+}
+
+// EventRole is the GEDCOM X Conceptual Model "EventRole" data type
+// (http://gedcomx.org/v1/EventRole, Section 3.15): a role played in an
+// event by a person.
+type EventRole struct {
+	Person  ResourceReference `json:"person"`
+	Type    string            `json:"type,omitempty"`
+	Details string            `json:"details,omitempty"`
+}
+
+// EventsDocument is the `Events` application state representation (RS
+// spec Section 4.7): a list of events.
+type EventsDocument struct {
+	Results int     `json:"results"`
+	Events  []Event `json:"events"`
+	Links   Links   `json:"links,omitempty"`
+}
+
+// EventDocument wraps a single Event as the top-level `Event` application
+// state document (RS spec Section 4.8).
+type EventDocument struct {
+	Events []Event `json:"events"`
+	Links  Links   `json:"links,omitempty"`
 }
 
 func boolPtr(b bool) *bool { return &b }

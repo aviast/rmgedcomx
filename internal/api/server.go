@@ -40,6 +40,7 @@ type Config struct {
 type Server struct {
 	db        *rmdb.DB
 	factTypes map[int64]rmdb.FactType
+	roles     map[int64]rmdb.Role
 	cfg       Config
 	// collectionBaseURL is cfg.BaseURL + "/collections/" + cfg.ID,
 	// precomputed once. Used by url() for every resource link this
@@ -49,7 +50,8 @@ type Server struct {
 	collectionBaseURL string
 }
 
-// NewServer builds a Server, preloading the (small) FactTypeTable.
+// NewServer builds a Server, preloading the (small) FactTypeTable and
+// RoleTable.
 func NewServer(db *rmdb.DB, cfg Config) (*Server, error) {
 	if cfg.DefaultGenerations <= 0 {
 		cfg.DefaultGenerations = 4
@@ -63,9 +65,14 @@ func NewServer(db *rmdb.DB, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	roles, err := db.AllRoles()
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		db:                db,
 		factTypes:         factTypes,
+		roles:             roles,
 		cfg:               cfg,
 		collectionBaseURL: cfg.BaseURL + "/collections/" + cfg.ID,
 	}, nil
@@ -73,7 +80,7 @@ func NewServer(db *rmdb.DB, cfg Config) (*Server, error) {
 
 // resourceHandler builds the route table for everything that belongs to
 // this one collection: persons, relationships, places, source
-// descriptions, and artifacts. It does NOT include the Collections/
+// descriptions, artifacts, and events. It does NOT include the Collections/
 // Collection discovery states (GET /, /collections, /collections/{id}) --
 // those necessarily span every collection this server has open, not just
 // this one, so they're assembled once, at the top level, by
@@ -85,9 +92,9 @@ func NewServer(db *rmdb.DB, cfg Config) (*Server, error) {
 //
 // Only GET is ever registered, deliberately: this server is read-only, and
 // resource families the spec defines but this server doesn't implement
-// (Records, Agents, Events, Person Matches, and this collection's own
-// write transitions) are simply never registered at all, rather than
-// wired up to custom "not implemented" handlers. That's not a gap --
+// (Records, Agents, Person Matches, and this collection's own write
+// transitions) are simply never registered at all, rather than wired up
+// to custom "not implemented" handlers. That's not a gap --
 // Go's net/http ServeMux (1.22+) already does exactly the right, standard
 // thing on its own once you don't fight it: a request for a registered
 // path with an unregistered method gets a 405 Method Not Allowed with a
@@ -122,6 +129,9 @@ func (s *Server) resourceHandler() http.Handler {
 	mux.HandleFunc("GET /artifacts", s.handleArtifacts)
 	mux.HandleFunc("GET /artifacts/{id}", s.handleArtifact)
 	mux.HandleFunc("GET /artifacts/{id}/content", s.handleArtifactContent)
+
+	mux.HandleFunc("GET /events", s.handleEvents)
+	mux.HandleFunc("GET /events/{id}", s.handleEvent)
 
 	return mux
 }

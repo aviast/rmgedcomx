@@ -25,8 +25,9 @@ support things a single-user desktop database doesn't need:
   current read-only enforcement is deliberately centralized in one place to make
   that easy to add later.
 
-`Collections` / `Collection` and `Artifacts` **are** implemented -- see the
-"Collection" and "Multimedia" sections below for why and how.
+`Collections` / `Collection`, `Artifacts`, and `Events` / `Event` **are**
+implemented -- see the "Multiple databases / Collections", "Multimedia", and
+"Events" sections below for why and how.
 
 ### What is included
 
@@ -38,7 +39,9 @@ generator, a Digital Asset Management tool, a chatbot, etc.):
 `Person Spouses`, `Ancestry Results`, `Descendancy Results`, `Relationship`,
 `Relationships`, `Place Description`, `Place Descriptions`, `Source Description`,
 `Source Descriptions`, `Artifacts` (backed by `MultimediaTable` -- scanned
-certificates, photos, and similar).
+certificates, photos, and similar), `Events` / `Event` (backed by `EventTable` +
+`WitnessTable` + `RoleTable` -- shared events with multiple participants, like a
+marriage with witnesses).
 
 Each `Person` embeds its conclusions (names, gender, facts) directly in the same
 response, per the spec's fallback rule in Section 4.10.5 ("If no link to
@@ -313,6 +316,114 @@ observed: jpg/jpeg/png/gif/bmp/tif/pdf/doc/docx/htm/html and a few others)
 before falling back to Go's `mime.TypeByExtension`, so behavior doesn't
 depend on the deployment environment having a populated `/etc/mime.types` --
 fine on a typical dev machine, not guaranteed on a minimal container image.
+
+## Events
+
+`GET /events` and `GET /events/{id}` implement the RS spec's `Events`/`Event`
+states (Sections 4.7, 4.8), backed by RootsMagic's `EventTable` +
+`WitnessTable` + `RoleTable`. This is a genuinely different GEDCOM X concept
+from the `Fact`s already embedded on every `Person` and `Relationship` --
+worth being precise about, since both are built from the exact same
+underlying RootsMagic rows.
+
+### Event versus Fact
+
+The conceptual model spec draws this distinction explicitly (Section
+2.5.2, "Events Versus Facts"): a `Fact` belongs to, and is meaningless
+outside the context of, one `Person` or `Relationship` -- "facts do not
+exist outside the scope of the subject to which they apply." An `Event`
+exists independently and can have multiple participants in different
+roles, "described independently" of any one person. The spec's own
+illustrating example is almost exactly this project's motivating one: "a
+birth record that provides information about biological parents, adoptive
+parents, additional witnesses, etc. might justify a description of the
+event in addition to descriptions of any facts provided by the record."
+RootsMagic's `WitnessTable` -- additional participants beyond an event's
+own owner, each with a role -- is precisely that "additional witnesses"
+case, and a marriage is the clearest instance of it: the event has (at
+least) two principals and, often, witnesses who aren't the couple
+themselves.
+
+So `buildFact` (unchanged) and `buildEvent` (new) both start from the same
+`rmdb.Event` (an `EventTable` row) and deliberately produce two different
+resources, at two different URLs, not one resource wearing two hats. They
+share an id on purpose: an `Event`'s id is `E{EventID}`, the identical
+scheme `factRef` already used for the corresponding `Fact`'s id nested
+inside a `Person` or `Relationship` (see `parseEventID`'s doc comment) --
+so if a client sees `"id": "E2188"` in a `Relationship`'s `facts`, it
+already knows `GET /events/E2188` will resolve to the fuller,
+multi-participant picture of that same occurrence, with no separate
+lookup needed to make the connection.
+
+### Every EventTable row becomes an Event, not just ones with witnesses
+
+Consistent with how this server exposes every row of `PersonTable`,
+`PlaceTable`, `SourceTable`, and `MultimediaTable` rather than filtering
+to a subset it judges "interesting," `/events` covers the entire
+`EventTable` -- most of which will have exactly one participant (the
+`Principal`) and no witnesses, which is still a perfectly valid, if
+unremarkable, `Event`. The alternative (only exposing events that have
+`WitnessTable` rows) would mean `/events` silently omitted most events,
+and would make the presence or absence of an `Event` resource depend on
+incidental data richness rather than on the underlying occurrence itself.
+
+### Roles: the owner as Principal, witnesses from WitnessTable
+
+Every `Event`'s `roles` starts with its own owner, always given the
+`Principal` role (Section 3.15.1's "known role type" for exactly this:
+"the principal of a birth event is the person that was born"): one role
+for a person-owned fact's `OwnerID`, or one role per known parent
+(`FatherID`/`MotherID`) for a family-owned fact like a marriage.
+Additional participants come from `WitnessTable` rows for that
+`EventID`, with `EventRole.type` resolved from `RoleTable.RoleName`
+(free text the user assigns via RootsMagic's "Edit Role Type" window)
+through `gedcomx.EventRoleType` -- a conservative, small table of common
+English terms ("witness" → `Witness`, "officiant"/"minister"/"clergy" →
+`Official`, etc.) mapping to Section 3.15.1's four known role types, with
+a `http://rootsmagic.local/event-role/...` custom-URI fallback for
+anything else, following the same convention as fact types
+(`CustomFactType`) and event types (`CustomEventType`, below) -- rather
+than guessing at what an arbitrary user-defined role name like "Best Man"
+or "Bridesmaid" should map to.
+
+`Event.type` itself is resolved by a *separate* function, `EventType`,
+not by reusing `FactType`. The two tables mostly agree where the concepts
+overlap (birth, death, marriage, divorce, burial, christening, census all
+resolve to the identical URI either way) but not entirely: RootsMagic's
+"ADOP" fact type is `http://gedcomx.org/AdoptiveParent` as a *fact* (a
+fact about being an adoptive parent) but `http://gedcomx.org/Adoption` as
+an *event* (the adoption event itself) -- confirmed against the spec's
+"known event types" (Section 2.5.1) and "known fact types" tables, not
+assumed. Reusing one mapping for both would have silently mislabeled that
+one case, so `gedcomTagToEventType` is its own table, and
+`CustomEventType`'s fallback URI namespace (`event-type` vs `fact-type`)
+is kept distinct too, even though in practice most events and their
+corresponding facts share the same underlying RootsMagic fact type name.
+
+### Witnesses who aren't in the database
+
+`WitnessTable.PersonID` can be `0`, meaning the witness isn't a person
+recorded in this database at all -- RootsMagic stores their name as free
+text instead (`WitnessTable.Given`/`Surname`). This isn't a hypothetical
+edge case: it's exactly what real-world witness data looks like (the
+first test case built for this feature -- a marriage witnessed by two
+people who were never otherwise added to the tree -- hit it immediately).
+
+`EventRole.person` is REQUIRED by the spec and MUST resolve to a real
+`Person` resource. A `PersonID=0` witness structurally cannot satisfy
+that -- there is no `Person` resource to reference, and inventing one
+(synthesizing a fake `Person` from just a name, or fabricating a
+resolvable-looking URI that doesn't actually resolve) would misrepresent
+what's actually in the source database, which runs against this project's
+whole approach (see, for a concrete precedent, how unresolvable
+`MediaPath` values are handled in "Multimedia" above). So these witnesses
+are simply left out of `roles`, but -- deliberately, not as an
+afterthought -- not dropped from the response altogether: they're
+collected into an `Event`-level note instead ("Additional participants
+recorded by name only, not as persons in this database: Joseph Gage
+(Witness); Harriet Gage (Witness)"), preserving the information the
+database actually has without forcing it into a field it can't honestly
+fill.
 
 ## RootsMagic version handling
 

@@ -268,6 +268,7 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 			{ResourceType: gedcomx.ResourceTypePlaceDescription, Count: stats.Places},
 			{ResourceType: gedcomx.ResourceTypeSourceDescription, Count: stats.Sources},
 			{ResourceType: gedcomx.ResourceTypeDigitalArtifact, Count: stats.Artifacts},
+			{ResourceType: gedcomx.ResourceTypeEvent, Count: stats.Events},
 		},
 		Links: gedcomx.Links{
 			"collection":          {Href: s.collectionBaseURL},
@@ -276,6 +277,7 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 			"relationships":       {Href: s.url("/relationships")},
 			"source-descriptions": {Href: s.url("/source-descriptions")},
 			"artifacts":           {Href: s.url("/artifacts")},
+			"events":              {Href: s.url("/events")},
 			// "place-descriptions" isn't one of the formally-defined
 			// Collection transitions in RS spec Section 4.5.4 (there's no
 			// plural rel for the Place Descriptions state anywhere in the
@@ -435,4 +437,121 @@ func (s *Server) buildArtifactDescription(item rmdb.MultimediaItem) gedcomx.Sour
 	sd.About = contentURL
 	sd.Links["digital-artifact"] = gedcomx.Link{Href: contentURL, Type: sd.MediaType}
 	return sd
+}
+
+// --- Events ---
+
+// buildEvent assembles a full gedcomx.Event from a RootsMagic EventTable
+// row -- distinct from the person/relationship-scoped Fact built from the
+// very same row by buildFact (see SCOPE.md's "Events" section for the
+// spec basis of that distinction: GEDCOM X Section 2.5.2 says the two are
+// "described independently"). Participant roles come from two sources:
+// the event's own owner (always given the Principal role: the one person
+// for a person-owned fact, or both known parents for a family-owned one
+// like a marriage) and RootsMagic's WitnessTable (whatever role the user
+// assigned via RoleTable, resolved through gedcomx.EventRoleType).
+func (s *Server) buildEvent(e rmdb.Event) (gedcomx.Event, error) {
+	ft := s.factTypes[e.EventType]
+	id := factRef(e.EventID)
+	ev := gedcomx.Event{
+		ID:    id,
+		Type:  gedcomx.EventType(ft.GedcomTag, ft.Name),
+		Links: gedcomx.Links{"event": {Href: s.url("/events/" + id)}},
+	}
+	if d := gedcomx.ParseRMDate(e.Date); d != nil {
+		ev.Date = d
+	}
+	if e.PlaceID != 0 {
+		pref, err := s.buildPlaceReference(e.PlaceID)
+		if err != nil {
+			return gedcomx.Event{}, err
+		}
+		ev.Place = pref
+	}
+
+	var notes []gedcomx.Note
+	if e.Note != "" {
+		notes = append(notes, gedcomx.Note{Text: e.Note})
+	}
+
+	var roles []gedcomx.EventRole
+	switch e.OwnerType {
+	case rmdb.OwnerTypePerson:
+		roles = append(roles, s.principalRole(e.OwnerID))
+	case rmdb.OwnerTypeFamily:
+		fam, err := s.db.GetFamily(e.OwnerID)
+		if err != nil {
+			return gedcomx.Event{}, err
+		}
+		if fam != nil {
+			if fam.FatherID != 0 {
+				roles = append(roles, s.principalRole(fam.FatherID))
+			}
+			if fam.MotherID != 0 {
+				roles = append(roles, s.principalRole(fam.MotherID))
+			}
+		}
+	}
+
+	witnesses, err := s.db.GetWitnesses(e.EventID)
+	if err != nil {
+		return gedcomx.Event{}, err
+	}
+	var unlisted []string
+	for _, w := range witnesses {
+		roleName := s.roles[w.RoleID].RoleName
+		if w.PersonID == 0 {
+			// Not a person recorded in this database -- RootsMagic stores
+			// their name as free text instead (WitnessTable.Given/Surname).
+			// EventRole.person is REQUIRED and MUST resolve to a real
+			// Person resource, which this witness structurally can't
+			// satisfy -- inventing one would misrepresent what's actually
+			// in the source database. Rather than silently drop the
+			// information, it's preserved in a note instead. See
+			// SCOPE.md's "Events" section.
+			name := strings.TrimSpace(w.Given + " " + w.Surname)
+			if name == "" {
+				name = fmt.Sprintf("witness %d", w.WitnessID)
+			}
+			if roleName != "" {
+				name += " (" + roleName + ")"
+			}
+			unlisted = append(unlisted, name)
+			continue
+		}
+		roles = append(roles, gedcomx.EventRole{
+			Person: gedcomx.ResourceReference{
+				Resource:   s.url("/persons/" + personRef(w.PersonID)),
+				ResourceID: personRef(w.PersonID),
+			},
+			Type:    gedcomx.EventRoleType(roleName),
+			Details: w.Note,
+		})
+	}
+	if len(unlisted) > 0 {
+		notes = append(notes, gedcomx.Note{
+			Text: "Additional participants recorded by name only, not as persons in this database: " + strings.Join(unlisted, "; "),
+		})
+	}
+	ev.Roles = roles
+	ev.Notes = notes
+
+	sources, err := s.buildSourceReferences(rmdb.OwnerTypeEvent, e.EventID)
+	if err != nil {
+		return gedcomx.Event{}, err
+	}
+	ev.Sources = sources
+
+	return ev, nil
+}
+
+// principalRole builds the EventRole for an event's own subject: the
+// Person it belongs to (for a person-owned fact), or one parent of the
+// Family it belongs to (for a family-owned fact like a marriage).
+func (s *Server) principalRole(personID int64) gedcomx.EventRole {
+	id := personRef(personID)
+	return gedcomx.EventRole{
+		Person: gedcomx.ResourceReference{Resource: s.url("/persons/" + id), ResourceID: id},
+		Type:   "http://gedcomx.org/Principal",
+	}
 }
