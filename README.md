@@ -58,21 +58,24 @@ Or serve several databases at once -- `-db` is repeatable, and each one becomes
 its own, fully independent `Collection`:
 
 ```sh
-./rmgedcomx -db Gould.rmtree -db Family.rmtree -db royal92.rmtree
+./rmgedcomx -db Tree1.rmtree -db Tree2.rmtree -db royal92.rmtree
 ```
 
 (`royal92.rmtree` is included in this repo as a ready-to-try sample -- a
-public-domain GEDCOM of European royalty, imported into RootsMagic.)
+public-domain GEDCOM of European royalty, imported into RootsMagic. It's the
+only sample data included, and every example in this README and in
+[SCOPE.md](./SCOPE.md) is generated from it, deliberately -- there's no
+privacy concern in publishing exact ids or example responses for people who
+died over a century ago.)
 
 On startup, the server prints a table mapping each collection's id to its
-title and source file:
+title and source file -- one row per `-db` flag. Here's the real output for
+`royal92.rmtree` on its own:
 
 ```
 Collections available this session:
-COLLECTION ID                     TITLE                               DATABASE FILE
-jean-valerie-gould-gould          Jean Valerie Gould (Gould)          Gould.rmtree
-charlotte-mae-henry-family        Charlotte Mae Henry (Family)        Family.rmtree
-victoria-hanover-royal92          Victoria Hanover (royal92)          royal92.rmtree
+COLLECTION ID             TITLE                       DATABASE FILE
+victoria-hanover-royal92  Victoria Hanover (royal92)  royal92.rmtree
 ```
 
 **A collection's id is not guaranteed to be the same across restarts** -- it's
@@ -85,24 +88,30 @@ table above to confirm, as a human, which id corresponds to which database for
 the session about to start. See [SCOPE.md](./SCOPE.md#multiple-databases--collections)
 for the full reasoning.
 
-Then browse, e.g.:
+Then browse, e.g. (all real, verified against `royal92.rmtree` -- P1 is
+Victoria Hanover; F1 is her marriage to Albert; F42 is her parents'
+marriage, whose Marriage fact `E5087` is the same id as
+`.../events/E5087`, see [SCOPE.md](./SCOPE.md#events)):
 
 ```
 curl http://localhost:8080/
 curl http://localhost:8080/collections
-curl http://localhost:8080/collections/jean-valerie-gould-gould
-curl http://localhost:8080/collections/jean-valerie-gould-gould/persons?limit=20
-curl http://localhost:8080/collections/jean-valerie-gould-gould/persons/P1
-curl http://localhost:8080/collections/jean-valerie-gould-gould/persons/P1/ancestry?generations=4
-curl http://localhost:8080/collections/jean-valerie-gould-gould/relationships/F3
-curl http://localhost:8080/collections/jean-valerie-gould-gould/places/12
-curl http://localhost:8080/collections/jean-valerie-gould-gould/source-descriptions/5
-curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts?limit=20
-curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts/M1
-curl http://localhost:8080/collections/jean-valerie-gould-gould/artifacts/M1/content -o photo.jpg
-curl http://localhost:8080/collections/jean-valerie-gould-gould/events?limit=20
-curl http://localhost:8080/collections/jean-valerie-gould-gould/events/E2188
+curl http://localhost:8080/collections/victoria-hanover-royal92
+curl http://localhost:8080/collections/victoria-hanover-royal92/persons?limit=20
+curl http://localhost:8080/collections/victoria-hanover-royal92/persons/P1
+curl http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/ancestry?generations=4
+curl http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1
+curl http://localhost:8080/collections/victoria-hanover-royal92/places/PL261
+curl http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1
+curl http://localhost:8080/collections/victoria-hanover-royal92/events?limit=20
+curl http://localhost:8080/collections/victoria-hanover-royal92/events/E5087
 ```
+
+`royal92.rmtree` has no multimedia (the GEDCOM it was built from didn't
+include any), so there's no real `artifacts` example to show here -- the
+shape of those endpoints is `.../artifacts?limit=20`, `.../artifacts/M1`,
+and `.../artifacts/M1/content -o photo.jpg`, but against your own database,
+not this sample one.
 
 Responses use `application/x-gedcomx-v1+json` (GEDCOM X JSON), the one representation this
 server produces -- a request with an `Accept` header that excludes it gets `406 Not

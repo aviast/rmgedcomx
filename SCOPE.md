@@ -72,7 +72,7 @@ multiple times to serve several databases in one process, each as its own,
 fully independent `Collection`:
 
 ```sh
-./rmgedcomx -db Gould.rmtree -db Family.rmtree -db royal92.rmtree
+./rmgedcomx -db Tree1.rmtree -db Tree2.rmtree -db royal92.rmtree
 ```
 
 Every resource URL is scoped under its collection: `/collections/{id}/persons/P1`,
@@ -149,7 +149,7 @@ family tree by, but the filename is what disambiguates between multiple
 exports/backups of the *same* tree over time, where the Home Person is
 identical between them and only the filename differs. RootsMagic's own
 auto-backup naming embeds a timestamp in the filename for exactly this
-reason (`Gould - 2024 06 24 09-29.rmtree`), and rather than parsing out
+reason (`royal92 - 2024 06 24 09-29.rmtree`), and rather than parsing out
 "the timestamp" specifically -- fragile, and only correct for RootsMagic's
 own naming convention -- `Derive` just uses the whole filename stem, which
 captures that case for free and degrades gracefully for any other naming.
@@ -350,8 +350,10 @@ resources, at two different URLs, not one resource wearing two hats. They
 share an id on purpose: an `Event`'s id is `E{EventID}`, the identical
 scheme `factRef` already used for the corresponding `Fact`'s id nested
 inside a `Person` or `Relationship` (see `parseEventID`'s doc comment) --
-so if a client sees `"id": "E2188"` in a `Relationship`'s `facts`, it
-already knows `GET /events/E2188` will resolve to the fuller,
+so if a client sees `"id": "E5087"` in a `Relationship`'s `facts` (this is
+real, verified data: it's the Marriage fact on `F42`, the couple
+relationship between Victoria Hanover's parents in the `royal92.rmtree`
+sample), it already knows `GET /events/E5087` will resolve to the fuller,
 multi-participant picture of that same occurrence, with no separate
 lookup needed to make the connection.
 
@@ -405,9 +407,12 @@ corresponding facts share the same underlying RootsMagic fact type name.
 `WitnessTable.PersonID` can be `0`, meaning the witness isn't a person
 recorded in this database at all -- RootsMagic stores their name as free
 text instead (`WitnessTable.Given`/`Surname`). This isn't a hypothetical
-edge case: it's exactly what real-world witness data looks like (the
-first test case built for this feature -- a marriage witnessed by two
-people who were never otherwise added to the tree -- hit it immediately).
+edge case: it's exactly what real-world witness data looks like (a real
+database used during development of this feature had a marriage witnessed
+by two people who were never otherwise added to the tree, and hit this
+case immediately -- `royal92.rmtree` itself has no witnesses at all, so
+this isn't something you can reproduce against the sample data included
+in this repo, but it's a normal, expected shape of real RootsMagic data).
 
 `EventRole.person` is REQUIRED by the spec and MUST resolve to a real
 `Person` resource. A `PersonID=0` witness structurally cannot satisfy
@@ -419,9 +424,10 @@ whole approach (see, for a concrete precedent, how unresolvable
 `MediaPath` values are handled in "Multimedia" above). So these witnesses
 are simply left out of `roles`, but -- deliberately, not as an
 afterthought -- not dropped from the response altogether: they're
-collected into an `Event`-level note instead ("Additional participants
-recorded by name only, not as persons in this database: Joseph Gage
-(Witness); Harriet Gage (Witness)"), preserving the information the
+collected into an `Event`-level note instead (illustrative example, not
+real data: "Additional participants recorded by name only, not as persons
+in this database: Jane Doe (Witness); John Smith (Witness)"), preserving
+the information the
 database actually has without forcing it into a field it can't honestly
 fill.
 
