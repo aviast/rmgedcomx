@@ -5,6 +5,8 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import json
+import re
+import calendar
 
 try:
     from tkintermapview import TkinterMapView
@@ -152,10 +154,14 @@ class GedcomXBrowserApp:
         person_tree_frame = ttk.Frame(self.person_tab)
         person_tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.person_detail_tree = ttk.Treeview(
-            person_tree_frame, columns=("Field", "Value"), show="headings", selectmode="none"
+            person_tree_frame, columns=("Date", "Age", "Field", "Value"), show="headings", selectmode="none"
         )
+        self.person_detail_tree.heading("Date", text="Date")
+        self.person_detail_tree.heading("Age", text="Age")
         self.person_detail_tree.heading("Field", text="Field")
         self.person_detail_tree.heading("Value", text="Value")
+        self.person_detail_tree.column("Date", width=110, stretch=False, anchor=tk.W)
+        self.person_detail_tree.column("Age", width=70, stretch=False, anchor=tk.CENTER)
         self.person_detail_tree.column("Field", width=140, stretch=False, anchor=tk.W)
         self.person_detail_tree.column("Value", width=600, anchor=tk.W)
         person_tree_scroll = ttk.Scrollbar(person_tree_frame, orient="vertical", command=self.person_detail_tree.yview)
@@ -660,6 +666,19 @@ class GedcomXBrowserApp:
             tree_id = self.entity_tree.insert("", tk.END, values=("Relationship", rid, summary))
             self.loaded_entities[tree_id] = ("Relationship", rel)
 
+        for ev in doc.get('events', []):
+            eid = ev.get('id', 'Unknown')
+            ev_type = ev.get('type', '')
+            type_label = ev_type.rsplit('/', 1)[-1] if ev_type else 'Event'
+            detail_parts = []
+            date_text = (ev.get('date') or {}).get('original')
+            place_text = (ev.get('place') or {}).get('original')
+            if date_text: detail_parts.append(date_text)
+            if place_text: detail_parts.append(place_text)
+            summary = f"{type_label}: {', '.join(detail_parts)}" if detail_parts else type_label
+            tree_id = self.entity_tree.insert("", tk.END, values=("Event", eid, summary))
+            self.loaded_entities[tree_id] = ("Event", ev)
+
     def highlight_entity_in_tree(self, entity_id):
         """Visually selects an entity in the list without triggering navigation."""
         if not entity_id:
@@ -724,6 +743,8 @@ class GedcomXBrowserApp:
                 target_relations = ["description", "source", "self"]
             elif entity_type == "Relationship":
                 target_relations = ["relationship", "self"]
+            elif entity_type == "Event":
+                target_relations = ["event", "self"]
 
             # Iterate through the preferred hypermedia relations first
             for rel in target_relations:
@@ -850,18 +871,151 @@ class GedcomXBrowserApp:
         self.render_person_detail_tab(person_data)
         self.details_notebook.select(self.person_tab)
 
+    # Matches the leading "+YYYY", "+YYYY-MM", or "+YYYY-MM-DD" out of a
+    # GEDCOM X formal date value (also tolerates a bare 4-digit year pulled
+    # out of free-text "original" as a fallback) -- used to build a
+    # chronological sort key for the Person tab's timeline rows.
+    _DATE_YEAR_RE = re.compile(r'(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?')
+
+    def _date_sort_key(self, date_obj):
+        """Returns a sortable (has_no_date, year, month, day) tuple from a
+        GEDCOM X Date object, preferring the machine-readable 'formal' field
+        and falling back to a year pulled out of 'original' text. Dates that
+        can't be parsed at all sort after every dated row."""
+        if date_obj:
+            for text in (date_obj.get('formal'), date_obj.get('original')):
+                if not text:
+                    continue
+                m = self._DATE_YEAR_RE.search(text)
+                if m:
+                    year = int(m.group(1))
+                    month = int(m.group(2)) if m.group(2) else 1
+                    day = int(m.group(3)) if m.group(3) else 1
+                    return (0, year, month, day)
+        return (1, 0, 0, 0)
+
+    def _parse_date_precision(self, date_obj):
+        """Returns (year, month, day) from a GEDCOM X Date object, with
+        month/day as None when the source date didn't specify them (unlike
+        _date_sort_key, which defaults missing parts to 1 for ordering
+        purposes -- the Age column needs to know the difference, since an
+        unknown month/day widens the possible age into a range). Returns
+        None if no year at all can be determined."""
+        if date_obj:
+            formal = date_obj.get('formal')
+            if formal:
+                m = self._DATE_YEAR_RE.search(formal)
+                if m:
+                    year = int(m.group(1))
+                    month = int(m.group(2)) if m.group(2) else None
+                    day = int(m.group(3)) if m.group(3) else None
+                    return (year, month, day)
+            original = date_obj.get('original')
+            if original:
+                m = re.search(r'(\d{4})', original)
+                if m:
+                    return (int(m.group(1)), None, None)
+        return None
+
+    @staticmethod
+    def _date_bounds(year, month, day):
+        """Given a possibly-partial (year, month, day), returns the earliest
+        and latest full (y, m, d) dates consistent with it -- e.g. (1950,
+        None, None) spans all of 1950; (1950, 6, None) spans all of June
+        1950. Used to turn missing precision into an age range."""
+        if month is None:
+            return (year, 1, 1), (year, 12, 31)
+        if day is None:
+            last_day = calendar.monthrange(year, month)[1]
+            return (year, month, 1), (year, month, last_day)
+        return (year, month, day), (year, month, day)
+
+    @staticmethod
+    def _age_in_years(event_ymd, birth_ymd):
+        age = event_ymd[0] - birth_ymd[0]
+        if (event_ymd[1], event_ymd[2]) < (birth_ymd[1], birth_ymd[2]):
+            age -= 1
+        return age
+
+    def _compute_age_text(self, event_date_obj, birth_bounds):
+        """Returns the individual's age at event_date_obj, as a single
+        number when both dates are precise enough to pin it down exactly,
+        or a 'lo-hi' range when either date's precision (year-only or
+        month-only) leaves it ambiguous. Returns '' when the event has no
+        usable date, or when it falls entirely before the birth date (e.g.
+        a parent's death shortly before a posthumous birth) -- ages can't
+        be negative."""
+        parsed = self._parse_date_precision(event_date_obj)
+        if not parsed:
+            return ''
+        event_earliest, event_latest = self._date_bounds(*parsed)
+        birth_earliest, birth_latest = birth_bounds
+
+        lo = self._age_in_years(event_earliest, birth_latest)
+        hi = self._age_in_years(event_latest, birth_earliest)
+        if hi < 0:
+            return ''
+        lo = max(lo, 0)
+        return str(lo) if lo == hi else f"{lo}-{hi}"
+
     def render_person_detail_tab(self, person_data):
-        """Populates the Person tab's Field/Value table from a GEDCOM X
-        Person document. Pass None to clear it."""
+        """Populates the Person tab's Date/Age/Field/Value table from a
+        GEDCOM X Person document. Pass None to clear it.
+
+        Rows fall into three groups: undated biographical rows (Name,
+        Gender, ID, ...) stay pinned at the top in their natural order;
+        dated rows -- facts, plus marriage/couple facts pulled from each
+        spouse relationship -- are sorted chronologically in the middle so
+        the table reads as a timeline; Notes/Sources stay pinned at the
+        bottom. Facts without a usable date sort to the end of the
+        timeline group rather than being dropped."""
         for item in self.person_detail_tree.get_children():
             self.person_detail_tree.delete(item)
 
         if not person_data:
             return
 
-        def add_row(field, value):
+        header_rows = []
+        timeline_rows = []
+        trailing_rows = []
+
+        # Pull this person's own Birth/Death facts up front -- Birth anchors
+        # the Age column below, Death bounds "during this person's lifetime"
+        # for the family-death rows further down.
+        person_birth_date = None
+        person_death_key = (1, 0, 0, 0)  # sentinel: "no usable death date"
+        for fact in person_data.get('facts', []):
+            fact_type = fact.get('type', '')
+            label = fact_type.split('/')[-1] if fact_type else ''
+            if label == 'Birth' and person_birth_date is None:
+                person_birth_date = fact.get('date')
+            elif label == 'Death':
+                key = self._date_sort_key(fact.get('date'))
+                if key < person_death_key:
+                    person_death_key = key
+        # True only when this person's own death has a usable date -- that's
+        # the cutoff for "during this person's lifetime" below. If it's
+        # unknown (still living, or a death with no parseable date), there's
+        # no upper bound and every dated family death qualifies.
+        has_dated_death = person_death_key[0] == 0
+
+        birth_precision = self._parse_date_precision(person_birth_date)
+        birth_bounds = self._date_bounds(*birth_precision) if birth_precision else None
+
+        def add_header(field, value):
             if value:
-                self.person_detail_tree.insert("", tk.END, values=(field, value))
+                header_rows.append((field, value))
+
+        def add_trailing(field, value):
+            if value:
+                trailing_rows.append((field, value))
+
+        def add_timeline(date_obj, field, value):
+            if not value:
+                return
+            date_text = (date_obj or {}).get('original', '')
+            age_text = self._compute_age_text(date_obj, birth_bounds) if birth_bounds else ''
+            timeline_rows.append((self._date_sort_key(date_obj), date_text, age_text, field, value))
 
         display = person_data.get('display', {})
 
@@ -869,45 +1023,117 @@ class GedcomXBrowserApp:
         if not name:
             try: name = person_data['names'][0]['nameForms'][0]['fullText']
             except Exception: name = None
-        add_row("Name", name)
+        add_header("Name", name)
 
         for n in person_data.get('names', []):
             try: full_text = n['nameForms'][0]['fullText']
             except Exception: full_text = None
             if full_text and full_text != name:
                 label = f"{n['type'].split('/')[-1]} name" if n.get('type') else "Alternate name"
-                add_row(label, full_text)
+                add_header(label, full_text)
 
         gender = display.get('gender')
         if not gender:
             try: gender = person_data['gender']['type'].split('/')[-1]
             except Exception: gender = None
-        add_row("Gender", gender)
+        add_header("Gender", gender)
 
         if person_data.get('living') is not None:
-            add_row("Living", "Yes" if person_data['living'] else "No")
+            add_header("Living", "Yes" if person_data['living'] else "No")
 
-        add_row("Lifespan", display.get('lifespan'))
-        add_row("ID", person_data.get('id'))
+        add_header("Lifespan", display.get('lifespan'))
+        add_header("ID", person_data.get('id'))
 
         for fact in person_data.get('facts', []):
             fact_type = fact.get('type', '')
             label = fact_type.split('/')[-1] if fact_type else "Fact"
             parts = []
-            date = (fact.get('date') or {}).get('original')
             place = (fact.get('place') or {}).get('original')
             value = fact.get('value')
-            if date: parts.append(date)
             if place: parts.append(place)
             if value: parts.append(value)
-            add_row(label, " — ".join(parts) if parts else "(no detail recorded)")
+            add_timeline(fact.get('date'), label, " — ".join(parts) if parts else "(no detail recorded)")
+
+        # Marriage (and any other Couple-relationship) facts live on the
+        # spouse relationship, not the person, so they need their own fetch.
+        spouses = self.fetch_relatives(person_data, "spouses")
+        for spouse, rel in spouses:
+            spouse_name = spouse.get('display', {}).get('name', 'Unknown Name')
+            if spouse_name == 'Unknown Name':
+                try: spouse_name = spouse['names'][0]['nameForms'][0]['fullText']
+                except Exception: pass
+            for fact in (rel.get('facts', []) if rel else []):
+                fact_type = fact.get('type', '')
+                label = fact_type.split('/')[-1] if fact_type else "Marriage"
+                parts = [f"to {spouse_name}"]
+                place = (fact.get('place') or {}).get('original')
+                value = fact.get('value')
+                if place: parts.append(place)
+                if value: parts.append(value)
+                add_timeline(fact.get('date'), label, " — ".join(parts))
+
+        # Children's births -- like marriage facts, these live on a
+        # different resource (each child's own Person document) rather
+        # than on this person, so they need their own fetch too.
+        children = self.fetch_relatives(person_data, "children")
+        for child, _rel in children:
+            child_name = child.get('display', {}).get('name', 'Unknown Name')
+            if child_name == 'Unknown Name':
+                try: child_name = child['names'][0]['nameForms'][0]['fullText']
+                except Exception: pass
+            for fact in child.get('facts', []):
+                fact_type = fact.get('type', '')
+                if (fact_type.rsplit('/', 1)[-1] if fact_type else '') != 'Birth':
+                    continue
+                place = (fact.get('place') or {}).get('original')
+                parts = [child_name]
+                if place: parts.append(place)
+                add_timeline(fact.get('date'), "Birth of Child", " — ".join(parts))
+
+        # Deaths of immediate family (parents, spouse, children) that
+        # happened during this person's own lifetime -- i.e. strictly
+        # before their own death, when that's known. Spouses and children
+        # are reused from the fetches above; only parents needs a new one.
+        parents = self.fetch_relatives(person_data, "parents")
+        family_members = (
+            [(p, "Parent") for p, _ in parents]
+            + [(s, "Spouse") for s, _ in spouses]
+            + [(c, "Child") for c, _ in children]
+        )
+        for member, relation_label in family_members:
+            member_name = member.get('display', {}).get('name', 'Unknown Name')
+            if member_name == 'Unknown Name':
+                try: member_name = member['names'][0]['nameForms'][0]['fullText']
+                except Exception: pass
+            for fact in member.get('facts', []):
+                fact_type = fact.get('type', '')
+                if (fact_type.rsplit('/', 1)[-1] if fact_type else '') != 'Death':
+                    continue
+                death_key = self._date_sort_key(fact.get('date'))
+                if death_key[0] != 0:
+                    continue  # no usable date -- can't confirm it was "during", so skip
+                if has_dated_death and not (death_key < person_death_key):
+                    continue  # on or after this person's own death
+                place = (fact.get('place') or {}).get('original')
+                parts = [member_name]
+                if place: parts.append(place)
+                add_timeline(fact.get('date'), f"Death of {relation_label}", " — ".join(parts))
 
         for note in person_data.get('notes', []):
-            add_row("Note", note.get('text'))
+            add_trailing("Note", note.get('text'))
 
         sources = person_data.get('sources', [])
         if sources:
-            add_row("Sources", f"{len(sources)} attached")
+            add_trailing("Sources", f"{len(sources)} attached")
+
+        timeline_rows.sort(key=lambda row: row[0])
+
+        for field, value in header_rows:
+            self.person_detail_tree.insert("", tk.END, values=("", "", field, value))
+        for _, date_text, age_text, field, value in timeline_rows:
+            self.person_detail_tree.insert("", tk.END, values=(date_text, age_text, field, value))
+        for field, value in trailing_rows:
+            self.person_detail_tree.insert("", tk.END, values=("", "", field, value))
 
     # --- Place tab: header + embedded OpenStreetMap view ---
     def setup_place_tab(self):
