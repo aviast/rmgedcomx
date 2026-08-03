@@ -159,6 +159,7 @@ class GedcomXBrowserApp:
 
         self.person_tab = ttk.Frame(self.details_notebook)
         self.details_notebook.add(self.person_tab, text="Person")
+        self.setup_person_header()
         person_tree_frame = ttk.Frame(self.person_tab)
         person_tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.person_detail_tree = ttk.Treeview(
@@ -931,6 +932,83 @@ class GedcomXBrowserApp:
         self.render_person_detail_tab(person_data)
         self.details_notebook.select(self.person_tab)
 
+    def setup_person_header(self):
+        """Builds the Person tab's header: the identity fields (Name,
+        Gender, Living, Lifespan, ID, alternate names) plus Notes/Sources,
+        laid out as a compact block above the timeline table rather than as
+        one-field-per-row entries within it -- there's plenty of horizontal
+        room for that up here, and it keeps the table itself pure timeline."""
+        header = ttk.Frame(self.person_tab)
+        header.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        self.person_name_label = tk.Label(header, text="", font=("Arial", 14, "bold"), anchor="w")
+        self.person_name_label.pack(fill=tk.X)
+
+        self.person_stats_label = tk.Label(header, text="", font=("Arial", 9), fg="gray", anchor="w")
+        self.person_stats_label.pack(fill=tk.X, pady=(2, 0))
+
+        self.person_altnames_label = tk.Label(
+            header, text="", font=("Arial", 9, "italic"), fg="gray", anchor="w", justify=tk.LEFT
+        )
+        self.person_altnames_label.pack(fill=tk.X, pady=(2, 0))
+
+        self.person_notes_label = tk.Label(
+            header, text="", font=("Arial", 9), anchor="w", justify=tk.LEFT, wraplength=1000
+        )
+        self.person_notes_label.pack(fill=tk.X, pady=(4, 0))
+
+        self.person_sources_label = tk.Label(header, text="", font=("Arial", 9), fg="gray", anchor="w")
+        self.person_sources_label.pack(fill=tk.X, pady=(2, 0))
+
+        ttk.Separator(self.person_tab, orient="horizontal").pack(fill=tk.X, padx=10, pady=(5, 0))
+
+    def _render_person_header(self, person_data):
+        """Populates the header built by setup_person_header. Pass None to
+        clear it."""
+        if not person_data:
+            for label in (
+                self.person_name_label, self.person_stats_label,
+                self.person_altnames_label, self.person_notes_label, self.person_sources_label,
+            ):
+                label.config(text="")
+            return
+
+        display = person_data.get('display', {})
+
+        name = display.get('name')
+        if not name:
+            try: name = person_data['names'][0]['nameForms'][0]['fullText']
+            except Exception: name = None
+        self.person_name_label.config(text=name or "Unknown Name")
+
+        gender = display.get('gender')
+        if not gender:
+            try: gender = person_data['gender']['type'].split('/')[-1]
+            except Exception: gender = None
+
+        stats_parts = []
+        if gender: stats_parts.append(f"Gender: {gender}")
+        if person_data.get('living') is not None:
+            stats_parts.append(f"Living: {'Yes' if person_data['living'] else 'No'}")
+        if display.get('lifespan'): stats_parts.append(f"Lifespan: {display['lifespan']}")
+        if person_data.get('id'): stats_parts.append(f"ID: {person_data['id']}")
+        self.person_stats_label.config(text="  •  ".join(stats_parts))
+
+        alt_names = []
+        for n in person_data.get('names', []):
+            try: full_text = n['nameForms'][0]['fullText']
+            except Exception: full_text = None
+            if full_text and full_text != name:
+                label = f"{n['type'].split('/')[-1]} name" if n.get('type') else "Alternate name"
+                alt_names.append(f"{label}: {full_text}")
+        self.person_altnames_label.config(text="  •  ".join(alt_names))
+
+        notes = [n.get('text') for n in person_data.get('notes', []) if n.get('text')]
+        self.person_notes_label.config(text="\n".join(notes))
+
+        sources = person_data.get('sources', [])
+        self.person_sources_label.config(text=f"Sources: {len(sources)} attached" if sources else "")
+
     # Matches the leading "+YYYY", "+YYYY-MM", or "+YYYY-MM-DD" out of a
     # GEDCOM X formal date value (also tolerates a bare 4-digit year pulled
     # out of free-text "original" as a fallback) -- used to build a
@@ -1019,24 +1097,22 @@ class GedcomXBrowserApp:
         return str(lo) if lo == hi else f"{lo}-{hi}"
 
     def render_person_detail_tab(self, person_data):
-        """Populates the Person tab's Date/Age/Field/Value table from a
-        GEDCOM X Person document. Pass None to clear it.
-
-        Rows fall into three groups: undated biographical rows (Name,
-        Gender, ID, ...) stay pinned at the top in their natural order;
-        dated rows -- facts, plus marriage/couple facts pulled from each
-        spouse relationship -- are sorted chronologically in the middle so
-        the table reads as a timeline; Notes/Sources stay pinned at the
-        bottom. Facts without a usable date sort to the end of the
-        timeline group rather than being dropped."""
+        """Populates the Person tab: the header (Name, Gender, Living,
+        Lifespan, ID, alternate names, Notes, Sources) via
+        _render_person_header, and the Date/Age/Field/Value table below it
+        with timeline rows only -- facts, plus marriage/couple facts pulled
+        from each spouse relationship, children's births, and qualifying
+        family deaths, sorted chronologically. Facts without a usable date
+        sort to the end rather than being dropped. Pass None to clear both."""
         for item in self.person_detail_tree.get_children():
             self.person_detail_tree.delete(item)
+
+        self._render_person_header(person_data)
+
         if not person_data:
             return
 
-        header_rows = []
         timeline_rows = []
-        trailing_rows = []
 
         # Pull this person's own Birth/Death facts up front -- Birth anchors
         # the Age column below, Death bounds "during this person's lifetime"
@@ -1061,46 +1137,12 @@ class GedcomXBrowserApp:
         birth_precision = self._parse_date_precision(person_birth_date)
         birth_bounds = self._date_bounds(*birth_precision) if birth_precision else None
 
-        def add_header(field, value):
-            if value:
-                header_rows.append((field, value))
-
-        def add_trailing(field, value):
-            if value:
-                trailing_rows.append((field, value))
-
         def add_timeline(date_obj, field, value):
             if not value:
                 return
             date_text = (date_obj or {}).get('original', '')
             age_text = self._compute_age_text(date_obj, birth_bounds) if birth_bounds else ''
             timeline_rows.append((self._date_sort_key(date_obj), date_text, age_text, field, value))
-
-        display = person_data.get('display', {})
-        name = display.get('name')
-        if not name:
-            try: name = person_data['names'][0]['nameForms'][0]['fullText']
-            except Exception: name = None
-        add_header("Name", name)
-
-        for n in person_data.get('names', []):
-            try: full_text = n['nameForms'][0]['fullText']
-            except Exception: full_text = None
-            if full_text and full_text != name:
-                label = f"{n['type'].split('/')[-1]} name" if n.get('type') else "Alternate name"
-                add_header(label, full_text)
-
-        gender = display.get('gender')
-        if not gender:
-            try: gender = person_data['gender']['type'].split('/')[-1]
-            except Exception: gender = None
-        add_header("Gender", gender)
-
-        if person_data.get('living') is not None:
-            add_header("Living", "Yes" if person_data['living'] else "No")
-
-        add_header("Lifespan", display.get('lifespan'))
-        add_header("ID", person_data.get('id'))
 
         for fact in person_data.get('facts', []):
             fact_type = fact.get('type', '')
@@ -1177,21 +1219,10 @@ class GedcomXBrowserApp:
                 if place: parts.append(place)
                 add_timeline(fact.get('date'), f"Death of {relation_label}", " — ".join(parts))
 
-        for note in person_data.get('notes', []):
-            add_trailing("Note", note.get('text'))
-
-        sources = person_data.get('sources', [])
-        if sources:
-            add_trailing("Sources", f"{len(sources)} attached")
-
         timeline_rows.sort(key=lambda row: row[0])
 
-        for field, value in header_rows:
-            self.person_detail_tree.insert("", tk.END, values=("", "", field, value))
         for _, date_text, age_text, field, value in timeline_rows:
             self.person_detail_tree.insert("", tk.END, values=(date_text, age_text, field, value))
-        for field, value in trailing_rows:
-            self.person_detail_tree.insert("", tk.END, values=("", "", field, value))
 
     # --- Place tab: header + embedded OpenStreetMap view ---
     def setup_place_tab(self):
