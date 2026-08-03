@@ -15,24 +15,24 @@ func TestDerive(t *testing.T) {
 	}{
 		{
 			name:           "person and filename both available",
-			rootPersonName: "Jean Valerie Gould",
-			dbPath:         "/home/claude/gould_final.rmtree",
-			wantID:         "jean-valerie-gould-gould-final",
-			wantTitle:      "Jean Valerie Gould (gould_final)",
+			rootPersonName: "Victoria Hanover",
+			dbPath:         "/home/claude/royal92_final.rmtree",
+			wantID:         "victoria-hanover-royal92-final",
+			wantTitle:      "Victoria Hanover (royal92_final)",
 		},
 		{
 			name:           "windows-style path on a non-windows host",
-			rootPersonName: "Charlotte Mae Henry",
-			dbPath:         `G:\My Drive\Genealogy\2 - PAF\Family.rmtree`,
-			wantID:         "charlotte-mae-henry-family",
-			wantTitle:      "Charlotte Mae Henry (Family)",
+			rootPersonName: "Jane Smith",
+			dbPath:         `G:\My Drive\Genealogy\Family Tree\Smith.rmtree`,
+			wantID:         "jane-smith-smith",
+			wantTitle:      "Jane Smith (Smith)",
 		},
 		{
 			name:           "backup filename disambiguates two snapshots of the same tree",
-			rootPersonName: "Jean Valerie Gould",
-			dbPath:         `G:\My Drive\Gould Genealogy\00 - FindMyPast\Gould - 2024 06 24 09-29.rmtree`,
-			wantID:         "jean-valerie-gould-gould-2024-06-24-09-29",
-			wantTitle:      "Jean Valerie Gould (Gould - 2024 06 24 09-29)",
+			rootPersonName: "Victoria Hanover",
+			dbPath:         `G:\My Drive\Royal Genealogy\00 - Backups\royal92 - 2024 06 24 09-29.rmtree`,
+			wantID:         "victoria-hanover-royal92-2024-06-24-09-29",
+			wantTitle:      "Victoria Hanover (royal92 - 2024 06 24 09-29)",
 		},
 		{
 			name:           "no root person determinable, falls back to filename",
@@ -43,10 +43,10 @@ func TestDerive(t *testing.T) {
 		},
 		{
 			name:           "surname-only root person",
-			rootPersonName: "Hurman",
+			rootPersonName: "Smith",
 			dbPath:         "/data/tree.rmtree",
-			wantID:         "hurman-tree",
-			wantTitle:      "Hurman (tree)",
+			wantID:         "smith-tree",
+			wantTitle:      "Smith (tree)",
 		},
 	}
 
@@ -75,8 +75,8 @@ func TestDeriveNoUsableInput(t *testing.T) {
 }
 
 func TestDedupe(t *testing.T) {
-	in := []string{"gould", "henry", "gould", "gould", "royal92"}
-	want := []string{"gould", "henry", "gould-2", "gould-3", "royal92"}
+	in := []string{"hanover", "windsor", "hanover", "hanover", "royal92"}
+	want := []string{"hanover", "windsor", "hanover-2", "hanover-3", "royal92"}
 	got := Dedupe(in)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Dedupe(%v) = %v, want %v", in, got, want)
@@ -85,8 +85,8 @@ func TestDedupe(t *testing.T) {
 
 func TestSlugify(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"Jean Valerie Gould", "jean-valerie-gould"},
-		{"Gould - 2024 06 24 09-29", "gould-2024-06-24-09-29"},
+		{"Victoria Hanover", "victoria-hanover"},
+		{"royal92 - 2024 06 24 09-29", "royal92-2024-06-24-09-29"},
 		{"  leading and trailing  ", "leading-and-trailing"},
 		{"", ""},
 	}
