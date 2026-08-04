@@ -97,6 +97,10 @@ func Open(path string) (*DB, error) {
 // (e.g. an OpenForWriting, or an Open variant that takes readOnly) rather
 // than have read/write behavior decided in more than one place.
 func open(path string, readOnly bool) (*DB, error) {
+	if err := validateDatabaseFile(path); err != nil {
+		return nil, err
+	}
+
 	registerCollation()
 
 	mode := "rw"
