@@ -287,6 +287,51 @@ Two real limits worth knowing about, not glossed over:
   clear 404 naming the exact resolved path it tried, rather than a confusing
   generic error, when the file isn't actually there.
 
+### What RootsMagic's own UI requires, confirmed by actually using it
+
+Everything above about the `?`/`~`/`*` symbols came from the data
+dictionary and from reading real `MediaPath` values already sitting in
+existing files. Actually adding a new piece of media through RootsMagic's
+own interface (to get `royal92.rmtree`'s wedding painting attached) surfaced
+a few things about the write side that were worth confirming rather than
+assuming, since they matter to anyone setting up their own database to work
+well with this server:
+
+- **RootsMagic's own file-chooser dialog has no "store as relative path"
+  option.** Selecting a file always records its full, absolute path.
+  Getting a `*`-relative path at all means manually editing the `MediaPath`
+  field afterward, by hand, in RootsMagic's own UI.
+- **A bare, symbol-less relative path is rejected by RootsMagic itself**
+  ("Media file not found") -- confirming, not just assuming, that
+  RootsMagic never writes that form under normal use. This server's
+  resolver still has a fallback for it (treating a symbol-less `MediaPath`
+  as relative to the database's own directory) purely as defensive
+  robustness -- it's very unlikely to ever fire against a file RootsMagic
+  itself produced, but costs nothing to keep.
+- **`*` requires a path separator immediately after it.** `*royal92` (no
+  separator) was rejected the same way; `*\royal92` (or `*/royal92`,
+  presumably -- only the backslash form was actually tried) was accepted.
+  This server's own resolver was never actually affected by this either
+  way -- `ResolveMediaPath` already trimmed a leading separator uniformly,
+  so it treats `*royal92` and `*\royal92` identically and correctly -- but
+  it's a real, confirmed fact about what RootsMagic itself will accept,
+  worth knowing if you're hand-editing a `MediaPath` yourself rather than
+  going through this server.
+- **RootsMagic's UI displays the expanded absolute path even after
+  accepting and storing the symbolic form.** The database itself still
+  holds `*\royal92` (confirmed directly: that's the literal, unmodified
+  `MediaPath` value in `royal92.rmtree`), but RootsMagic's own interface
+  shows the fully expanded path back to the user -- the symbol is a
+  storage-and-portability convenience, transparent to the person using the
+  software, not something RootsMagic expects a user to keep looking at.
+
+One thing above is confirmed only for `*`, not verified the same way for
+`~`: it's a reasonable inference that `~` behaves identically (same
+symbol-expansion mechanism, presumably the same code path inside
+RootsMagic), but that's inference, not something this server's development
+directly exercised the way `*` was. Worth confirming directly before
+relying on it, the same way `*` was confirmed here rather than assumed.
+
 ### Items that are links, not files
 
 Not every `MultimediaTable` row is a local file. Databases built partly from
@@ -350,10 +395,10 @@ resources, at two different URLs, not one resource wearing two hats. They
 share an id on purpose: an `Event`'s id is `E{EventID}`, the identical
 scheme `factRef` already used for the corresponding `Fact`'s id nested
 inside a `Person` or `Relationship` (see `parseEventID`'s doc comment) --
-so if a client sees `"id": "E5087"` in a `Relationship`'s `facts` (this is
-real, verified data: it's the Marriage fact on `F42`, the couple
-relationship between Victoria Hanover's parents in the `royal92.rmtree`
-sample), it already knows `GET /events/E5087` will resolve to the fuller,
+so if a client sees `"id": "E5049"` in a `Relationship`'s `facts` (this is
+real, verified data: it's the Marriage fact on `F1`, the couple
+relationship between Victoria Hanover and Albert in the `royal92.rmtree`
+sample), it already knows `GET /events/E5049` will resolve to the fuller,
 multi-participant picture of that same occurrence, with no separate
 lookup needed to make the connection.
 
@@ -407,12 +452,11 @@ corresponding facts share the same underlying RootsMagic fact type name.
 `WitnessTable.PersonID` can be `0`, meaning the witness isn't a person
 recorded in this database at all -- RootsMagic stores their name as free
 text instead (`WitnessTable.Given`/`Surname`). This isn't a hypothetical
-edge case: it's exactly what real-world witness data looks like (a real
-database used during development of this feature had a marriage witnessed
-by two people who were never otherwise added to the tree, and hit this
-case immediately -- `royal92.rmtree` itself has no witnesses at all, so
-this isn't something you can reproduce against the sample data included
-in this repo, but it's a normal, expected shape of real RootsMagic data).
+edge case: `royal92.rmtree`'s own marriage event for Victoria and Albert
+(`E5049`) has both kinds side by side -- twelve witnesses who are real
+`Person`s already in the database (family members like Queen Adelaide,
+`P219`), and Victoria's twelve bridesmaids (Mary Howard, Caroline
+Gordon-Lennox, and ten others), who aren't.
 
 `EventRole.person` is REQUIRED by the spec and MUST resolve to a real
 `Person` resource. A `PersonID=0` witness structurally cannot satisfy
@@ -424,12 +468,42 @@ whole approach (see, for a concrete precedent, how unresolvable
 `MediaPath` values are handled in "Multimedia" above). So these witnesses
 are simply left out of `roles`, but -- deliberately, not as an
 afterthought -- not dropped from the response altogether: they're
-collected into an `Event`-level note instead (illustrative example, not
-real data: "Additional participants recorded by name only, not as persons
-in this database: Jane Doe (Witness); John Smith (Witness)"), preserving
-the information the
-database actually has without forcing it into a field it can't honestly
-fill.
+collected into an `Event`-level note instead. The real, current output for
+`E5049`:
+
+> Additional participants recorded by name only, not as persons in this
+> database: Mary Howard (Bridesmaid); Caroline Gordon-Lennox (Bridesmaid);
+> Adelaide Paget (Bridesmaid); Eleanora Paget (Bridesmaid); Elizabeth
+> Howard (Bridesmaid); Wilhelmina Stanhope (Bridesmaid); Sarah Villiers
+> (Bridesmaid); Elizabeth Sackville-West (Bridesmaid); Ida Hay
+> (Bridesmaid); Frances Cowper (Bridesmaid); Mary Grimston (Bridesmaid);
+> Jane Pleydell-Bouverie (Bridesmaid)
+
+That "(Bridesmaid)" comes from `RoleTable`, not `WitnessTable.Note`, and
+that distinction was a real, working-with-real-data lesson, not a design
+call made up front. RootsMagic's own UI offers exactly one built-in role
+per fact type (`Witness`, for `Marriage`) -- anything more specific has to
+be added manually as a new `RoleTable` row, which is genuinely how
+`royal92.rmtree` ended up with a `Bridesmaid` role at all. The first
+attempt at this sample data used the free-text `Note` field to record
+"Bridesmaid" instead, since at the time that looked like the obvious place
+for it -- but `Note` is a multi-line free-text area meant for substantive
+commentary, not a categorical label, and RootsMagic's own UI reflects that
+distinction. So the code initially got this backwards (preferring `Note`
+over the role name whenever `Note` was present), which happened to produce
+correct-looking output only because the two were never populated at the
+same time in the test data. Once bridesmaids got a proper `Bridesmaid`
+role instead, that bug would have silently reverted every one of them back
+to "(Witness)". The fix: the role name (resolved through
+`gedcomx.EventRoleType`, same as it always was) is always shown when set,
+full stop, and `Note` -- on the rare chance it's ever populated
+*alongside* a role, for genuine supplementary commentary -- is appended
+separately (`"Name (Role): note text"`) rather than overriding or blending
+with it. This mirrors, as closely as a witness without a `Person` behind
+them can, how `EventRole.details` already works for the twelve witnesses
+who *are* real `Person`s (below): the role type and its free-text details
+are always two distinct pieces of information, never one replacing the
+other.
 
 ## RootsMagic version handling
 
