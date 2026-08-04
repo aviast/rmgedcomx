@@ -89,9 +89,12 @@ the session about to start. See [SCOPE.md](./SCOPE.md#multiple-databases--collec
 for the full reasoning.
 
 Then browse, e.g. (all real, verified against `royal92.rmtree` -- P1 is
-Victoria Hanover; F1 is her marriage to Albert; F42 is her parents'
-marriage, whose Marriage fact `E5087` is the same id as
-`.../events/E5087`, see [SCOPE.md](./SCOPE.md#events)):
+Victoria Hanover; F1 is her marriage to Albert, whose Marriage fact
+`E5049` is the same id as `.../events/E5049` -- see
+[SCOPE.md](./SCOPE.md#events). That event's `roles` include real witnesses
+already in the database, like P219, Queen Adelaide, alongside her
+bridesmaids, who aren't; and its `sources` include `M1`, an actual scan of
+the painting of the wedding):
 
 ```
 curl http://localhost:8080/
@@ -104,14 +107,11 @@ curl http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1
 curl http://localhost:8080/collections/victoria-hanover-royal92/places/PL261
 curl http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1
 curl http://localhost:8080/collections/victoria-hanover-royal92/events?limit=20
-curl http://localhost:8080/collections/victoria-hanover-royal92/events/E5087
+curl http://localhost:8080/collections/victoria-hanover-royal92/events/E5049
+curl http://localhost:8080/collections/victoria-hanover-royal92/artifacts?limit=20
+curl http://localhost:8080/collections/victoria-hanover-royal92/artifacts/M1
+curl http://localhost:8080/collections/victoria-hanover-royal92/artifacts/M1/content -o wedding.jpg
 ```
-
-`royal92.rmtree` has no multimedia (the GEDCOM it was built from didn't
-include any), so there's no real `artifacts` example to show here -- the
-shape of those endpoints is `.../artifacts?limit=20`, `.../artifacts/M1`,
-and `.../artifacts/M1/content -o photo.jpg`, but against your own database,
-not this sample one.
 
 Responses use `application/x-gedcomx-v1+json` (GEDCOM X JSON), the one representation this
 server produces -- a request with an `Accept` header that excludes it gets `406 Not

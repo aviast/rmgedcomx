@@ -513,8 +513,24 @@ func (s *Server) buildEvent(e rmdb.Event) (gedcomx.Event, error) {
 			if name == "" {
 				name = fmt.Sprintf("witness %d", w.WitnessID)
 			}
+			// Role is always shown when set -- RoleTable is the correct,
+			// intentional place for a short categorical label (e.g.
+			// "Bridesmaid"), including custom roles a user added
+			// specifically for this (RootsMagic's Note field is a
+			// multi-line free-text area, not meant for this, and
+			// shouldn't be treated as if it were an alternative way to
+			// set the role). If Note is ALSO present -- genuine
+			// supplementary commentary, not a role label -- it's appended
+			// separately rather than folded into or overriding the role,
+			// mirroring how EventRole.details works for witnesses who ARE
+			// a Person in this database (see below): the role type and
+			// its free-text details are always two distinct pieces of
+			// information, never one replacing the other.
 			if roleName != "" {
 				name += " (" + roleName + ")"
+			}
+			if note := strings.TrimSpace(w.Note); note != "" {
+				name += ": " + note
 			}
 			unlisted = append(unlisted, name)
 			continue
