@@ -482,6 +482,8 @@ class GedcomXBrowserApp:
 
     # --- Hypermedia Navigation System (Right Pane Details) ---
     def navigate_to(self, href, navigation_mode="new"):
+        self._request_cache = {}
+
         if self.is_busy:
             # Already loading something -- ignore the extra click rather
             # than starting an overlapping request. It doesn't get lost;
@@ -1326,24 +1328,44 @@ class GedcomXBrowserApp:
         if not href:
             return []
 
+        # Ensure cache exists (fallback in case it gets called before navigate_to)
+        if not hasattr(self, '_request_cache'):
+            self._request_cache = {}
+
+        # 2. Check the cache: If we already fetched this href during this navigation, return it.
+        if href in self._request_cache:
+            return self._request_cache[href]
+
+        # 3. Otherwise, perform the HTTP fetch
         base_url = self.server_url_var.get().strip().rstrip('/')
         full_url = urllib.parse.urljoin(f"{base_url}/", href)
+
         try:
             req = urllib.request.Request(full_url, headers=self.headers)
             with urllib.request.urlopen(req) as response:
                 if response.status == 204:
+                    self._request_cache[href] = []
                     return []
                 raw_data = response.read().decode("utf-8")
 
             if not raw_data.strip():
+                self._request_cache[href] = []
                 return []
+
             document = json.loads(raw_data)
             persons = document.get("persons", [])
             relationships = document.get("relationships", [])
-            return [(p, relationships[i] if i < len(relationships) else None)
-                    for i, p in enumerate(persons)]
+
+            result = [(p, relationships[i] if i < len(relationships) else None)
+                      for i, p in enumerate(persons)]
+
+            # 4. Store the parsed result in the cache for any other tabs that need it
+            self._request_cache[href] = result
+            return result
+
         except Exception as e:
             self.show_notification(f"Could not load {relation} for this person: {e}", "warning")
+
         return []
 
     # --- Visual Family Tab Integration ---
