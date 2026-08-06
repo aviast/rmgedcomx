@@ -103,10 +103,7 @@ func (db *DB) ReadOnly() bool { return db.readOnly }
 //
 // readOnly is the single place that decides whether the connection can
 // write -- see SCOPE.md's "Write support" section for the staged plan
-// this is the first stage of. Today, every caller still passes true
-// (main.go's -write flag defaults to off, and no write endpoint exists
-// yet to make use of a writable connection even when it's on), so from
-// outside this package nothing behaves differently yet.
+// this is part of.
 func Open(path string, readOnly bool) (*DB, error) {
 	if err := validateDatabaseFile(path); err != nil {
 		return nil, err

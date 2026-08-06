@@ -18,12 +18,9 @@ support things a single-user desktop database doesn't need:
   real search implementation (indexing, ranking, paging as Atom/JSON feeds) is a
   project in itself. `GET /persons?name=...` is provided instead, as a simpler
   non-Atom filter, and is a natural place to grow real search later.
-- **Write operations** — you asked for read-only. RootsMagic's own file locking and
-  UI assumptions make concurrent external writes risky; if you want write support
-  later, it should go through RootsMagic's documented update patterns and probably
-  a `-write` flag that's off by default. See "SQLite driver" below for how the
-  current read-only enforcement is deliberately centralized in one place to make
-  that easy to add later.
+- **Write operations** — off by default, and the vast majority of resources are
+  still read-only even when write support is enabled. See the "Write support"
+  section below for what's actually implemented, staged incrementally, and why.
 
 `Collections` / `Collection`, `Artifacts`, and `Events` / `Event` **are**
 implemented -- see the "Multiple databases / Collections", "Multimedia", and
@@ -504,6 +501,192 @@ them can, how `EventRole.details` already works for the twelve witnesses
 who *are* real `Person`s (below): the role type and its free-text details
 are always two distinct pieces of information, never one replacing the
 other.
+
+## Write support
+
+Off by default. `-write` enables it; without it, this server behaves
+exactly as it always has -- every write attempt gets a `405 Method Not
+Allowed` with a correct `Allow` header (see "HTTP semantics" below), the
+same as any resource this server doesn't implement writes for at all.
+
+This is being built in deliberately small, independently-testable stages,
+not as one large change, specifically so problems surface against a small
+diff rather than a large one. Each stage below is a real, separate unit of
+work; the ones marked done have been built, and verified against a real
+RootsMagic database, not just written and assumed correct.
+
+### Why this is risky enough to be careful about
+
+A `.rmtree` file is frequently years of someone's actual research. Getting
+this wrong isn't like getting a read endpoint wrong -- a read bug returns
+bad data; a write bug can destroy real data, permanently, in a file most
+people don't rigorously version-control. Two things follow from that,
+both decided before any real write code existed:
+
+- **RootsMagic must not be running at the same time.** Two writers on one
+  SQLite file -- RootsMagic's own desktop app and this server -- is a real
+  corruption risk, not a hypothetical one. `-write` refuses to start at all
+  if `RootsMagic.exe` appears to be running (checked via `tasklist`, a
+  built-in Windows command -- no new dependency). This is enforced as a
+  hard precondition, not a warning: the server exits with a clear error
+  rather than proceeding. See `cmd/server/rootsmagic_running_check.go` for
+  the exact mechanism and its real limits, both worth knowing:
+  - It only checks at startup. It cannot, and does not try to, protect
+    against someone opening RootsMagic *after* rmgedcomx has already
+    started with `-write`. That gap is real and currently unaddressed.
+  - It's meaningful only on Windows, where RootsMagic actually runs (a
+    no-op everywhere else).
+  - Unlike everything else in this project, this piece could not be
+    verified empirically during development -- it was written and tested
+    from Linux, which can run neither `tasklist` nor RootsMagic itself.
+    The code comment says this plainly. If you're relying on this check,
+    actually test it once on a real Windows machine (start `-write` with
+    RootsMagic open and confirm it refuses; close RootsMagic and confirm
+    it proceeds) rather than trusting it on the strength of the code
+    reading correctly.
+- **A backup happens automatically before this server's first write.**
+  `DB.EnsureBackup()` (`internal/rmdb/backup.go`) copies the source file to
+  a timestamped sibling (`royal92-backup-20260806-091724.rmtree`) the first
+  time it's called on a given connection -- once per server session, not
+  once per write, via `sync.Once`, so every write handler can call it
+  unconditionally without worrying about redundant copies. It defaults to
+  the same directory as the source file; that's a placeholder for a better
+  default (RootsMagic's own configured Backup folder, from
+  `RootsMagicUser.xml` -- see "Multimedia" above for the sibling
+  discussion about that file's Media Folder setting, which applies here
+  too), not a permanent design decision. This isn't a substitute for
+  RootsMagic's own backup feature, and doesn't try to be -- it's a
+  narrower, automatic safety net specifically for changes made by this
+  server, so a mistake here (a bug, a bad request, this server writing
+  something RootsMagic doesn't expect) can always be undone by restoring
+  one file, without depending on anyone having remembered to make their
+  own backup first.
+
+### Stage 0 -- plumbing only, no capability (done)
+
+`-write` threads a `readOnly bool` all the way down to `rmdb.Open`, which
+now opens `mode=rw` (with a 5-second `busy_timeout`, so a brief, incidental
+lock -- e.g. RootsMagic autosaving, if it were open, which the check above
+means it shouldn't be -- causes a short wait-and-retry rather than an
+immediate failure) instead of `mode=ro`. `DB.ReadOnly()` and `DB.Path()`
+expose that state and the source path for later stages to use. With
+`-write` off, this changes nothing observable; with it on, the underlying
+connection can write, but nothing yet asks it to -- no HTTP write handlers
+existed at this stage. Verified directly at the SQL level (not just
+assumed from the code): a raw `UPDATE` against a read-only connection to a
+real database failed with `attempt to write a readonly database`; the
+identical `UPDATE` against a write-mode connection to the same file
+succeeded.
+
+The startup table (`cmd/server/main.go`, `printCollectionTable`) also
+gained a `UNIQUE ID` column (RootsMagic's own per-database identifier --
+see "Multiple databases / Collections" above for what it is and why it's
+useful alongside the human-recognizable but unstable Collection id) and a
+prominent read-only/`*** WRITE MODE ENABLED ***` banner, since write mode
+is a whole-server setting, not a per-collection one.
+
+### Stage 1 -- UPDATE, `Place` and `Source` (done)
+
+`POST /collections/{id}/places/{id}` and `POST
+/collections/{id}/source-descriptions/{id}`, per RS spec Sections 4.16.2
+and 4.23.2 ("Update a place description" / "Update a source description",
+both `OPTIONAL`) and Section 8 ("Updating Application States": a data
+element supplying its own `id` is an update candidate for that id). A
+successful update returns `204 No Content`, exactly as the spec says it
+SHOULD; an invalid request returns `400` with an
+[RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) body explaining what
+was wrong, also per spec ("a `400` response code is RECOMMENDED").
+
+These two were chosen first specifically *because* they're structurally
+simple (`PlaceTable`/`SourceTable` are single tables, with none of
+`Person`'s or `Relationship`'s cross-table consistency concerns) -- the
+point of this stage was to prove out the reusable plumbing (request
+parsing, the write-route registration pattern, transactions, response
+codes, the backup call) against the lowest-risk case, not because these
+two resources matter most. They may not even end up mattering much in
+practice: GEDAM (the DAM tool this server was originally built to support)
+doesn't need to modify `Place` or `Source` at all -- but since they were
+cheap to add correctly once the plumbing existed, they're here anyway.
+
+**Write route registration is gated by `Server.resourceHandler()` checking
+`!s.db.ReadOnly()` directly** -- not a separately-tracked "is this
+collection writable" setting that could drift out of sync with the
+database connection's own actual state. When false, `POST
+/places/{id}`/`POST /source-descriptions/{id}` simply aren't registered at
+all, so a request there gets the same automatic `405` (with the correct
+`Allow` header) as any other write this server doesn't implement -- there
+is no code path by which a write can reach the database in read-only mode;
+it's not merely checked at runtime, the handler function doesn't exist to
+be called.
+
+**What's writable, and what deliberately isn't yet:**
+
+- `Place`: `names[0].value` -> `PlaceTable.Name`; `latitude`/`longitude`
+  together -> `PlaceTable.Latitude`/`Longitude` (converted to RootsMagic's
+  own decimal-degrees-times-1e7 integer encoding); `notes[0].text` ->
+  `PlaceTable.Note`. Providing exactly one of `latitude`/`longitude`
+  without the other is rejected with `400` rather than silently storing a
+  nonsensical half-coordinate.
+- `Source`: `titles[0].value` -> `SourceTable.Name`; `notes[0].text` ->
+  `SourceTable.Comments`. **`citations` is deliberately rejected with
+  `400`** if present at all, rather than silently accepted and ignored, or
+  guessed at: this API's own `citations` output is `ActualText` and
+  `RefNumber` concatenated into one string (see "Fact type mapping"'s
+  sibling reasoning elsewhere in this file about not reusing ambiguous
+  mappings), and there's no way to safely split an arbitrary string back
+  into those two original fields. Getting this wrong would mean silently
+  corrupting a citation, which is worse than refusing outright. A future
+  revision could expose `ActualText`/`RefNumber` as genuinely separate
+  fields (on both the read and write sides) to resolve this properly,
+  rather than guessing now.
+
+**Update semantics: a field that's absent, or present-but-empty, is left
+unchanged -- there is currently no way to explicitly clear a field back to
+empty via this API.** This is a real, deliberate limitation, not an
+oversight: cleanly distinguishing "the client omitted this key" from "the
+client explicitly wants to blank it" requires either JSON presence
+detection against the raw request body (parse into
+`map[string]json.RawMessage` first, check key existence, then decode) or
+restructuring the existing output types to use pointers throughout, and
+Stage 1's whole point was to keep the first real write endpoint simple
+enough to get right on the first attempt. `latitude`/`longitude` are the
+one exception, and get this for free: `PlaceDescription.Latitude`/
+`Longitude` are already `*float64` (nil when a place has no coordinates,
+for output purposes), so Go's JSON decoding already distinguishes "key
+absent" from "key present" for those two fields specifically, without any
+extra code. If explicit field-clearing turns out to matter in practice,
+that's the point to revisit this, once there's a real use case driving the
+choice rather than a hypothetical one.
+
+Every write is wrapped in an explicit SQL transaction
+(`internal/rmdb/writes.go`), even though a single `UPDATE` statement is
+already atomic on its own without one -- introducing the pattern now,
+against the simplest possible case, means it's already proven correct by
+the time a later stage genuinely needs it (a multi-table `Person` write
+touching both `PersonTable` and `NameTable`, for instance, where a partial
+failure partway through would be a real problem without one).
+
+### What's next
+
+GEDAM's actual requirements, clarified during this stage: updating a
+digital asset's stored path (`MultimediaTable.MediaPath`/`MediaFile`), and
+creating/editing/deleting links between media and the person/fact/event it
+documents (`MediaLinkTable` rows) -- notably, **not** creating new
+`Person`/`Relationship`/`Event` records, and not a general "source record"
+concept (GEDAM handles that independently of RootsMagic's own data model).
+That meaningfully narrows what full write support actually needs to cover
+in the end: `Artifacts` UPDATE (the `MediaPath` case) and `MediaLinkTable`
+CRUD are the resources with a real, driving use case behind them, not
+`Person`/`Relationship` CREATE, which may end up out of scope entirely
+rather than merely a later stage.
+
+Also not yet done: reading `RootsMagicUser.xml` for the Media Folder and
+Backup Folder locations as defaults (see "Multimedia" above), which would
+remove the need to hand-supply `-media-folder` and would give the backup
+mechanism above a better default location than "next to the source file."
+Approved in principle; not yet built, deliberately kept as its own
+self-contained piece of work rather than folded into a write-support
+stage it isn't actually part of.
 
 ## RootsMagic version handling
 

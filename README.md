@@ -1,13 +1,15 @@
 # rmgedcomx
 
-A lightweight, read-only RESTful API server, written in Go, that exposes the contents of a
+A lightweight RESTful API server, written in Go, that exposes the contents of a
 [RootsMagic](https://rootsmagic.com/) genealogy database (SQLite) through a subset of the
-[GEDCOM X RS](https://github.com/FamilySearch/gedcomx-rs) specification.
+[GEDCOM X RS](https://github.com/FamilySearch/gedcomx-rs) specification. Read-only by
+default; write support for a small, deliberately-limited set of resources is available
+via `-write` -- see [SCOPE.md](./SCOPE.md#write-support).
 
 ## Scope
 
-This server implements the **core genealogy resources** of GEDCOM X RS, as a read-only
-(`GET`-only) API:
+This server implements the **core genealogy resources** of GEDCOM X RS. Almost
+everything is `GET`-only:
 
 - `Collections` / `Collection`
 - `Persons` / `Person`
@@ -142,11 +144,17 @@ Allowed` with a correct `Allow` header; a URL this server doesn't implement at a
 | `-addr` | `:8080` | Address to listen on |
 | `-base-url` | `http://localhost:8080` | Base URL used to build absolute links in responses |
 | `-media-folder` | *(none)* | RootsMagic's configured "Media Folder", if any multimedia paths use it (see [SCOPE.md](./SCOPE.md#multimedia)); shared by every `-db`, since it's a RootsMagic-installation-wide setting, not a per-database one |
+| `-write` | `false` | Enable write support (see [SCOPE.md](./SCOPE.md#write-support) for exactly what that covers at any given point -- it's being built in small, tested stages, not all at once). Refuses to start if RootsMagic itself appears to be running |
 | `-default-generations` | `4` | Default number of generations for ancestry/descendancy queries |
 | `-max-page-size` | `200` | Maximum number of entries returned by a single paged request |
 
-The database is never written to: `Open()` uses SQLite's native `mode=ro` URI
+By default, the database is never written to: `Open()` uses SQLite's native `mode=ro` URI
 parameter, which `modernc.org/sqlite` honors natively since it transpiles the
 real SQLite engine rather than reimplementing URI handling -- a write attempt
 fails at the SQL engine level regardless of file permissions. See
-[SCOPE.md](./SCOPE.md) for how this was verified.
+[SCOPE.md](./SCOPE.md) for how this was verified. With `-write`, this server
+makes an automatic timestamped backup of your database before its first write
+each session -- but that's a safety net for mistakes *this server* makes, not
+a substitute for your own backups, and it does not, and cannot, protect
+against RootsMagic itself running at the same time (which `-write` refuses to
+start alongside, on Windows).

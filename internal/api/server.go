@@ -133,6 +133,22 @@ func (s *Server) resourceHandler() http.Handler {
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("GET /events/{id}", s.handleEvent)
 
+	// Write routes are only registered at all when this collection's own
+	// database connection is actually writable -- the single source of
+	// truth for that is db.ReadOnly() (set by the -write flag, all the
+	// way down in rmdb.Open), not a separately-tracked setting here, so
+	// there's exactly one place this can ever be decided inconsistently
+	// with the underlying connection. When not registered, a POST to
+	// these paths gets the same automatic 405 as any other unimplemented
+	// write (see the doc comment above) -- there's no behavioral
+	// difference between "-write not passed" and "this particular write
+	// isn't implemented yet." See SCOPE.md's "Write support" section for
+	// the staged plan this is part of.
+	if !s.db.ReadOnly() {
+		mux.HandleFunc("POST /places/{id}", s.handleUpdatePlace)
+		mux.HandleFunc("POST /source-descriptions/{id}", s.handleUpdateSourceDescription)
+	}
+
 	return mux
 }
 
@@ -264,6 +280,21 @@ func writeError(w http.ResponseWriter, status int, detail string) {
 
 func notFound(w http.ResponseWriter, kind, id string) {
 	writeError(w, http.StatusNotFound, kind+" "+id+" not found")
+}
+
+// ensureBackupForWrite calls DB.EnsureBackup and, if it fails, writes a
+// 500 response and returns a non-nil error so the caller can bail out
+// without attempting the write. Every write handler calls this first,
+// unconditionally, before doing anything else -- see SCOPE.md's "Write
+// support" section for why a backup safety net exists at all. If we can't
+// guarantee a backup exists, the write should not be attempted.
+func (s *Server) ensureBackupForWrite(w http.ResponseWriter) error {
+	if _, err := s.db.EnsureBackup(); err != nil {
+		writeError(w, http.StatusInternalServerError,
+			"couldn't create a safety backup before writing, so the write was not attempted: "+err.Error())
+		return err
+	}
+	return nil
 }
 
 // pagingParams reads and clamps ?limit=&offset= query parameters.

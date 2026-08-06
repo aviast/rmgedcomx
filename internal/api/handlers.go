@@ -1,9 +1,13 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/aviast/rmgedcomx/internal/gedcomx"
 	"github.com/aviast/rmgedcomx/internal/rmdb"
@@ -549,6 +553,73 @@ func (s *Server) handlePlace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, gedcomx.PlaceDescriptionDocument{Places: []gedcomx.PlaceDescription{pd}, Links: pd.Links})
 }
 
+// handleUpdatePlace implements the Place Description state's POST
+// operation (RS spec Section 4.16.2: "Update a place description",
+// OPTIONAL) -- only registered at all when this collection's database is
+// writable (see resourceHandler). Updates PlaceTable's Name,
+// Latitude/Longitude, and Note; see rmdb.PlaceUpdate and SCOPE.md's
+// "Write support" section for the current, deliberately limited, set of
+// writable fields and update semantics.
+func (s *Server) handleUpdatePlace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	plid, err := parsePlaceID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var body gedcomx.PlaceDescriptionDocument
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.Places) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one place description (RS spec Section 4.16.3)")
+		return
+	}
+	place := body.Places[0]
+	// RS spec Section 8: a data element WITH an id is an update candidate
+	// for that id -- cross-check it matches the URL rather than silently
+	// trusting or ignoring a mismatch.
+	if place.ID != "" && place.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", place.ID, id))
+		return
+	}
+	if (place.Latitude == nil) != (place.Longitude == nil) {
+		writeError(w, http.StatusBadRequest, "latitude and longitude must be provided together, or not at all")
+		return
+	}
+
+	var update rmdb.PlaceUpdate
+	if len(place.Names) > 0 && strings.TrimSpace(place.Names[0].Value) != "" {
+		name := place.Names[0].Value
+		update.Name = &name
+	}
+	if place.Latitude != nil && place.Longitude != nil {
+		lat := int64(*place.Latitude * 1e7)
+		lon := int64(*place.Longitude * 1e7)
+		update.Latitude = &lat
+		update.Longitude = &lon
+	}
+	if len(place.Notes) > 0 && strings.TrimSpace(place.Notes[0].Text) != "" {
+		note := place.Notes[0].Text
+		update.Note = &note
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdatePlace(plid, update); err != nil {
+		if errors.Is(err, rmdb.ErrNotFound) {
+			notFound(w, "place", id)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // --- Source descriptions ---
 
 func (s *Server) handleSourceDescriptions(w http.ResponseWriter, r *http.Request) {
@@ -591,6 +662,64 @@ func (s *Server) handleSourceDescription(w http.ResponseWriter, r *http.Request)
 	}
 	sd := s.buildSourceDescription(*src)
 	writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
+}
+
+// handleUpdateSourceDescription implements the Source Description state's
+// POST operation (RS spec Section 4.23.2: "Update a source description",
+// OPTIONAL) -- only registered at all when this collection's database is
+// writable (see resourceHandler). Updates SourceTable's Name and
+// Comments; see rmdb.SourceUpdate and SCOPE.md's "Write support" section
+// for why `citations` is deliberately not (yet) writable.
+func (s *Server) handleUpdateSourceDescription(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid, err := parseSourceID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var body gedcomx.SourceDescriptionDocument
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.SourceDescriptions) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one source description (RS spec Section 4.23.3)")
+		return
+	}
+	src := body.SourceDescriptions[0]
+	if src.ID != "" && src.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", src.ID, id))
+		return
+	}
+	if len(src.Citations) > 0 {
+		writeError(w, http.StatusBadRequest,
+			"updating citations isn't supported yet -- RootsMagic's ActualText and RefNumber fields are combined into this API's single citations value on the way out, and can't be unambiguously split back apart on the way in; see SCOPE.md's \"Write support\" section. Omit citations from the request body to update the other fields.")
+		return
+	}
+
+	var update rmdb.SourceUpdate
+	if len(src.Titles) > 0 && strings.TrimSpace(src.Titles[0].Value) != "" {
+		name := src.Titles[0].Value
+		update.Name = &name
+	}
+	if len(src.Notes) > 0 && strings.TrimSpace(src.Notes[0].Text) != "" {
+		comments := src.Notes[0].Text
+		update.Comments = &comments
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateSource(sid, update); err != nil {
+		if errors.Is(err, rmdb.ErrNotFound) {
+			notFound(w, "source description", id)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Artifacts (multimedia) ---

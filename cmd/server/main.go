@@ -48,7 +48,7 @@ func main() {
 		addr               = flag.String("addr", ":8080", "address to listen on")
 		baseURL            = flag.String("base-url", "http://localhost:8080", "base URL used to build absolute links in responses")
 		mediaFolder        = flag.String("media-folder", "", "RootsMagic's configured Media Folder, for resolving multimedia paths that use the '?' symbol (see SCOPE.md's \"Multimedia\" section); shared by all databases, since it's a RootsMagic-installation-wide setting, not a per-database one")
-		write              = flag.Bool("write", false, "enable write support (POST/PUT/PATCH/DELETE); default is read-only. See SCOPE.md's \"Write support\" section -- as of this build, this only controls whether the underlying database connection can write at all, since no write endpoints exist yet")
+		write              = flag.Bool("write", false, "enable write support (POST/PUT/PATCH/DELETE); default is read-only. See SCOPE.md's \"Write support\" section for what's actually implemented at any given stage")
 		defaultGenerations = flag.Int("default-generations", 4, "default number of generations for ancestry/descendancy queries")
 		maxPageSize        = flag.Int("max-page-size", 200, "maximum number of entries returned by a single paged request")
 	)
@@ -58,6 +58,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: at least one -db is required")
 		flag.Usage()
 		os.Exit(2)
+	}
+
+	if *write {
+		if err := checkRootsMagicNotRunning(); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
+		}
 	}
 
 	homeDir, err := os.UserHomeDir()
