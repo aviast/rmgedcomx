@@ -1,12 +1,12 @@
-import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
-import tkinter.font as tkfont
-import urllib.request
-import urllib.error
-import urllib.parse
+import calendar
 import json
 import re
-import calendar
+import tkinter as tk
+import tkinter.font as tkfont
+import urllib.error
+import urllib.parse
+import urllib.request
+from tkinter import messagebox, scrolledtext, ttk
 
 try:
     from tkintermapview import TkinterMapView
@@ -518,7 +518,7 @@ class GedcomXBrowserApp:
 
                 raw_data = response.read().decode('utf-8')
                 if not raw_data.strip():
-                    self.show_notification(f"HTTP 204 No Content: Empty response body received.", "warning")
+                    self.show_notification("HTTP 204 No Content: Empty response body received.", "warning")
                     return
 
                 self.current_document = json.loads(raw_data)
@@ -555,7 +555,7 @@ class GedcomXBrowserApp:
 
         except urllib.error.HTTPError as e:
             if e.code == 204:
-                self.show_notification(f"HTTP 204 No Content: The requested relationship or entity does not exist.", "warning")
+                self.show_notification("HTTP 204 No Content: The requested relationship or entity does not exist.", "warning")
             else:
                 self.show_notification(f"HTTP Error {e.code}: {e.reason}", "error")
         except Exception as e:
@@ -924,7 +924,7 @@ class GedcomXBrowserApp:
         if href:
             self.navigate_to(href, navigation_mode="new")
         else:
-            self.show_notification(f"Could not open person: no person/self link was supplied.", "warning")
+            self.show_notification("Could not open person: no person/self link was supplied.", "warning")
 
     def show_person_detail_tab(self, person_data):
         """Renders person_data into the Person tab and switches to it. Used
@@ -1128,8 +1128,7 @@ class GedcomXBrowserApp:
                 person_birth_date = fact.get('date')
             elif label == 'Death':
                 key = self._date_sort_key(fact.get('date'))
-                if key < person_death_key:
-                    person_death_key = key
+                person_death_key = min(person_death_key, key)
         # True only when this person's own death has a usable date -- that's
         # the cutoff for "during this person's lifetime" below. If it's
         # unknown (still living, or a death with no parseable date), there's

@@ -1,5 +1,7 @@
-// Package rmdb provides read-only access to a RootsMagic SQLite database. It
-// discovers the actual columns present in each table at startup (rather than
+// Package rmdb provides access to a RootsMagic SQLite database -- read-only
+// by default, optionally read-write (see Open and SCOPE.md's "Write
+// support" section for the staged plan behind that). It discovers the
+// actual columns present in each table at startup (rather than
 // hard-coding a single schema version) so that it works unmodified across
 // RootsMagic 7-11 files; see SCOPE.md at the repository root for details.
 // RootsMagic 6 and earlier are out of scope and are rejected at startup.
@@ -71,9 +73,21 @@ var optionalMarkerTables = []string{"DNATable", "FamilySearchTable", "AncestryTa
 
 // DB is a read-only handle to a RootsMagic SQLite database.
 type DB struct {
-	sql     *sql.DB
-	columns map[string]map[string]bool // table -> column set, lower-cased
+	sql      *sql.DB
+	columns  map[string]map[string]bool // table -> column set, lower-cased
+	path     string
+	readOnly bool
+
+	backupOnce sync.Once
+	backupPath string
+	backupErr  error
 }
+
+// Path returns the filesystem path this DB was opened from.
+func (db *DB) Path() string { return db.path }
+
+// ReadOnly reports whether this DB was opened read-only.
+func (db *DB) ReadOnly() bool { return db.readOnly }
 
 // Open opens the RootsMagic file at path read-only and verifies it has the
 // tables/columns this server requires.
@@ -86,17 +100,14 @@ type DB struct {
 // regardless of the programmatic open flags the Go driver layer passes in.
 // A write attempt fails with SQLITE_READONLY, and a missing file fails to
 // open at all rather than being silently created.
-func Open(path string) (*DB, error) {
-	return open(path, true)
-}
-
-// open is the single place that decides whether the connection is
-// read-only. Today it's always called with readOnly=true from Open --
-// write support isn't implemented yet (see SCOPE.md) -- but when a
-// `-write` flag is added later, it should thread a bool through to here
-// (e.g. an OpenForWriting, or an Open variant that takes readOnly) rather
-// than have read/write behavior decided in more than one place.
-func open(path string, readOnly bool) (*DB, error) {
+//
+// readOnly is the single place that decides whether the connection can
+// write -- see SCOPE.md's "Write support" section for the staged plan
+// this is the first stage of. Today, every caller still passes true
+// (main.go's -write flag defaults to off, and no write endpoint exists
+// yet to make use of a writable connection even when it's on), so from
+// outside this package nothing behaves differently yet.
+func Open(path string, readOnly bool) (*DB, error) {
 	if err := validateDatabaseFile(path); err != nil {
 		return nil, err
 	}
@@ -108,6 +119,16 @@ func open(path string, readOnly bool) (*DB, error) {
 		mode = "ro"
 	}
 	dsn := fmt.Sprintf("file:%s?mode=%s", path, mode)
+	if !readOnly {
+		// RootsMagic itself might have this file open at the same time --
+		// a real risk, not a hypothetical one (see SCOPE.md). A short busy
+		// timeout means a transient lock (e.g. RootsMagic briefly writing
+		// its own autosave) causes this server to wait and retry rather
+		// than fail immediately with SQLITE_BUSY. It doesn't eliminate the
+		// underlying risk of two writers on one file, just makes brief,
+		// incidental contention less likely to surface as an error.
+		dsn += "&_pragma=busy_timeout(5000)"
+	}
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -116,7 +137,7 @@ func open(path string, readOnly bool) (*DB, error) {
 		return nil, fmt.Errorf("connecting to database at %s: %w", path, err)
 	}
 
-	db := &DB{sql: sqlDB, columns: map[string]map[string]bool{}}
+	db := &DB{sql: sqlDB, columns: map[string]map[string]bool{}, path: path, readOnly: readOnly}
 	if err := db.loadColumns(); err != nil {
 		return nil, err
 	}

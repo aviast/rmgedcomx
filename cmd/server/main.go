@@ -1,6 +1,7 @@
-// Command rmgedcomx serves a read-only GEDCOM X RS API backed by one or
-// more RootsMagic SQLite databases, each exposed as its own Collection.
-// See README.md and SCOPE.md.
+// Command rmgedcomx serves a GEDCOM X RS API backed by one or more
+// RootsMagic SQLite databases, each exposed as its own Collection.
+// Read-only by default; see the -write flag and SCOPE.md's "Write
+// support" section. See README.md and SCOPE.md.
 package main
 
 import (
@@ -32,11 +33,12 @@ func (d *dbFlag) Set(v string) error {
 // openedDB is one -db argument's worth of state, from opening the file
 // through deriving its (pre-dedupe) Collection id/title.
 type openedDB struct {
-	path  string
-	db    *rmdb.DB
-	dir   string
-	id    string
-	title string
+	path     string
+	db       *rmdb.DB
+	dir      string
+	id       string
+	title    string
+	uniqueID string
 }
 
 func main() {
@@ -46,6 +48,7 @@ func main() {
 		addr               = flag.String("addr", ":8080", "address to listen on")
 		baseURL            = flag.String("base-url", "http://localhost:8080", "base URL used to build absolute links in responses")
 		mediaFolder        = flag.String("media-folder", "", "RootsMagic's configured Media Folder, for resolving multimedia paths that use the '?' symbol (see SCOPE.md's \"Multimedia\" section); shared by all databases, since it's a RootsMagic-installation-wide setting, not a per-database one")
+		write              = flag.Bool("write", false, "enable write support (POST/PUT/PATCH/DELETE); default is read-only. See SCOPE.md's \"Write support\" section -- as of this build, this only controls whether the underlying database connection can write at all, since no write endpoints exist yet")
 		defaultGenerations = flag.Int("default-generations", 4, "default number of generations for ancestry/descendancy queries")
 		maxPageSize        = flag.Int("max-page-size", 200, "maximum number of entries returned by a single paged request")
 	)
@@ -64,7 +67,7 @@ func main() {
 
 	entries := make([]openedDB, 0, len(dbPaths))
 	for _, path := range dbPaths {
-		db, err := rmdb.Open(path)
+		db, err := rmdb.Open(path, !*write)
 		if err != nil {
 			log.Fatalf("opening RootsMagic database %q: %v", path, err)
 		}
@@ -82,7 +85,13 @@ func main() {
 		}
 		id, title := collectionid.Derive(rootName, path)
 
-		entries = append(entries, openedDB{path: path, db: db, dir: dir, id: id, title: title})
+		uniqueID, err := db.UniqueID()
+		if err != nil {
+			log.Printf("warning: couldn't determine the RootsMagic UniqueID for %s (%v)", path, err)
+			uniqueID = ""
+		}
+
+		entries = append(entries, openedDB{path: path, db: db, dir: dir, id: id, title: title, uniqueID: uniqueID})
 	}
 	defer func() {
 		for _, e := range entries {
@@ -122,7 +131,7 @@ func main() {
 		collectionEntries = append(collectionEntries, api.CollectionEntry{ID: e.id, Server: srv})
 	}
 
-	printCollectionTable(entries)
+	printCollectionTable(entries, *write)
 
 	log.Printf("listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, api.NewMultiCollectionHandler(collectionEntries)); err != nil {
@@ -131,18 +140,33 @@ func main() {
 }
 
 // printCollectionTable prints the collection id -> title -> database file
-// mapping the person running this server needs to connect a client to the
-// right Collection -- this server makes no promise that a given database
-// gets the same Collection id across restarts (see SCOPE.md), so this
-// table is the intended way a human confirms which is which for the
-// session that's about to start.
-func printCollectionTable(entries []openedDB) {
+// -> UniqueID mapping the person running this server needs to connect a
+// client to the right Collection -- this server makes no promise that a
+// given database gets the same Collection id across restarts (see
+// SCOPE.md), so this table is the intended way a human confirms which is
+// which for the session that's about to start. UniqueID, unlike the
+// Collection id, IS stable for a given database (RootsMagic assigns it
+// once, at file creation -- see SCOPE.md's "Multiple databases /
+// Collections" section), so it's included as a way to positively confirm
+// "is this actually the same database as last time," if that ever matters
+// to you, separately from the human-recognizable but unstable id.
+//
+// writeMode is called out prominently and separately from the table,
+// since it applies to the whole server, not any one collection -- see
+// SCOPE.md's "Write support" section.
+func printCollectionTable(entries []openedDB, writeMode bool) {
 	fmt.Fprintln(os.Stdout, "\nCollections available this session:")
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "COLLECTION ID\tTITLE\tDATABASE FILE")
+	fmt.Fprintln(tw, "COLLECTION ID\tTITLE\tDATABASE FILE\tUNIQUE ID")
 	for _, e := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", e.id, e.title, e.path)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.id, e.title, e.path, e.uniqueID)
 	}
 	tw.Flush()
+
+	if writeMode {
+		fmt.Fprintln(os.Stdout, "\n*** WRITE MODE ENABLED -- changes made through this API will be written directly to the database files above. ***")
+	} else {
+		fmt.Fprintln(os.Stdout, "\nRead-only (pass -write to enable write support).")
+	}
 	fmt.Fprintln(os.Stdout)
 }
