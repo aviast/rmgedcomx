@@ -1,8 +1,11 @@
 module github.com/aviast/rmgedcomx
 
-go 1.22
+go 1.25.0
 
-require modernc.org/sqlite v1.34.1
+require (
+	github.com/go-openapi/testify/v2 v2.6.0
+	modernc.org/sqlite v1.34.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

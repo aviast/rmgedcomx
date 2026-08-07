@@ -67,14 +67,25 @@ func main() {
 		}
 	}
 
+	log.Printf("listening on %s", *addr)
+	router, cleanup := SetupRouter(dbPaths, *baseURL, *mediaFolder, *write, *defaultGenerations, *maxPageSize)
+	defer cleanup()
+	if err := http.ListenAndServe(*addr, router); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}
+
+// SetupRouter builds and returns your HTTP handler
+func SetupRouter(dbPaths []string, baseURL string, mediaFolder string, write bool, defaultGenerations int, maxPageSize int) (http.Handler, func()) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Printf("warning: couldn't determine home directory (%v); multimedia paths using '~' won't resolve", err)
 	}
 
 	entries := make([]openedDB, 0, len(dbPaths))
+
 	for _, path := range dbPaths {
-		db, err := rmdb.Open(path, !*write)
+		db, err := rmdb.Open(path, !write)
 		if err != nil {
 			log.Fatalf("opening RootsMagic database %q: %v", path, err)
 		}
@@ -100,11 +111,11 @@ func main() {
 
 		entries = append(entries, openedDB{path: path, db: db, dir: dir, id: id, title: title, uniqueID: uniqueID})
 	}
-	defer func() {
+	cleanup := func() {
 		for _, e := range entries {
 			e.db.Close()
 		}
-	}()
+	}
 
 	// Dedupe ids across the whole batch -- see collectionid.Dedupe: this
 	// is a last-resort safety net, engaged only if two databases actually
@@ -122,14 +133,14 @@ func main() {
 	for _, e := range entries {
 		srv, err := api.NewServer(e.db, api.Config{
 			ID:                 e.id,
-			BaseURL:            *baseURL,
+			BaseURL:            baseURL,
 			Title:              e.title,
-			DefaultGenerations: *defaultGenerations,
-			MaxPageSize:        *maxPageSize,
+			DefaultGenerations: defaultGenerations,
+			MaxPageSize:        maxPageSize,
 			Media: rmdb.MediaFolderConfig{
 				DatabaseDir: e.dir,
 				HomeDir:     homeDir,
-				MediaFolder: *mediaFolder,
+				MediaFolder: mediaFolder,
 			},
 		})
 		if err != nil {
@@ -138,12 +149,9 @@ func main() {
 		collectionEntries = append(collectionEntries, api.CollectionEntry{ID: e.id, Server: srv})
 	}
 
-	printCollectionTable(entries, *write)
+	printCollectionTable(entries, write)
 
-	log.Printf("listening on %s", *addr)
-	if err := http.ListenAndServe(*addr, api.NewMultiCollectionHandler(collectionEntries)); err != nil {
-		log.Fatalf("server error: %v", err)
-	}
+	return api.NewMultiCollectionHandler(collectionEntries), cleanup
 }
 
 // printCollectionTable prints the collection id -> title -> database file
@@ -162,6 +170,12 @@ func main() {
 // since it applies to the whole server, not any one collection -- see
 // SCOPE.md's "Write support" section.
 func printCollectionTable(entries []openedDB, writeMode bool) {
+	if writeMode {
+		fmt.Fprintln(os.Stdout, "\n*** WRITE MODE ENABLED -- changes made through this API will be written directly to the database files. ***")
+	} else {
+		fmt.Fprintln(os.Stdout, "\nRead-only (pass -write to enable write support).")
+	}
+
 	fmt.Fprintln(os.Stdout, "\nCollections available this session:")
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "COLLECTION ID\tTITLE\tDATABASE FILE\tUNIQUE ID")
@@ -169,11 +183,5 @@ func printCollectionTable(entries []openedDB, writeMode bool) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.id, e.title, e.path, e.uniqueID)
 	}
 	tw.Flush()
-
-	if writeMode {
-		fmt.Fprintln(os.Stdout, "\n*** WRITE MODE ENABLED -- changes made through this API will be written directly to the database files above. ***")
-	} else {
-		fmt.Fprintln(os.Stdout, "\nRead-only (pass -write to enable write support).")
-	}
 	fmt.Fprintln(os.Stdout)
 }
