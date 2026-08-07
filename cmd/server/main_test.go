@@ -6,6 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/go-openapi/testify/v2/require"
@@ -317,4 +321,126 @@ func TestReadOperations(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Pre-compile regex to replace dynamic timestamps in sqldiff output
+var utcModDateRegex = regexp.MustCompile(`UTCModDate=[.[[:digit:]]]+`)
+
+func TestWriteOperations(t *testing.T) {
+	tests := []struct {
+		name               string // Name of the test case
+		method             string // HTTP method (POST, PUT, DELETE)
+		endpoint           string // The API route to hit
+		reqBody            string // The JSON payload to send
+		goldenFile         string // Path to the expected sqldiff output (.sql)
+		expectedStatus     int    // Expected HTTP response code
+		baseURL            string // Base URL for the API
+		mediaFolder        string // Path to the media folder
+		write              bool   // Whether the server is in write mode
+		defaultGenerations int    // Default number of generations
+		maxPageSize        int    // Maximum page size
+	}{
+		{
+			name:               "POST Place Name Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
+			reqBody:            `{"places":[{"id":"PL423","names":[{"value":"Belgrade, Serbia"}]}]}`,
+			goldenFile:         "testdata/post_places_expected.sql",
+			expectedStatus:     http.StatusNoContent, // Or http.StatusOK depending on handler response
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true, // Write mode enabled
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// 1. Create a isolated copy of royal92.rmtree in a temporary directory
+			tempDir := t.TempDir()
+			tempDBPath := filepath.Join(tempDir, "royal92.rmtree")
+			copyFile(t, "../../royal92.rmtree", tempDBPath)
+
+			// 2. Initialize router using the temporary database copy
+			router, cleanup := SetupRouter(
+				[]string{tempDBPath},
+				tc.baseURL,
+				tc.mediaFolder,
+				tc.write,
+				tc.defaultGenerations,
+				tc.maxPageSize,
+			)
+
+			testServer := httptest.NewServer(router)
+
+			// 3. Send HTTP Request
+			req, err := http.NewRequest(tc.method, testServer.URL+tc.endpoint, bytes.NewBufferString(tc.reqBody))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			resp.Body.Close()
+
+			require.Equal(t, tc.expectedStatus, resp.StatusCode)
+
+			// 4. CRITICAL: Close server and DB connections BEFORE running sqldiff
+			// This releases SQLite file locks on Windows
+			testServer.Close()
+			cleanup()
+
+			// 5. Compare database diff against golden SQL file
+			if tc.goldenFile != "" {
+				expectedBytes, err := os.ReadFile(tc.goldenFile)
+				require.NoError(t, err, "Failed to read golden file")
+
+				// Run sqldiff comparing the clean original against our modified temp copy
+				actualDiff := runSqlDiff(t, "../../royal92.rmtree", tempDBPath)
+
+				// Normalize line endings and mask timestamps in both outputs
+				normalizedExpected := normalizeSQL(string(expectedBytes))
+				normalizedActual := normalizeSQL(actualDiff)
+
+				require.Equal(t, normalizedExpected, normalizedActual)
+			}
+		})
+	}
+}
+
+// Helper to run sqldiff with the unifuzz collation library
+func runSqlDiff(t *testing.T, dbOriginal, dbModified string) string {
+	dllPath := filepath.Join("testdata", "unifuzz.dll")
+
+	cmd := exec.Command("sqldiff.exe", "--lib", dllPath, dbOriginal, dbModified)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+
+	err := cmd.Run()
+	require.NoError(t, err, "sqldiff execution failed: %s", errOut.String())
+
+	return out.String()
+}
+
+// Helper to sanitize dynamic values and normalize line endings
+func normalizeSQL(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = utcModDateRegex.ReplaceAllString(s, "UTCModDate=[TIMESTAMP_UPDATED]")
+	return strings.TrimSpace(s)
+}
+
+// Helper to copy files
+func copyFile(t *testing.T, src, dst string) {
+	source, err := os.Open(src)
+	require.NoError(t, err)
+	defer source.Close()
+
+	destination, err := os.Create(dst)
+	require.NoError(t, err)
+	defer destination.Close()
+
+	_, err = io.Copy(destination, source)
+	require.NoError(t, err)
 }
