@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -499,11 +500,38 @@ func verifyZeroFields(t *testing.T, dbPath string, check zeroFieldCheck) {
 	}
 }
 
+// sqldiffCommand returns the sqldiff executable name for the current
+// platform: "sqldiff.exe" on Windows, "sqldiff" everywhere else. Either
+// way, it's expected to be on PATH -- see TESTING.md for where to get it.
+//
+// macOS isn't specifically handled -- deliberately out of scope for now,
+// not an oversight (this project doesn't currently target it). It falls
+// through to the non-Windows case, which will find a real "sqldiff" on
+// PATH if one happens to be installed the same way as on Linux, but
+// that's untested, not a supported claim.
+func sqldiffCommand() string {
+	if runtime.GOOS == "windows" {
+		return "sqldiff.exe"
+	}
+	return "sqldiff"
+}
+
+// unifuzzLibPath returns the path to the unifuzz collation library
+// (needed for sqldiff to correctly compare RMNOCASE-collated columns) for
+// the current platform: testdata/unifuzz.dll on Windows,
+// testdata/unifuzz.so everywhere else. Same macOS caveat as
+// sqldiffCommand.
+func unifuzzLibPath() string {
+	name := "unifuzz.so"
+	if runtime.GOOS == "windows" {
+		name = "unifuzz.dll"
+	}
+	return filepath.Join("testdata", name)
+}
+
 // Helper to run sqldiff with the unifuzz collation library
 func runSqlDiff(t *testing.T, dbOriginal, dbModified string) string {
-	dllPath := filepath.Join("testdata", "unifuzz.dll")
-
-	cmd := exec.Command("sqldiff.exe", "--lib", dllPath, dbOriginal, dbModified)
+	cmd := exec.Command(sqldiffCommand(), "--lib", unifuzzLibPath(), dbOriginal, dbModified)
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 	cmd.Stdout = &out
