@@ -325,8 +325,10 @@ func TestReadOperations(t *testing.T) {
 
 // Pre-compile regex to replace dynamic timestamps in sqldiff output
 var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
-var familySearchIDRegex = regexp.MustCompile(`fsID=[0-9]+`)
+var familySearchIDRegex = regexp.MustCompile(`fsID=-?[0-9]+`)
 var ancestryIDRegex = regexp.MustCompile(`anID=-?[0-9]+`)
+var latLongExactRegex = regexp.MustCompile(`LatLongExact=[0-9]+`)
+var isPrivateRegex = regexp.MustCompile(`IsPrivate=[0-9]+`)
 
 func TestWriteOperations(t *testing.T) {
 	tests := []struct {
@@ -432,6 +434,8 @@ func normalizeSQL(s string) string {
 	s = utcModDateRegex.ReplaceAllString(s, "UTCModDate=[TIMESTAMP_UPDATED]")
 	s = familySearchIDRegex.ReplaceAllString(s, "fsID=[FAMILYSEARCH_ID_UPDATED]")
 	s = ancestryIDRegex.ReplaceAllString(s, "anID=[ANCESTRY_ID_UPDATED]")
+	s = latLongExactRegex.ReplaceAllString(s, "LatLongExact=[LAT_LONG_EXACT_UPDATED]")
+	s = isPrivateRegex.ReplaceAllString(s, "IsPrivate=[IS_PRIVATE_UPDATED]")
 	return strings.TrimSpace(s)
 }
 
