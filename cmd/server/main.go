@@ -67,9 +67,9 @@ func main() {
 		}
 	}
 
-	log.Printf("listening on %s", *addr)
 	router, cleanup := SetupRouter(dbPaths, *baseURL, *mediaFolder, *write, *defaultGenerations, *maxPageSize)
 	defer cleanup()
+	log.Printf("listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, router); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

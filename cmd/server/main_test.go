@@ -324,7 +324,9 @@ func TestReadOperations(t *testing.T) {
 }
 
 // Pre-compile regex to replace dynamic timestamps in sqldiff output
-var utcModDateRegex = regexp.MustCompile(`UTCModDate=[.[[:digit:]]]+`)
+var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
+var familySearchIDRegex = regexp.MustCompile(`fsID=[0-9]+`)
+var ancestryIDRegex = regexp.MustCompile(`anID=-?[0-9]+`)
 
 func TestWriteOperations(t *testing.T) {
 	tests := []struct {
@@ -346,10 +348,10 @@ func TestWriteOperations(t *testing.T) {
 			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
 			reqBody:            `{"places":[{"id":"PL423","names":[{"value":"Belgrade, Serbia"}]}]}`,
 			goldenFile:         "testdata/post_places_expected.sql",
-			expectedStatus:     http.StatusNoContent, // Or http.StatusOK depending on handler response
+			expectedStatus:     http.StatusNoContent,
 			baseURL:            "http://localhost:8080",
 			mediaFolder:        "testdata/media",
-			write:              true, // Write mode enabled
+			write:              true,
 			defaultGenerations: 4,
 			maxPageSize:        200,
 		},
@@ -398,8 +400,8 @@ func TestWriteOperations(t *testing.T) {
 				// Run sqldiff comparing the clean original against our modified temp copy
 				actualDiff := runSqlDiff(t, "../../royal92.rmtree", tempDBPath)
 
-				// Normalize line endings and mask timestamps in both outputs
-				normalizedExpected := normalizeSQL(string(expectedBytes))
+				normalizedExpected := string(expectedBytes)
+				// Normalize line endings and mask dynamic fields in test output
 				normalizedActual := normalizeSQL(actualDiff)
 
 				require.Equal(t, normalizedExpected, normalizedActual)
@@ -428,6 +430,8 @@ func runSqlDiff(t *testing.T, dbOriginal, dbModified string) string {
 func normalizeSQL(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = utcModDateRegex.ReplaceAllString(s, "UTCModDate=[TIMESTAMP_UPDATED]")
+	s = familySearchIDRegex.ReplaceAllString(s, "fsID=[FAMILYSEARCH_ID_UPDATED]")
+	s = ancestryIDRegex.ReplaceAllString(s, "anID=[ANCESTRY_ID_UPDATED]")
 	return strings.TrimSpace(s)
 }
 
