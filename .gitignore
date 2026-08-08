@@ -4,8 +4,6 @@ vendor/
 # Build outputs
 *.exe
 *.exe~
-*.dll
-*.so
 *.dylib
 *.test
 *.out
