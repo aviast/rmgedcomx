@@ -1,2 +1,2 @@
 UPDATE ConfigTable SET UTCModDate=[TIMESTAMP_UPDATED] WHERE RecID=1;
-UPDATE PlaceTable SET Name='Belgrade, Serbia', LatLongExact=[LAT_LONG_EXACT_UPDATED], Reverse='Serbia, Belgrade', fsID=[FAMILYSEARCH_ID_UPDATED], anID=[ANCESTRY_ID_UPDATED], UTCModDate=[TIMESTAMP_UPDATED] WHERE PlaceID=423;
+UPDATE PlaceTable SET Name='Belgrade, Serbia', Reverse='Serbia, Belgrade', UTCModDate=[TIMESTAMP_UPDATED] WHERE PlaceID=423;
