@@ -82,6 +82,18 @@ type PlaceUpdate struct {
 //     meaning is "these coordinates are corroborated by an external
 //     authority," which this server has no basis to claim without doing
 //     the lookup that would justify it.
+//
+// Deliberately does NOT touch fsID/anID/LatLongExact when only Note (or
+// only coordinates) change, even though a second real captured diff shows
+// RootsMagic itself re-running its FamilySearch/Ancestry lookup on *any*
+// field edit, not just Name -- reasonable on RootsMagic's side, since a
+// fresh match only adds value there. But the reasoning above for clearing
+// these fields is specifically that a stale match against the *old name*
+// is misleading once the name changes; that reasoning doesn't hold when
+// the name hasn't changed at all, so there's no basis here for touching
+// them on a Note-only or coordinates-only edit. Diverging from
+// RootsMagic's broader real behavior here is a deliberate, narrower
+// choice, not an oversight -- see SCOPE.md's "Write support" section.
 func (db *DB) UpdatePlace(id int64, u PlaceUpdate) error {
 	var sets []string
 	var args []any

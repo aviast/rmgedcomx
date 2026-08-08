@@ -53,7 +53,7 @@ macOS isn't specifically handled -- not tested against, not a supported claim ei
 | 4 | `-write` passed while `RootsMagic.exe` is running: server refuses to start with a clear error. Closing RootsMagic and retrying: server starts normally. | Manual -- confirmed working already. |
 | 5 | `-write` passed, one write performed: exactly one timestamped backup file appears, byte-identical to the pre-write database (checksum/diff against a copy made before starting the server). | Manual/Go-native -- file existence and checksum check, no golden file. |
 | 6 | A second write in the same running session: no second backup file appears. | Manual/Go-native -- file existence check, no golden file. |
-| 7 | `POST` a place, `names` only. | **Done** -- `testdata/post_places_expected.sql` (currently covers this exact case: name-only change on `PL423`). |
+| 7 | `POST` a place, `names` only. | **Done** -- `testdata/post_places_name_expected.sql` (currently covers this exact case: name-only change on `PL423`). |
 | 8 | `POST` a place, `notes` only. | Needs golden file, e.g. `testdata/post_places_note_expected.sql`. |
 | 9 | `POST` a place, `latitude`/`longitude` only. Also confirm the decimal-to-integer conversion is exact (`value × 10,000,000`, no rounding) for a coordinate with several decimal places. | Needs golden file, e.g. `testdata/post_places_coordinates_expected.sql`. |
 | 10 | `POST` a place, all four fields (`names`, `notes`, `latitude`, `longitude`) at once. | Needs golden file, e.g. `testdata/post_places_all_fields_expected.sql`. |

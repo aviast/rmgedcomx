@@ -694,6 +694,56 @@ extra code. If explicit field-clearing turns out to matter in practice,
 that's the point to revisit this, once there's a real use case driving the
 choice rather than a hypothetical one.
 
+**Fields RootsMagic itself touches as a side effect, that this server
+deliberately handles differently -- confirmed against real captured
+diffs, not assumed:**
+
+- **`fsID`/`anID`/`LatLongExact` (Place, only when `Name` changes)** are
+  reset to `0` -- see `UpdatePlace`'s own doc comment in
+  `internal/rmdb/writes.go` for the full account (why `0` is the correct
+  "never looked up" sentinel, confirmed exhaustively against all 922
+  places in `royal92.rmtree`; why clearing is more honest than leaving a
+  stale match once the name has changed).
+  - **A second real captured diff showed RootsMagic re-running its
+    FamilySearch/Ancestry lookup on *any* field edit -- a `Note`-only
+    change, not just `Name`.** Reasonable on RootsMagic's side (a fresh
+    match adds value regardless of which field triggered the save). This
+    server deliberately does *not* replicate that broader trigger: the
+    justification for clearing these fields is specifically that a stale
+    match against the *old name* is misleading once the name changes --
+    that reasoning doesn't apply when the name hasn't changed at all, so
+    `UpdatePlace` only touches `fsID`/`anID`/`LatLongExact` inside the
+    `Name != nil` branch, never on a `Note`-only or coordinates-only
+    update.
+  - **`fsID` can be negative** (a real captured value:
+    `fsID=-1184254214`) -- worth remembering if this area is touched
+    again, since it's an easy thing to get wrong in a regex or validation
+    check (and once was -- see the git history around
+    `cmd/server/main_test.go`'s `familySearchIDRegex`).
+- **`IsPrivate` (Source, unconditionally on every update)** is set to `0`.
+  The data dictionary documents this field as "not implemented," noting
+  only `0` has ever been observed. A real captured diff for this project
+  showed it flipping to `1` during a name-only edit, which contradicts
+  that documentation and doesn't have an obvious causal explanation --
+  quite possibly an artifact of that specific RootsMagic edit session
+  rather than deterministic behavior tied to the edit itself. Given a
+  field documented as unimplemented, with one observation that
+  contradicts the only documentation available, writing the
+  well-evidenced, only-ever-observed value is the more defensible choice
+  than reproducing an unexplained one-off.
+- **Verifying these specific fields doesn't go through the `sqldiff`
+  golden-file comparison at all**, unlike every other field Stage 1
+  writes. `sqldiff` (like any before/after diff) only reports columns
+  whose value actually *changed* -- and every place/source in
+  `royal92.rmtree` already has these fields at the same value (`0`) this
+  server writes, so a same-value write is invisible to a diff regardless
+  of whether this server did anything right. `cmd/server/main_test.go`'s
+  golden `.sql` files strip these fields out of the comparison entirely
+  (regex match replaced with an empty string, not masked with a
+  placeholder), and `zeroFieldCheck`/`verifyZeroFields` query the
+  resulting database directly instead, asserting the value is exactly
+  `0` -- independent of whatever the "before" state happened to be.
+
 Every write is wrapped in an explicit SQL transaction
 (`internal/rmdb/writes.go`), even though a single `UPDATE` statement is
 already atomic on its own without one -- introducing the pattern now,
