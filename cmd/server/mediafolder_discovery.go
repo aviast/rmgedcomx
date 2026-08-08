@@ -16,40 +16,83 @@ import (
 var versionFolderRegex = regexp.MustCompile(`^Version (\d+)$`)
 
 // discoverMediaFolder finds RootsMagic's configured Media Folder by
-// reading RootsMagicUser.xml directly -- the authoritative, per-Windows-
-// user source RootsMagic itself uses. This isn't something a manually
-// supplied flag can safely substitute for when writing: a wrong
-// assumption about the Media Folder means writing a path that resolves
-// correctly for this server but not for RootsMagic itself, silently
-// breaking the link from RootsMagic's own point of view the next time
-// someone opens the file there. See SCOPE.md's "Write support" section
-// for the full reasoning, and why -write and -media-folder are therefore
-// mutually exclusive.
+// reading RootsMagicUser.xml directly -- the authoritative, per-user
+// source RootsMagic itself uses. This isn't something a manually supplied
+// flag can safely substitute for when writing: a wrong assumption about
+// the Media Folder means writing a path that resolves correctly for this
+// server but not for RootsMagic itself, silently breaking the link from
+// RootsMagic's own point of view the next time someone opens the file
+// there. See SCOPE.md's "Write support" section for the full reasoning,
+// and why -write and -media-folder are therefore mutually exclusive.
 //
-// Only works on Windows, where RootsMagic actually runs, and where
-// %APPDATA%\RootsMagic\Version N\RootsMagicUser.xml is the confirmed,
-// real location -- confirmed directly against a real installation earlier
-// in this project's development, not assumed from documentation.
+// Two real locations are supported, both confirmed against actual
+// installations/community reports (not assumed from general documentation
+// conventions):
 //
-// If more than one "Version N" folder exists (RootsMagic's own AppData
-// layout versions itself, so this happens whenever someone's used more
-// than one RootsMagic version), the highest N is used: schema migrations
-// are understood to be one-directional, so the highest version installed
-// is presumed to be the one actually in current use. If the found
-// configurations' Media Folder values disagree with each other, that's
-// logged in detail -- which versions, which values -- but isn't treated
-// as fatal; the highest version's value is used regardless.
-func discoverMediaFolder() (string, error) {
-	if runtime.GOOS != "windows" {
-		return "", fmt.Errorf("write mode requires reading RootsMagic's own configuration (RootsMagicUser.xml) to determine the Media Folder, which only exists on Windows -- not supported on %s yet", runtime.GOOS)
+//   - Windows: %APPDATA%\RootsMagic\Version N\RootsMagicUser.xml --
+//     confirmed directly against a real installation earlier in this
+//     project's development.
+//   - macOS: ~/RootsMagic/Version N/RootsMagicUser.xml -- based on
+//     community reports (see SCOPE.md's "Write support" section for the
+//     specific threads), not independently confirmed against a real Mac
+//     the way the Windows location was. Treat this with a little more
+//     caution until someone can verify it directly.
+//
+// If more than one "Version N" folder exists under either location
+// (RootsMagic's own layout versions itself this way, so this happens
+// whenever someone's used more than one RootsMagic version), the highest
+// N is used: schema migrations are understood to be one-directional, so
+// the highest version installed is presumed to be the one actually in
+// current use. If the found configurations' Media Folder values disagree
+// with each other, that's logged in detail -- which versions, which
+// values -- but isn't treated as fatal; the highest version's value is
+// used regardless.
+//
+// bypassOSCheck forces the macOS-style discovery path (a home-directory-
+// relative location, unlike Windows's environment-variable-relative one)
+// regardless of the actual runtime.GOOS. This exists specifically so
+// write mode's Media Folder discovery can be exercised for real, end to
+// end, from a development environment that's neither Windows nor macOS --
+// os.UserHomeDir() returns a real, usable directory on any platform, so
+// this isn't a fake/simulated path, it's the genuine macOS convention
+// pointed at whatever this platform's actual home directory is. See the
+// -bypass-os-check flag in main.go, deliberately undocumented in -h
+// output: this is a development/testing aid, not a supported way to run
+// write mode in production on an unsupported platform.
+func discoverMediaFolder(bypassOSCheck bool) (string, error) {
+	var rootsMagicDir string
+	switch {
+	case bypassOSCheck:
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("couldn't determine the Media Folder: couldn't determine the home directory: %w", err)
+		}
+		rootsMagicDir = filepath.Join(home, "RootsMagic")
+	case runtime.GOOS == "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			return "", fmt.Errorf("couldn't determine the Media Folder: %%APPDATA%% is not set")
+		}
+		rootsMagicDir = filepath.Join(appData, "RootsMagic")
+	case runtime.GOOS == "darwin":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("couldn't determine the Media Folder: couldn't determine the home directory: %w", err)
+		}
+		rootsMagicDir = filepath.Join(home, "RootsMagic")
+	default:
+		return "", fmt.Errorf("write mode requires reading RootsMagic's own configuration (RootsMagicUser.xml) to determine the Media Folder, which only exists on Windows and macOS -- not supported on %s", runtime.GOOS)
 	}
 
-	appData := os.Getenv("APPDATA")
-	if appData == "" {
-		return "", fmt.Errorf("couldn't determine the Media Folder: %%APPDATA%% is not set")
-	}
+	return discoverMediaFolderIn(rootsMagicDir)
+}
 
-	rootsMagicDir := filepath.Join(appData, "RootsMagic")
+// discoverMediaFolderIn does the actual "Version N" enumeration and
+// conflict handling, shared identically across Windows, macOS, and the
+// -bypass-os-check path -- only the base directory differs between them
+// (see discoverMediaFolder), everything about interpreting what's inside
+// it is the same regardless of platform.
+func discoverMediaFolderIn(rootsMagicDir string) (string, error) {
 	entries, err := os.ReadDir(rootsMagicDir)
 	if err != nil {
 		return "", fmt.Errorf("couldn't determine the Media Folder: reading %s: %w", rootsMagicDir, err)

@@ -765,24 +765,63 @@ broken. That asymmetry is why this isn't treated as a flag-level detail:
   effect, not a deliberate override.
 - **`-write` reads the Media Folder itself**, straight from
   `RootsMagicUser.xml` (`cmd/server/mediafolder_discovery.go`,
-  `discoverMediaFolder`), and refuses to start if it can't: not running on
-  Windows, `%APPDATA%` unset, no `RootsMagicUser.xml` found, or found but
-  with no Media Folder configured. This means **write mode currently only
-  works on Windows** -- a real, current limitation, not a design goal; it
-  follows directly from `RootsMagicUser.xml` only existing there. Nothing
-  about `encodeMediaPath` or `UpdateArtifactPath` themselves is
-  Windows-specific (both were developed and unit-tested on Linux, using
-  Windows-style path strings as plain data -- see below); the constraint
-  is entirely about where the Media Folder value can be discovered from.
+  `discoverMediaFolder`), and refuses to start if it can't. Two real
+  locations are supported:
+  - **Windows**: `%APPDATA%\RootsMagic\Version N\RootsMagicUser.xml` --
+    confirmed directly against a real installation.
+  - **macOS**: `~/RootsMagic/Version N\RootsMagicUser.xml` -- based on
+    two community reports (RootsMagic's own forum: ["How to Change the
+    Location of RootsMagic settings folder on
+    Mac"](https://community.rootsmagic.com/t/how-to-change-the-location-of-rootsmagic-settings-folder-on-mac/15774),
+    and a support thread with a staff reply giving the exact path,
+    ["RM10 on Mac keeps closing
+    suddenly"](https://community.rootsmagic.com/t/rm10-on-mac-keeps-closing-suddenly/12794)).
+    Treat this with a bit more caution than the Windows location: it's a
+    community report, including one direct quote from RootsMagic's own
+    support staff, not something confirmed against a real Mac installation
+    the way the Windows path was.
+  - Anywhere else, `-write` refuses to start with a clear error explaining
+    why -- not a silent fallback to some guessed behavior.
 - **Multiple RootsMagic versions**: `RootsMagicUser.xml` lives under a
-  per-version `AppData` folder (`Version 9` in the confirmed example), so
-  someone who's used more than one RootsMagic version could have more than
-  one. The highest version number found is used -- RootsMagic's schema
-  migrations are understood to be one-directional, so the highest version
-  installed is presumed to be the one actually in current use. If the
-  found configurations' Media Folder values disagree with each other,
-  that's logged in detail (which versions, which values) but isn't fatal;
-  the highest version's value is used regardless.
+  per-version folder (`Version 9`/`Version 10` in the confirmed examples),
+  so someone who's used more than one RootsMagic version could have more
+  than one, on either platform. The highest version number found is used
+  -- RootsMagic's schema migrations are understood to be one-directional,
+  so the highest version installed is presumed to be the one actually in
+  current use. If the found configurations' Media Folder values disagree
+  with each other, that's logged in detail (which versions, which values)
+  but isn't fatal; the highest version's value is used regardless. This
+  logic (`discoverMediaFolderIn`) is identical across Windows and macOS --
+  only the base directory differs between them, everything about
+  interpreting what's inside it is shared.
+- **`-bypass-os-check`** is a hidden flag -- deliberately not registered
+  via the `flag` package at all (see `extractBypassOSCheckFlag` in
+  `main.go`), so it never appears in `-h`/`--help` output. It forces
+  `discoverMediaFolder` to use the macOS-style discovery path regardless
+  of the actual platform. This is meaningful, not a no-op stand-in,
+  because `os.UserHomeDir()` returns a real, usable directory on any
+  platform -- so this is the genuine macOS convention, pointed at
+  whatever the current platform's actual home directory is, not a
+  simulated one. It exists specifically so write mode's Media Folder
+  discovery -- including the version-conflict handling above -- can be
+  exercised for real, end to end, from a development environment that's
+  neither Windows nor macOS, rather than only being testable by
+  constructing the `api`/`rmdb` layers directly and skipping
+  `discoverMediaFolder` entirely (which is what an earlier version of
+  this verification had to resort to). Confirmed working exactly this
+  way: two fake `RootsMagicUser.xml` files under `~/RootsMagic/Version
+  9/` and `~/RootsMagic/Version 10/` on a Linux machine, with
+  deliberately different Media Folder values, correctly produced the
+  version-conflict warning and picked Version 10's value; a subsequent
+  real `POST /artifacts/{id}` request, using that genuinely-discovered
+  folder, correctly updated a real database row. `-write` + `-media-folder`
+  together is still refused even with `-bypass-os-check` present -- the
+  bypass changes *how* the Media Folder is discovered, not whether a
+  manually supplied one can substitute for discovery. This is a
+  development/testing aid, not a supported way to run write mode in
+  production on an unsupported platform, and nothing else about write
+  mode is affected by it (the `RootsMagic.exe` check and the backup
+  mechanism are both untouched).
 
 #### `encodeMediaPath`: the reverse of reading, and why it's not `path/filepath`
 
@@ -811,31 +850,39 @@ requires a genuine path-separator boundary, not just a string prefix match
 confirmed with a dedicated test case, since this is exactly the kind of
 boundary bug that's easy to get subtly wrong.
 
-#### Verification, and a real limitation of it
+#### Verification, and what's still genuinely unverified
 
-This is the first piece of write support whose full, real path (server
-startup through the HTTP request) couldn't be exercised end-to-end on
-Linux, since `-write` itself now refuses to start without Windows. What
-*was* verified directly, for real, against `royal92.rmtree`: `encodeMediaPath`'s
-unit tests; and the full HTTP layer (`api.NewServer` /
-`api.NewMultiCollectionHandler`), constructed directly with a manually
-supplied Media Folder rather than through `main()`'s OS-gated discovery --
-this exercises every layer downstream of that gate (request parsing,
-validation, `UpdateArtifactPath`, the actual `SQLite` write) using the
-exact same code a real Windows run would use, just skipping the part that
-can only run on Windows. Confirmed this way: `M1`'s real
-`*\royal92\marriage-of-queen-victoria.jpg` correctly became
-`?\royal92\new-location\wedding.jpg` after a real HTTP request asking to
-move it there; a path outside the Media Folder correctly `400`s with a
-clear explanation, not a silent wrong write; a nonexistent artifact `404`s;
-a missing `mediaPath` and a body/URL id mismatch both `400` before any
-write is attempted; read-only mode still `405`s the identical request.
-What's *not* verified, and can't be from here: `discoverMediaFolder`
-itself against a real `RootsMagicUser.xml` on a real Windows machine, and
-`-write`'s actual refusal-to-start behavior when Windows-specific
-preconditions aren't met. Same caveat as `rootsmagic_running_check.go`'s
-own doc comment -- please confirm this actually behaves as documented on
-a real Windows machine before relying on it.
+Full, real, end-to-end verification (server startup through the HTTP
+request, using the real `-write ./rmgedcomx` binary, not a constructed
+test harness) is now possible on Linux, via `-bypass-os-check` -- this
+closes a gap from an earlier version of this section, which could only
+exercise the `api`/`rmdb` layers directly with a manually supplied Media
+Folder, skipping `discoverMediaFolder` (and its version-conflict handling)
+entirely. Confirmed this way, against real `royal92.rmtree` data and two
+deliberately-conflicting fake `RootsMagicUser.xml` files: the
+version-conflict warning fires correctly and picks the higher version's
+value; `M1`'s real `*\royal92\marriage-of-queen-victoria.jpg` correctly
+became `?\Weddings\victoria-albert.jpg` after a real HTTP request, using
+the genuinely-discovered Media Folder end to end, not a hand-supplied one;
+a path outside the Media Folder correctly `400`s with a clear explanation;
+a nonexistent artifact `404`s; a missing `mediaPath` and a body/URL id
+mismatch both `400` before any write is attempted; read-only mode still
+`405`s the identical request; `-write` + `-media-folder` together is
+still refused even with `-bypass-os-check` present; a missing
+`~/RootsMagic` directory produces a clear error rather than a confusing
+one; `-bypass-os-check` doesn't appear in `-h` output and is a silent
+no-op without `-write`.
+
+What's still genuinely unverified, and can't be from here: the *real*
+locations on a *real* Windows or macOS machine -- `%APPDATA%\RootsMagic\...`
+was confirmed against a real Windows installation earlier in this
+project, but `~/RootsMagic\...` on macOS is still only a community report
+(see above), not independently confirmed. `-bypass-os-check` proves the
+discovery *mechanism* is correct wherever it looks; it can't prove *where*
+it should be looking on a platform this project doesn't have direct
+access to. Same caveat as `rootsmagic_running_check.go`'s own doc comment
+-- please confirm the macOS location specifically on a real Mac before
+relying on it.
 
 ### What's next
 

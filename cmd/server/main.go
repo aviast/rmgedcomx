@@ -41,7 +41,35 @@ type openedDB struct {
 	uniqueID string
 }
 
+// extractBypassOSCheckFlag looks for -bypass-os-check in os.Args and
+// removes it before flag.Parse() ever sees it -- deliberately not
+// registered via the flag package, so it never appears in -h/--help
+// output or flag.PrintDefaults(). This is a development/testing aid, not
+// a supported way to run write mode in production: it forces
+// discoverMediaFolder's macOS-style discovery path regardless of the
+// actual platform, which is only meaningful because os.UserHomeDir()
+// returns a real, usable directory everywhere -- see
+// mediafolder_discovery.go's own doc comment for the full reasoning.
+// Nothing else about write mode is affected by it (the RootsMagic.exe
+// check and the backup mechanism are both untouched).
+func extractBypassOSCheckFlag() bool {
+	const flagName = "-bypass-os-check"
+	found := false
+	filtered := os.Args[:1]
+	for _, arg := range os.Args[1:] {
+		if arg == flagName {
+			found = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	os.Args = filtered
+	return found
+}
+
 func main() {
+	bypassOSCheck := extractBypassOSCheckFlag()
+
 	var dbPaths dbFlag
 	flag.Var(&dbPaths, "db", "path to a RootsMagic .rmtree/.rmgc SQLite file; repeat -db to serve multiple databases, each as its own Collection (required, at least one)")
 	var (
@@ -85,7 +113,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error: -write and -media-folder cannot be used together -- write mode determines the Media Folder itself, from RootsMagic's own configuration, since that's the only source of truth that guarantees a path this server writes will still resolve correctly in RootsMagic later")
 			os.Exit(2)
 		}
-		discovered, err := discoverMediaFolder()
+		discovered, err := discoverMediaFolder(bypassOSCheck)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(2)
