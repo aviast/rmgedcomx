@@ -36,7 +36,7 @@ func (s *Server) buildPerson(rp rmdb.Person) (gedcomx.Person, error) {
 		facts = append(facts, f)
 	}
 
-	sources, err := s.buildSourceReferences(rmdb.OwnerTypePerson, rp.PersonID)
+	sources, media, err := s.buildSourcesAndMedia(rmdb.OwnerTypePerson, rp.PersonID)
 	if err != nil {
 		return gedcomx.Person{}, err
 	}
@@ -48,6 +48,7 @@ func (s *Server) buildPerson(rp rmdb.Person) (gedcomx.Person, error) {
 		Names:   names,
 		Facts:   facts,
 		Sources: sources,
+		Media:   media,
 		Display: s.buildDisplayProperties(rmNames, rp.Sex),
 		Links:   gedcomx.Links{},
 	}
@@ -125,7 +126,14 @@ func (s *Server) buildFact(e rmdb.Event) (gedcomx.Fact, error) {
 	if e.Note != "" {
 		f.Notes = []gedcomx.Note{{Text: e.Note}}
 	}
-	sources, err := s.buildSourceReferences(rmdb.OwnerTypeEvent, e.EventID)
+	// Fact is a Conclusion, not a Subject (see SCOPE.md's "Sources versus
+	// media" section) -- it has no media field to put artifact references
+	// in, only sources (bibliographic). Any media attached to this same
+	// EventTable row IS surfaced, just not here: it's on the
+	// corresponding standalone Event instead (same id, see SCOPE.md's
+	// "Events" section on the Fact/Event id cross-reference), which is a
+	// proper Subject and does have a media field.
+	sources, _, err := s.buildSourcesAndMedia(rmdb.OwnerTypeEvent, e.EventID)
 	if err != nil {
 		return gedcomx.Fact{}, err
 	}
@@ -147,26 +155,39 @@ func (s *Server) buildPlaceReference(placeID int64) (*gedcomx.PlaceReference, er
 	}, nil
 }
 
-// buildSourceReferences gathers everything that evidences a given owner
-// (a person, family, event, or name) as GEDCOM X SourceReferences: the
-// bibliographic sources cited (via CitationLinkTable -> CitationTable ->
-// SourceTable, pointing at /source-descriptions/S{id}), any multimedia
-// attached directly to the owner (via MediaLinkTable, pointing at
-// /artifacts/M{id}), and -- this turns out to be the dominant real-world
-// case, not an edge case -- any multimedia attached to the *citations*
-// themselves rather than to the owner directly (e.g. a scanned census page
-// attached to the "1911 Census" citation on a person's residence fact,
-// rather than to the fact itself). See SCOPE.md's "Multimedia" section.
-func (s *Server) buildSourceReferences(ownerType int, ownerID int64) ([]gedcomx.SourceReference, error) {
-	var refs []gedcomx.SourceReference
-
+// buildSourcesAndMedia gathers everything that evidences or illustrates a
+// given owner (a person, family, event, place, or name) and separates it
+// into GEDCOM X's two distinct concepts, per the Conclusion/Subject data
+// types' own definitions -- see SCOPE.md's "Sources versus media" section
+// for why an earlier version of this server combined them into one array,
+// and why that was wrong, not just imprecise:
+//
+//   - sources: bibliographic evidence (Conclusion.sources) -- real
+//     Source citations, via CitationLinkTable -> CitationTable ->
+//     SourceTable, pointing at /source-descriptions/S{id}.
+//   - media: illustrative artifacts (Subject.media) -- multimedia
+//     attached directly to the owner (via MediaLinkTable, pointing at
+//     /artifacts/M{id}), plus -- this turns out to be the dominant
+//     real-world case, not an edge case -- multimedia attached to the
+//     owner's *citations* themselves rather than to the owner directly
+//     (e.g. a scanned census page attached to the "1911 Census" citation
+//     on a person's residence fact, rather than to the fact itself). See
+//     SCOPE.md's "Multimedia" section.
+//
+// Only called for owners that are GEDCOM X Subjects (Person, Relationship,
+// Event, PlaceDescription) or their sub-parts that share an owner with
+// one (a Name belongs to a Person, for instance) -- Fact is a Conclusion,
+// not a Subject, and has no media field to put the second return value
+// in; buildFact calls this and deliberately discards it, see its own
+// comment for where that media actually surfaces instead.
+func (s *Server) buildSourcesAndMedia(ownerType int, ownerID int64) (sources []gedcomx.SourceReference, media []gedcomx.SourceReference, err error) {
 	sourceIDs, err := s.db.SourceIDsForOwner(ownerType, ownerID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, sid := range sourceIDs {
 		id := sourceRef(sid)
-		refs = append(refs, gedcomx.SourceReference{
+		sources = append(sources, gedcomx.SourceReference{
 			Description:   s.url("/source-descriptions/" + id),
 			DescriptionID: id,
 		})
@@ -180,7 +201,7 @@ func (s *Server) buildSourceReferences(ownerType int, ownerID int64) ([]gedcomx.
 			}
 			seenMedia[mid] = true
 			id := mediaRef(mid)
-			refs = append(refs, gedcomx.SourceReference{
+			media = append(media, gedcomx.SourceReference{
 				Description:   s.url("/artifacts/" + id),
 				DescriptionID: id,
 			})
@@ -189,23 +210,23 @@ func (s *Server) buildSourceReferences(ownerType int, ownerID int64) ([]gedcomx.
 
 	directMedia, err := s.db.MediaIDsForOwner(ownerType, ownerID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	addMedia(directMedia)
 
 	citationIDs, err := s.db.CitationIDsForOwner(ownerType, ownerID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, cid := range citationIDs {
 		citationMedia, err := s.db.MediaIDsForOwner(rmdb.OwnerTypeCitation, cid)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		addMedia(citationMedia)
 	}
 
-	return refs, nil
+	return sources, media, nil
 }
 
 func (s *Server) buildDisplayProperties(names []rmdb.Name, sex int) *gedcomx.DisplayProperties {
@@ -307,12 +328,19 @@ func (s *Server) buildCoupleRelationship(f rmdb.Family) (gedcomx.Relationship, e
 		facts = append(facts, fact)
 	}
 
+	sources, media, err := s.buildSourcesAndMedia(rmdb.OwnerTypeFamily, f.FamilyID)
+	if err != nil {
+		return gedcomx.Relationship{}, err
+	}
+
 	rel := gedcomx.Relationship{
 		ID:      id,
 		Type:    gedcomx.RelationshipTypeCouple,
 		Person1: gedcomx.ResourceReference{Resource: s.url("/persons/" + personRef(f.FatherID)), ResourceID: personRef(f.FatherID)},
 		Person2: gedcomx.ResourceReference{Resource: s.url("/persons/" + personRef(f.MotherID)), ResourceID: personRef(f.MotherID)},
 		Facts:   facts,
+		Sources: sources,
+		Media:   media,
 		Links:   gedcomx.Links{"relationship": {Href: s.url("/relationships/" + id)}},
 	}
 	return rel, nil
@@ -331,7 +359,7 @@ func (s *Server) buildParentChildRelationship(familyID, parentID, childID int64,
 
 // --- Places ---
 
-func (s *Server) buildPlaceDescription(p rmdb.Place) gedcomx.PlaceDescription {
+func (s *Server) buildPlaceDescription(p rmdb.Place) (gedcomx.PlaceDescription, error) {
 	id := placeRef(p.PlaceID)
 	pd := gedcomx.PlaceDescription{
 		ID:    id,
@@ -355,7 +383,20 @@ func (s *Server) buildPlaceDescription(p rmdb.Place) gedcomx.PlaceDescription {
 		placeType = "Place Detail"
 	}
 	pd.Display = &gedcomx.PlaceDisplayProperties{Name: p.Name, FullName: p.Name, Type: placeType}
-	return pd
+
+	// PlaceDescription is a Subject too (see SCOPE.md's "Sources versus
+	// media" section) -- a place can have its own bibliographic sources
+	// (e.g. a gazetteer or authority citing this place's exact
+	// definition) as well as its own attached media (a map, a photo of
+	// the location), same as Person/Relationship/Event.
+	sources, media, err := s.buildSourcesAndMedia(rmdb.OwnerTypePlace, p.PlaceID)
+	if err != nil {
+		return gedcomx.PlaceDescription{}, err
+	}
+	pd.Sources = sources
+	pd.Media = media
+
+	return pd, nil
 }
 
 // --- Source descriptions ---
@@ -552,11 +593,12 @@ func (s *Server) buildEvent(e rmdb.Event) (gedcomx.Event, error) {
 	ev.Roles = roles
 	ev.Notes = notes
 
-	sources, err := s.buildSourceReferences(rmdb.OwnerTypeEvent, e.EventID)
+	sources, media, err := s.buildSourcesAndMedia(rmdb.OwnerTypeEvent, e.EventID)
 	if err != nil {
 		return gedcomx.Event{}, err
 	}
 	ev.Sources = sources
+	ev.Media = media
 
 	return ev, nil
 }

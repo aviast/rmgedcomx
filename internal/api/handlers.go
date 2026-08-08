@@ -520,7 +520,12 @@ func (s *Server) handlePlaces(w http.ResponseWriter, r *http.Request) {
 	}
 	places := make([]gedcomx.PlaceDescription, 0, len(rows))
 	for _, p := range rows {
-		places = append(places, s.buildPlaceDescription(p))
+		pd, err := s.buildPlaceDescription(p)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		places = append(places, pd)
 	}
 	status := http.StatusOK
 	if len(places) == 0 {
@@ -549,7 +554,11 @@ func (s *Server) handlePlace(w http.ResponseWriter, r *http.Request) {
 		notFound(w, "place", id)
 		return
 	}
-	pd := s.buildPlaceDescription(*place)
+	pd, err := s.buildPlaceDescription(*place)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, gedcomx.PlaceDescriptionDocument{Places: []gedcomx.PlaceDescription{pd}, Links: pd.Links})
 }
 

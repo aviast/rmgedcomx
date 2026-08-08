@@ -135,17 +135,23 @@ type DisplayProperties struct {
 // Person is a description of a person, per the GEDCOM X Conceptual Model,
 // plus the RS extensions `living` and `display` (Section 3.4).
 type Person struct {
-	ID          string             `json:"id"`
-	Identifiers Identifiers        `json:"identifiers,omitempty"`
-	Living      *bool              `json:"living,omitempty"`
-	Private     bool               `json:"private,omitempty"`
-	Gender      *Gender            `json:"gender,omitempty"`
-	Names       []Name             `json:"names,omitempty"`
-	Facts       []Fact             `json:"facts,omitempty"`
-	Sources     []SourceReference  `json:"sources,omitempty"`
-	Notes       []Note             `json:"notes,omitempty"`
-	Display     *DisplayProperties `json:"display,omitempty"`
-	Links       Links              `json:"links,omitempty"`
+	ID          string            `json:"id"`
+	Identifiers Identifiers       `json:"identifiers,omitempty"`
+	Living      *bool             `json:"living,omitempty"`
+	Private     bool              `json:"private,omitempty"`
+	Gender      *Gender           `json:"gender,omitempty"`
+	Names       []Name            `json:"names,omitempty"`
+	Facts       []Fact            `json:"facts,omitempty"`
+	Sources     []SourceReference `json:"sources,omitempty"`
+	// Media holds illustrative artifacts (photos, scans, ...) -- distinct
+	// from Sources (bibliographic evidence), per the Subject data type's
+	// own definition. See SCOPE.md's "Sources versus media" section for
+	// why these were combined in an earlier version of this server, and
+	// why that turned out to be wrong.
+	Media   []SourceReference  `json:"media,omitempty"`
+	Notes   []Note             `json:"notes,omitempty"`
+	Display *DisplayProperties `json:"display,omitempty"`
+	Links   Links              `json:"links,omitempty"`
 }
 
 // RelationshipType URIs, per the GEDCOM X Conceptual Model.
@@ -161,6 +167,8 @@ type Relationship struct {
 	Person1 ResourceReference `json:"person1"`
 	Person2 ResourceReference `json:"person2"`
 	Facts   []Fact            `json:"facts,omitempty"`
+	Sources []SourceReference `json:"sources,omitempty"`
+	Media   []SourceReference `json:"media,omitempty"`
 	Notes   []Note            `json:"notes,omitempty"`
 	Links   Links             `json:"links,omitempty"`
 }
@@ -179,6 +187,8 @@ type PlaceDescription struct {
 	Names     []TextValue             `json:"names"`
 	Latitude  *float64                `json:"latitude,omitempty"`
 	Longitude *float64                `json:"longitude,omitempty"`
+	Sources   []SourceReference       `json:"sources,omitempty"`
+	Media     []SourceReference       `json:"media,omitempty"`
 	Notes     []Note                  `json:"notes,omitempty"`
 	Display   *PlaceDisplayProperties `json:"display,omitempty"`
 	Links     Links                   `json:"links,omitempty"`
@@ -391,6 +401,7 @@ type Event struct {
 	Place   *PlaceReference   `json:"place,omitempty"`
 	Roles   []EventRole       `json:"roles,omitempty"`
 	Sources []SourceReference `json:"sources,omitempty"`
+	Media   []SourceReference `json:"media,omitempty"`
 	Notes   []Note            `json:"notes,omitempty"`
 	Links   Links             `json:"links,omitempty"`
 }

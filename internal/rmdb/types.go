@@ -102,6 +102,7 @@ const (
 	OwnerTypeEvent    = 2
 	OwnerTypeSource   = 3
 	OwnerTypeCitation = 4
+	OwnerTypePlace    = 5
 	OwnerTypeName     = 7
 )
 
