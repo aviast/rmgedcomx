@@ -211,7 +211,18 @@ type SourceDescription struct {
 	Titles       []TextValue      `json:"titles,omitempty"`
 	Notes        []Note           `json:"notes,omitempty"`
 	SortKey      string           `json:"sortKey,omitempty"` // RS extension (Section 3.5)
-	Links        Links            `json:"links,omitempty"`
+	// MediaPath is write-only, artifacts-specific, and not part of the
+	// GEDCOM X spec (which has no concept of a raw filesystem path -- see
+	// SCOPE.md's "Write support" section for why one's needed anyway, and
+	// why "?" is the only encoding this server will ever write). Never
+	// populated on read: a real absolute path, from the client's own
+	// filesystem, sent when updating an artifact's location via
+	// POST /artifacts/{id}. Ignored entirely for updates to actual
+	// Source Descriptions (POST /source-descriptions/{id}), which share
+	// this same Go type for their response/request shape but have no
+	// concept of a file location.
+	MediaPath string `json:"mediaPath,omitempty"`
+	Links     Links  `json:"links,omitempty"`
 }
 
 // EntryList is a generic paged list envelope used for the Persons,

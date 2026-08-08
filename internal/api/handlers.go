@@ -778,6 +778,68 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
 }
 
+// handleUpdateArtifact updates a multimedia item's stored location --
+// there's no dedicated RS spec transition for this either, same as
+// handleArtifactContent above; only registered at all when this
+// collection's database is writable (see resourceHandler). The request
+// body's mediaPath is a real, absolute filesystem path (see
+// gedcomx.SourceDescription.MediaPath's own doc comment); this server
+// encodes it into RootsMagic's "?"-relative notation itself
+// (rmdb.UpdateArtifactPath / encodeMediaPath) -- the client never
+// constructs RootsMagic's own path syntax. Requires this server to have a
+// configured Media Folder (write mode's own startup precondition -- see
+// SCOPE.md's "Write support" section); if somehow missing here anyway,
+// that's a server misconfiguration (500), not a bad request.
+func (s *Server) handleUpdateArtifact(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	mid, err := parseMediaID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var body gedcomx.SourceDescriptionDocument
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.SourceDescriptions) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one artifact description")
+		return
+	}
+	artifact := body.SourceDescriptions[0]
+	if artifact.ID != "" && artifact.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", artifact.ID, id))
+		return
+	}
+	mediaPath := strings.TrimSpace(artifact.MediaPath)
+	if mediaPath == "" {
+		writeError(w, http.StatusBadRequest, "mediaPath is required to update an artifact's location")
+		return
+	}
+	if s.cfg.Media.MediaFolder == "" {
+		writeError(w, http.StatusInternalServerError, "no Media Folder is configured for this server -- artifact locations can't be written without one")
+		return
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateArtifactPath(mid, s.cfg.Media.MediaFolder, mediaPath); err != nil {
+		if errors.Is(err, rmdb.ErrNotFound) {
+			notFound(w, "artifact", id)
+			return
+		}
+		if errors.Is(err, rmdb.ErrPathNotUnderMediaFolder) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleArtifactContent streams the actual bytes of a multimedia item --
 // there's no dedicated state for this in the RS spec (SourceDescription's
 // `about` field is the spec's mechanism for pointing at a resource's

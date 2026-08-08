@@ -147,6 +147,7 @@ func (s *Server) resourceHandler() http.Handler {
 	if !s.db.ReadOnly() {
 		mux.HandleFunc("POST /places/{id}", s.handleUpdatePlace)
 		mux.HandleFunc("POST /source-descriptions/{id}", s.handleUpdateSourceDescription)
+		mux.HandleFunc("POST /artifacts/{id}", s.handleUpdateArtifact)
 	}
 
 	return mux

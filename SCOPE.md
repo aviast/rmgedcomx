@@ -359,6 +359,42 @@ before falling back to Go's `mime.TypeByExtension`, so behavior doesn't
 depend on the deployment environment having a populated `/etc/mime.types` --
 fine on a typical dev machine, not guaranteed on a minimal container image.
 
+### Sources versus media
+
+`Person`, `Relationship`, `Event`, and `PlaceDescription` -- everything that
+extends the conceptual model's `Subject` data type -- expose two separate
+arrays, `sources` and `media`, not one combined list. `Fact` (a
+`Conclusion`, not a `Subject`) only ever gets `sources`.
+
+This wasn't the original design. An earlier version of this server
+combined bibliographic citations and attached artifacts into one `sources`
+array everywhere, on the reasoning that both "evidence" a conclusion in
+some sense. That reasoning doesn't survive contact with the spec's own
+text, which draws the line explicitly: `Subject.media` is defined as
+references to multimedia "intended to provide additional context or
+illustration for the subject and *not* considered evidence supporting the
+identity of the subject or its supporting conclusions" -- a direct,
+deliberate contrast with `sources`, not a stylistic one. Checked against
+two independent implementations, not just the spec's prose, to make sure
+this wasn't a single source's idiosyncratic reading: `gedcomx-js`
+(`Subject.js`) and `gedcomx-rs` (`person.rs`, `relationship.rs`,
+`event.rs`, `placedescription.rs`) both have a distinct `media` field
+alongside `sources`, with doc comments quoting the same spec language.
+Neither contradicts the other, or the spec.
+
+`buildSourcesAndMedia` (`internal/api/convert.go`) replaced the earlier
+`buildSourceReferences`, returning both arrays from the same underlying
+query rather than one merged list -- bibliographic citations go in
+`sources`; artifacts (attached directly via `MediaLinkTable`, or via the
+owner's citations -- see above) go in `media`. `Fact` calls this and
+deliberately discards the `media` return value: a `Fact` has nowhere to
+put it, but the same `EventTable` row's corresponding standalone `Event`
+(same id, see "Events" below) does, and that's where it actually surfaces
+instead -- not dropped, just relocated to the one place the spec actually
+allows it. `PlaceDescription` gained a query for this that didn't exist at
+all before (`rmdb.OwnerTypePlace`), since a place's own citations/media
+were never being surfaced prior to this.
+
 ## Events
 
 `GET /events` and `GET /events/{id}` implement the RS spec's `Events`/`Event`
@@ -666,27 +702,150 @@ the time a later stage genuinely needs it (a multi-table `Person` write
 touching both `PersonTable` and `NameTable`, for instance, where a partial
 failure partway through would be a real problem without one).
 
-### What's next
+### Stage 2 -- Artifact location updates (done)
 
-GEDAM's actual requirements, clarified during this stage: updating a
-digital asset's stored path (`MultimediaTable.MediaPath`/`MediaFile`), and
-creating/editing/deleting links between media and the person/fact/event it
-documents (`MediaLinkTable` rows) -- notably, **not** creating new
+GEDAM's actual requirements, clarified during Stage 1: updating a digital
+asset's stored path, and creating/editing/deleting links between media and
+the person/fact/event it documents -- notably, **not** creating new
 `Person`/`Relationship`/`Event` records, and not a general "source record"
 concept (GEDAM handles that independently of RootsMagic's own data model).
-That meaningfully narrows what full write support actually needs to cover
-in the end: `Artifacts` UPDATE (the `MediaPath` case) and `MediaLinkTable`
-CRUD are the resources with a real, driving use case behind them, not
+That meaningfully narrowed what full write support actually needs to
+cover: `Artifacts` UPDATE (this stage) and `MediaLinkTable` CRUD (next)
+are the resources with a real, driving use case behind them, not
 `Person`/`Relationship` CREATE, which may end up out of scope entirely
 rather than merely a later stage.
 
-Also not yet done: reading `RootsMagicUser.xml` for the Media Folder and
-Backup Folder locations as defaults (see "Multimedia" above), which would
-remove the need to hand-supply `-media-folder` and would give the backup
-mechanism above a better default location than "next to the source file."
-Approved in principle; not yet built, deliberately kept as its own
-self-contained piece of work rather than folded into a write-support
-stage it isn't actually part of.
+**`POST /collections/{id}/artifacts/{id}`** updates a multimedia item's
+stored location. The request body's `mediaPath` (a new, write-only,
+non-spec field on `SourceDescription` -- see its own doc comment in
+`internal/gedcomx/model.go`) is a real, absolute filesystem path, exactly
+as it exists on disk; the client never constructs RootsMagic's own path
+syntax itself. This server encodes it into RootsMagic's `?`-relative
+notation (`internal/rmdb/encodemediapath.go`), the same way `UpdatePlace`
+computes `Reverse` rather than expecting a client to.
+
+#### Why the Media Folder has to come from RootsMagic itself, not a flag
+
+`?` is the only one of RootsMagic's three path symbols (`*`/`~`/`?`) this
+server will ever *write* -- reasoned through directly, not just by
+elimination:
+
+- An absolute path is only meaningful on whichever machine typed it. Once
+  the client sending a write request is potentially a different machine
+  from the one running this server (which is potentially yet another
+  machine from wherever RootsMagic itself runs), an absolute path stops
+  meaning anything portable the moment it's written down.
+- `*` (relative to the database's own directory) and `~` (relative to a
+  home directory) both depend on machine-specific context a remote client
+  has no way to see or reconstruct -- it doesn't know, and structurally
+  can't know, where the database file lives on disk or whose home
+  directory is relevant.
+- `?` is different in kind, not just in degree: it isn't relative to a
+  filesystem location at all, it's relative to a named, centrally
+  configured setting. That's the one piece of context that can be resolved
+  on the server side alone, without the client needing to know anything
+  about the server's filesystem.
+
+But resolving `?` requires actually knowing the Media Folder's value, and
+the only place that value exists is `RootsMagicUser.xml` -- not the
+database, not something a client can reliably supply (see "Multimedia"
+above for where and how this was confirmed: `%APPDATA%\RootsMagic\Version
+N\RootsMagicUser.xml`, `<Folders><Media>`). For *reading*, a wrong
+`-media-folder` just means this server fails to find a file -- a
+contained, visible failure. For *writing*, a wrong assumption means
+writing a `?`-relative path that resolves correctly for this server but
+doesn't match what RootsMagic itself believes the Media Folder is --
+silently corrupting the link from RootsMagic's own point of view, not
+surfacing until someone opens the file in RootsMagic later and finds it
+broken. That asymmetry is why this isn't treated as a flag-level detail:
+
+- **`-write` and `-media-folder` are mutually exclusive.** Passing both is
+  refused at startup with a clear error, not silently resolved by picking
+  one -- supplying both suggests confusion about which is actually in
+  effect, not a deliberate override.
+- **`-write` reads the Media Folder itself**, straight from
+  `RootsMagicUser.xml` (`cmd/server/mediafolder_discovery.go`,
+  `discoverMediaFolder`), and refuses to start if it can't: not running on
+  Windows, `%APPDATA%` unset, no `RootsMagicUser.xml` found, or found but
+  with no Media Folder configured. This means **write mode currently only
+  works on Windows** -- a real, current limitation, not a design goal; it
+  follows directly from `RootsMagicUser.xml` only existing there. Nothing
+  about `encodeMediaPath` or `UpdateArtifactPath` themselves is
+  Windows-specific (both were developed and unit-tested on Linux, using
+  Windows-style path strings as plain data -- see below); the constraint
+  is entirely about where the Media Folder value can be discovered from.
+- **Multiple RootsMagic versions**: `RootsMagicUser.xml` lives under a
+  per-version `AppData` folder (`Version 9` in the confirmed example), so
+  someone who's used more than one RootsMagic version could have more than
+  one. The highest version number found is used -- RootsMagic's schema
+  migrations are understood to be one-directional, so the highest version
+  installed is presumed to be the one actually in current use. If the
+  found configurations' Media Folder values disagree with each other,
+  that's logged in detail (which versions, which values) but isn't fatal;
+  the highest version's value is used regardless.
+
+#### `encodeMediaPath`: the reverse of reading, and why it's not `path/filepath`
+
+`ResolveMediaPath` (see "Multimedia" above) turns RootsMagic's `?`
+notation into a real path, for reads. `encodeMediaPath`
+(`internal/rmdb/encodemediapath.go`) does the reverse for writes: given a
+real path and the Media Folder, compute the `?`-relative `MediaPath` and
+`MediaFile` RootsMagic itself would produce. Deliberately implemented with
+explicit backslash normalization and manual string manipulation rather
+than the standard `path/filepath` package -- the same reasoning already
+applied to `ResolveMediaPath` and `collectionid.fileStem`: `path/filepath`
+behaves according to the *build* platform, not a chosen one, but this
+needs Windows path semantics specifically (backslashes, case-insensitive
+comparison) regardless of what platform this code happens to be compiled
+on. It's also what makes this function fully unit-testable on Linux
+(`encodemediapath_test.go`), including the real path pattern confirmed
+earlier against `royal92.rmtree` (`*\royal92\marriage-of-queen-victoria.jpg`)
+as one of the test cases, not just invented examples.
+
+A real path that isn't actually under the Media Folder is rejected
+(`ErrPathNotUnderMediaFolder`, surfaced as `400`) rather than written
+anyway as an absolute path -- writing anything else would break the one
+guarantee this whole mechanism exists to provide. The prefix check
+requires a genuine path-separator boundary, not just a string prefix match
+(`C:\tmp2\...` correctly does NOT match a Media Folder of `C:\tmp`) --
+confirmed with a dedicated test case, since this is exactly the kind of
+boundary bug that's easy to get subtly wrong.
+
+#### Verification, and a real limitation of it
+
+This is the first piece of write support whose full, real path (server
+startup through the HTTP request) couldn't be exercised end-to-end on
+Linux, since `-write` itself now refuses to start without Windows. What
+*was* verified directly, for real, against `royal92.rmtree`: `encodeMediaPath`'s
+unit tests; and the full HTTP layer (`api.NewServer` /
+`api.NewMultiCollectionHandler`), constructed directly with a manually
+supplied Media Folder rather than through `main()`'s OS-gated discovery --
+this exercises every layer downstream of that gate (request parsing,
+validation, `UpdateArtifactPath`, the actual `SQLite` write) using the
+exact same code a real Windows run would use, just skipping the part that
+can only run on Windows. Confirmed this way: `M1`'s real
+`*\royal92\marriage-of-queen-victoria.jpg` correctly became
+`?\royal92\new-location\wedding.jpg` after a real HTTP request asking to
+move it there; a path outside the Media Folder correctly `400`s with a
+clear explanation, not a silent wrong write; a nonexistent artifact `404`s;
+a missing `mediaPath` and a body/URL id mismatch both `400` before any
+write is attempted; read-only mode still `405`s the identical request.
+What's *not* verified, and can't be from here: `discoverMediaFolder`
+itself against a real `RootsMagicUser.xml` on a real Windows machine, and
+`-write`'s actual refusal-to-start behavior when Windows-specific
+preconditions aren't met. Same caveat as `rootsmagic_running_check.go`'s
+own doc comment -- please confirm this actually behaves as documented on
+a real Windows machine before relying on it.
+
+### What's next
+
+`MediaLinkTable` CRUD -- creating, editing, and deleting the links between
+an artifact and the person/fact/event it documents. Per `Subject.media`
+(see "Sources versus media" above), the natural shape is extending the
+existing `POST /persons/{id}` (and `/relationships/{id}`, `/events/{id}`)
+pattern to accept an updated `media` array, diffed against existing
+`MediaLinkTable` rows for that owner rather than requiring a separate
+link/unlink endpoint -- not yet built.
 
 ## RootsMagic version handling
 

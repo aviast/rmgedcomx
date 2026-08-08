@@ -143,8 +143,8 @@ Allowed` with a correct `Allow` header; a URL this server doesn't implement at a
 | `-db` | *(required, repeatable)* | Path to a RootsMagic `.rmtree`/`.rmgc` SQLite file; pass multiple times to serve multiple databases, each as its own Collection |
 | `-addr` | `:8080` | Address to listen on |
 | `-base-url` | `http://localhost:8080` | Base URL used to build absolute links in responses |
-| `-media-folder` | *(none)* | RootsMagic's configured "Media Folder", if any multimedia paths use it (see [SCOPE.md](./SCOPE.md#multimedia)); shared by every `-db`, since it's a RootsMagic-installation-wide setting, not a per-database one |
-| `-write` | `false` | Enable write support (see [SCOPE.md](./SCOPE.md#write-support) for exactly what that covers at any given point -- it's being built in small, tested stages, not all at once). Refuses to start if RootsMagic itself appears to be running |
+| `-media-folder` | *(none)* | RootsMagic's configured "Media Folder", if any multimedia paths use it (see [SCOPE.md](./SCOPE.md#multimedia)); shared by every `-db`, since it's a RootsMagic-installation-wide setting, not a per-database one. **Cannot be combined with `-write`** -- write mode determines the Media Folder itself, from RootsMagic's own configuration (see below) |
+| `-write` | `false` | Enable write support (see [SCOPE.md](./SCOPE.md#write-support) for exactly what that covers at any given point -- it's being built in small, tested stages, not all at once). Refuses to start if RootsMagic itself appears to be running. **Currently Windows-only**: reads the Media Folder from RootsMagic's own `RootsMagicUser.xml`, which only exists on Windows |
 | `-default-generations` | `4` | Default number of generations for ancestry/descendancy queries |
 | `-max-page-size` | `200` | Maximum number of entries returned by a single paged request |
 

@@ -67,7 +67,34 @@ func main() {
 		}
 	}
 
-	router, cleanup := SetupRouter(dbPaths, *baseURL, *mediaFolder, *write, *defaultGenerations, *maxPageSize)
+	// -write and -media-folder are mutually exclusive: write mode reads
+	// the Media Folder itself, straight from RootsMagic's own
+	// configuration (RootsMagicUser.xml) -- the one source of truth that
+	// guarantees a path this server writes will still resolve correctly
+	// when RootsMagic itself later reads the file. A manually supplied
+	// -media-folder can't offer that guarantee, and silently trusting one
+	// that happens to disagree with RootsMagic's own configuration would
+	// mean writing something that looks correct here but is actually
+	// broken from RootsMagic's point of view. Someone passing both is
+	// almost certainly confused about which one is in effect, not
+	// deliberately overriding anything -- so this refuses to start rather
+	// than silently pick one. See SCOPE.md's "Write support" section.
+	effectiveMediaFolder := *mediaFolder
+	if *write {
+		if *mediaFolder != "" {
+			fmt.Fprintln(os.Stderr, "error: -write and -media-folder cannot be used together -- write mode determines the Media Folder itself, from RootsMagic's own configuration, since that's the only source of truth that guarantees a path this server writes will still resolve correctly in RootsMagic later")
+			os.Exit(2)
+		}
+		discovered, err := discoverMediaFolder()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
+		}
+		log.Printf("using Media Folder %q (from RootsMagic's own configuration)", discovered)
+		effectiveMediaFolder = discovered
+	}
+
+	router, cleanup := SetupRouter(dbPaths, *baseURL, effectiveMediaFolder, *write, *defaultGenerations, *maxPageSize)
 	defer cleanup()
 	log.Printf("listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, router); err != nil {

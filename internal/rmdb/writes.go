@@ -225,3 +225,44 @@ func (db *DB) UpdateSource(id int64, u SourceUpdate) error {
 	}
 	return nil
 }
+
+// UpdateArtifactPath updates a multimedia item's stored location.
+// realPath must be a real, absolute filesystem path under mediaFolder --
+// this server only ever writes RootsMagic's "?" (Media Folder-relative)
+// encoding, never "*", "~", or an absolute path (see encodeMediaPath's own
+// doc comment, and SCOPE.md's "Write support" section, for why). Returns
+// ErrPathNotUnderMediaFolder if realPath isn't under mediaFolder, or
+// ErrNotFound if no artifact with this id exists.
+func (db *DB) UpdateArtifactPath(id int64, mediaFolder, realPath string) error {
+	mediaPath, mediaFile, err := encodeMediaPath(mediaFolder, realPath)
+	if err != nil {
+		return err
+	}
+
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(
+		"UPDATE MultimediaTable SET MediaPath = ?, MediaFile = ?, UTCModDate = "+utcModDateExpr+" WHERE MediaID = ?",
+		mediaPath, mediaFile, id)
+	if err != nil {
+		return fmt.Errorf("updating artifact %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking update result for artifact %d: %w", id, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	if err := bumpConfigTableModDate(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing update to artifact %d: %w", id, err)
+	}
+	return nil
+}
