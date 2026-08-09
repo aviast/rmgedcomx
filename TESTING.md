@@ -54,8 +54,8 @@ macOS isn't specifically handled -- not tested against, not a supported claim ei
 | 5 | `-write` passed, one write performed: exactly one timestamped backup file appears, byte-identical to the pre-write database (checksum/diff against a copy made before starting the server). | Manual/Go-native -- file existence and checksum check, no golden file. |
 | 6 | A second write in the same running session: no second backup file appears. | Manual/Go-native -- file existence check, no golden file. |
 | 7 | `POST` a place, `names` only. | **Done** -- `testdata/post_places_name_expected.sql` (currently covers this exact case: name-only change on `PL423`). |
-| 8 | `POST` a place, `notes` only. | Needs golden file, e.g. `testdata/post_places_note_expected.sql`. |
-| 9 | `POST` a place, `latitude`/`longitude` only. Also confirm the decimal-to-integer conversion is exact (`value × 10,000,000`, no rounding) for a coordinate with several decimal places. | Needs golden file, e.g. `testdata/post_places_coordinates_expected.sql`. |
+| 8 | `POST` a place, `notes` only. | **Done** -- `testdata/post_places_note_expected.sql` (currently covers this exact case: note-only change on `PL423`). |
+| 9 | `POST` a place, `latitude`/`longitude` only. Also confirm the decimal-to-integer conversion is exact (`value × 10,000,000`, no rounding) for a coordinate with several decimal places. | **Done** -- `testdata/post_places_coordinates_expected.sql`. |
 | 10 | `POST` a place, all four fields (`names`, `notes`, `latitude`, `longitude`) at once. | Needs golden file, e.g. `testdata/post_places_all_fields_expected.sql`. |
 | 11 | Partial-update semantics: set a note (one request), then a second request that only sends `names` (omitting `notes`) -- confirm the note from the first request survives untouched. | No golden file needed -- Go-native: two sequential API calls plus a `GET` to confirm, not a RootsMagic-comparable single edit. |
 | 12 | `latitude` without `longitude` (or vice versa): `400`, and the place is confirmed unchanged afterward. | No golden file -- request rejected before any write. |

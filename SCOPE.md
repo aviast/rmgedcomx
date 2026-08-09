@@ -663,6 +663,39 @@ be called.
   `PlaceTable.Note`. Providing exactly one of `latitude`/`longitude`
   without the other is rejected with `400` rather than silently storing a
   nonsensical half-coordinate.
+
+  **The decimal-to-integer conversion uses `math.Round`, not a bare
+  `int64(...)` conversion** -- found from a real golden-file mismatch, not
+  caught in advance: `44.817778 * 1e7` evaluates to
+  `448177779.9999999404` in float64 arithmetic, not exactly `448177780.0`
+  (most decimal fractions have no exact binary representation), and
+  `int64(...)` truncates toward zero rather than rounding, so a bare
+  conversion silently rounded real coordinates down by up to 1 in the
+  last digit (roughly a centimeter) depending on which specific decimal
+  values happened to land on the wrong side of a float64 rounding
+  boundary -- confirmed directly against this exact value, not a
+  generic/theoretical concern.
+
+  **A coordinates change also sets `LatLongExact = 1`** (`PlaceTable`),
+  confirmed against a real captured diff -- deliberately different from
+  the `0` `UpdatePlace` writes on a `Name` change (see its own doc
+  comment for the full reasoning): this server has just as much basis to
+  assert "these coordinates are exact" as RootsMagic's own manual
+  coordinate-entry UI does, since a client explicitly provided them
+  through this API, the same kind of deliberate, explicit value either
+  way. If a single request changes both `Name` and coordinates, the
+  coordinates' `LatLongExact = 1` is appended after (and therefore wins
+  over) the `Name` branch's `LatLongExact = 0` -- confirmed empirically
+  that SQLite resolves a column set twice in one `UPDATE` by taking the
+  last occurrence, so this ordering is load-bearing, not incidental.
+  `cmd/server/main_test.go`'s `normalizeSQL` no longer strips
+  `LatLongExact` from the comparison unconditionally the way it once did
+  -- since the value is genuinely context-dependent now (not always the
+  same value regardless of what changed, the way `fsID`/`anID`/
+  `IsPrivate` still are), a coordinates change produces a real,
+  observable `0 -> 1` transition `sqldiff` can actually verify, and
+  stripping it unconditionally would have hidden exactly the kind of
+  regression it exists to catch.
 - `Source`: `titles[0].value` -> `SourceTable.Name`; `notes[0].text` ->
   `SourceTable.Comments`. **`citations` is deliberately rejected with
   `400`** if present at all, rather than silently accepted and ignored, or

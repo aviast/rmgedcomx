@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -705,8 +706,16 @@ func (s *Server) handleUpdatePlace(w http.ResponseWriter, r *http.Request) {
 		update.Name = &name
 	}
 	if place.Latitude != nil && place.Longitude != nil {
-		lat := int64(*place.Latitude * 1e7)
-		lon := int64(*place.Longitude * 1e7)
+		// math.Round, not a bare int64(...) conversion: float64 can't
+		// represent most decimal fractions exactly (44.817778 * 1e7
+		// evaluates to 448177779.9999999404 in float64 arithmetic, not
+		// exactly 448177780.0), and int64(...) truncates toward zero
+		// rather than rounding -- so a bare conversion here silently
+		// rounds coordinates down by up to 1 in the last digit (roughly
+		// a centimeter), confirmed directly against this exact value.
+		// math.Round first gives the mathematically intended integer.
+		lat := int64(math.Round(*place.Latitude * 1e7))
+		lon := int64(math.Round(*place.Longitude * 1e7))
 		update.Latitude = &lat
 		update.Longitude = &lon
 	}

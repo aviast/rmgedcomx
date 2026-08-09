@@ -331,7 +331,6 @@ func TestReadOperations(t *testing.T) {
 var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
 var familySearchIDRegex = regexp.MustCompile(`,\s*fsID=-?[0-9]+`)
 var ancestryIDRegex = regexp.MustCompile(`,\s*anID=-?[0-9]+`)
-var latLongExactRegex = regexp.MustCompile(`,\s*LatLongExact=[0-9]+`)
 var isPrivateRegex = regexp.MustCompile(`,\s*IsPrivate=[0-9]+`)
 
 func TestWriteOperations(t *testing.T) {
@@ -370,6 +369,25 @@ func TestWriteOperations(t *testing.T) {
 			reqBody:            `{"places":[{"id":"PL423","notes":[{"text":"Updated note"}]}]}`,
 			goldenFile:         "testdata/post_places_note_expected.sql",
 			verifyZero:         []zeroFieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", columns: []string{"fsID", "anID", "LatLongExact"}}},
+			expectedStatus:     http.StatusNoContent,
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			// LatLongExact is deliberately NOT in verifyZero here -- it's
+			// 1 after this update, not 0 (see UpdatePlace's own doc
+			// comment), and the golden file asserts that value directly
+			// via the normal sqldiff comparison rather than a separate
+			// direct check, since a coordinates change makes it a real,
+			// observable transition sqldiff can actually verify.
+			name:               "POST Place Coordinates Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
+			reqBody:            `{"places":[{"id":"PL423","latitude":44.817778,"longitude":20.456944}]}`,
+			goldenFile:         "testdata/post_places_coordinates_expected.sql",
 			expectedStatus:     http.StatusNoContent,
 			baseURL:            "http://localhost:8080",
 			mediaFolder:        "testdata/media",
@@ -561,12 +579,12 @@ func runSqlDiff(t *testing.T, dbOriginal, dbModified string) string {
 func normalizeSQL(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = utcModDateRegex.ReplaceAllString(s, "UTCModDate=[TIMESTAMP_UPDATED]")
-	// fsID, anID, LatLongExact, and IsPrivate are stripped entirely, not
-	// masked with a placeholder like UTCModDate is. The difference: a
-	// placeholder still requires the field to appear in the diff at all,
-	// which only happens if its value actually changed from what it
-	// already was -- and every place/source in royal92.rmtree already has
-	// these fields at the same value (0) this server writes, so a
+	// fsID, anID, and IsPrivate are stripped entirely, not masked with a
+	// placeholder like UTCModDate is. The difference: a placeholder still
+	// requires the field to appear in the diff at all, which only
+	// happens if its value actually changed from what it already was --
+	// and every place/source in royal92.rmtree already has these fields
+	// at the same value (0) this server always writes for them, so a
 	// same-value write is invisible to a before/after diff no matter what
 	// this server does or doesn't do. That makes sqldiff comparison
 	// fundamentally the wrong tool for confirming these specific fields:
@@ -575,9 +593,17 @@ func normalizeSQL(s string) string {
 	// directly instead -- see the direct assertions in TestWriteOperations
 	// itself, right after this comparison, which query the resulting
 	// database for these exact fields.
+	//
+	// LatLongExact is deliberately NOT in this list, even though it was
+	// at one point: unlike fsID/anID/IsPrivate, this server doesn't
+	// always write the same value for it -- UpdatePlace writes 0 on a
+	// Name change, 1 on a coordinates change (see its own doc comment in
+	// internal/rmdb/writes.go) -- so a coordinates change produces a
+	// real, observable 0 -> 1 transition sqldiff genuinely can verify.
+	// Stripping it unconditionally would have hidden exactly the kind of
+	// regression it exists to catch.
 	s = familySearchIDRegex.ReplaceAllString(s, "")
 	s = ancestryIDRegex.ReplaceAllString(s, "")
-	s = latLongExactRegex.ReplaceAllString(s, "")
 	s = isPrivateRegex.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }

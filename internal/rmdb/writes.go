@@ -73,27 +73,41 @@ type PlaceUpdate struct {
 //     honest about what this server actually did (nothing, regarding
 //     external verification); a stale one looks like it's still valid
 //     when it isn't.
-//   - LatLongExact is reset to 0 for the same reason: it isn't documented
-//     anywhere (checked the data dictionary directly; it's simply
-//     absent), but a real captured RootsMagic diff shows it set to 1
-//     alongside a successful fsID/anID match, and every one of
-//     royal92.rmtree's 922 places -- none externally verified -- has
-//     LatLongExact=0, with zero exceptions. The likely (unconfirmed)
-//     meaning is "these coordinates are corroborated by an external
-//     authority," which this server has no basis to claim without doing
-//     the lookup that would justify it.
+//   - LatLongExact is reset to 0 for a related but distinct reason: a
+//     real captured RootsMagic diff shows it set to 1 alongside a
+//     successful fsID/anID match, and every one of royal92.rmtree's 922
+//     places -- none externally verified -- has LatLongExact=0, with
+//     zero exceptions. The likely (unconfirmed) meaning is "these
+//     coordinates are corroborated by an external authority," which this
+//     server has no basis to claim on a Name-only edit, since it isn't
+//     doing the lookup that would justify it.
 //
-// Deliberately does NOT touch fsID/anID/LatLongExact when only Note (or
-// only coordinates) change, even though a second real captured diff shows
-// RootsMagic itself re-running its FamilySearch/Ancestry lookup on *any*
-// field edit, not just Name -- reasonable on RootsMagic's side, since a
-// fresh match only adds value there. But the reasoning above for clearing
-// these fields is specifically that a stale match against the *old name*
-// is misleading once the name changes; that reasoning doesn't hold when
-// the name hasn't changed at all, so there's no basis here for touching
-// them on a Note-only or coordinates-only edit. Diverging from
-// RootsMagic's broader real behavior here is a deliberate, narrower
-// choice, not an oversight -- see SCOPE.md's "Write support" section.
+// When Latitude/Longitude change (always together -- the API layer
+// rejects one without the other), LatLongExact is set to 1, not 0 --
+// deliberately different from the Name case above, and confirmed against
+// a second real captured diff. The reasoning that justifies clearing it
+// on a Name change doesn't apply here: this server has just as much basis
+// to assert "these coordinates are exact" as RootsMagic's own manual
+// coordinate-entry UI does, since the coordinates came from the same
+// place either way -- a deliberate, explicit value someone provided, not
+// an inherited or guessed one. If a single request changes both Name and
+// coordinates, this LatLongExact = 1 is appended after the Name branch's
+// LatLongExact = 0, which matters: confirmed empirically that SQLite
+// resolves a column set twice in one UPDATE by taking the last
+// occurrence, so the coordinates' assertion correctly wins over the
+// name-change reset when both happen at once.
+//
+// fsID/anID are never touched outside the Name-change case above, even
+// though a real captured diff shows RootsMagic itself re-running its
+// FamilySearch/Ancestry lookup on *any* field edit, not just Name --
+// reasonable on RootsMagic's side, since a fresh match adds value
+// regardless of which field triggered it. But the reasoning for clearing
+// fsID/anID is specifically that a stale match against the *old name* is
+// misleading once the name changes; that reasoning doesn't hold for a
+// Note-only or coordinates-only edit, so there's no basis to touch them
+// there. Diverging from RootsMagic's broader real behavior here is a
+// deliberate, narrower choice, not an oversight -- see SCOPE.md's "Write
+// support" section.
 func (db *DB) UpdatePlace(id int64, u PlaceUpdate) error {
 	var sets []string
 	var args []any
@@ -102,12 +116,24 @@ func (db *DB) UpdatePlace(id int64, u PlaceUpdate) error {
 		args = append(args, *u.Name, ComputePlaceReverse(*u.Name))
 	}
 	if u.Latitude != nil {
-		sets = append(sets, "Latitude = ?")
-		args = append(args, *u.Latitude)
-	}
-	if u.Longitude != nil {
-		sets = append(sets, "Longitude = ?")
-		args = append(args, *u.Longitude)
+		// The API layer guarantees Latitude and Longitude arrive together
+		// or not at all, so it's safe to set both, plus LatLongExact,
+		// from this one check. LatLongExact = 1 here is a real, confirmed
+		// RootsMagic behavior (not a guess the way the Name-triggered
+		// case's LatLongExact = 1 would be): a real captured diff shows
+		// RootsMagic sets it when a user directly enters coordinates
+		// themselves, and this server writing coordinates a client
+		// explicitly supplied through this API is the same situation --
+		// there's a real, deliberate assertion of exactness behind it
+		// either way, not an inherited or guessed one. This is placed
+		// after the Name branch above deliberately: if a single request
+		// changes both Name and coordinates, this LatLongExact = 1 must
+		// win over the Name branch's LatLongExact = 0 in the resulting
+		// SQL -- confirmed empirically that SQLite resolves a column set
+		// twice in one UPDATE by taking the last occurrence, so append
+		// order here is load-bearing, not cosmetic.
+		sets = append(sets, "Latitude = ?", "Longitude = ?", "LatLongExact = 1")
+		args = append(args, *u.Latitude, *u.Longitude)
 	}
 	if u.Note != nil {
 		sets = append(sets, "Note = ?")
