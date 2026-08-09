@@ -676,6 +676,23 @@ be called.
   fields (on both the read and write sides) to resolve this properly,
   rather than guessing now.
 
+**Every write handler decodes its request body via `decodeStrictJSON`
+(`internal/api/server.go`), not `json.Decoder.Decode` directly** -- it
+sets `DisallowUnknownFields`, so a field name a target type doesn't
+recognize is a `400`, not silently dropped. Found the hard way: a request
+using `{"value": "..."}` instead of `{"text": "..."}` on a `Note` decodes
+without error by default (the mistyped field is just ignored, leaving
+`Text` at its zero value), and if that happens to be the only field in
+the update, the request looks like a legitimate no-op and returns a
+misleading `204` -- the client's intended write never took effect, with
+no signal that anything went wrong. Confirmed directly: the exact request
+that caused this now returns `400` naming the specific unrecognized
+field (`json: unknown field "value"`), and a legitimate GET-then-echo-back
+request (real fields like `id`/`links`/`notes` all present together)
+still works normally -- `DisallowUnknownFields` only rejects names a type
+genuinely doesn't have, not the ordinary pattern of a client sending back
+more of a resource's own fields than strictly changed.
+
 **Update semantics: a field that's absent, or present-but-empty, is left
 unchanged -- there is currently no way to explicitly clear a field back to
 empty via this API.** This is a real, deliberate limitation, not an
@@ -934,15 +951,116 @@ access to. Same caveat as `rootsmagic_running_check.go`'s own doc comment
 -- please confirm the macOS location specifically on a real Mac before
 relying on it.
 
+### Stage 2b -- `MediaLinkTable` CRUD for `Person` (done)
+
+Deliberately split from the rest of Stage 2 into one entity at a time --
+`Person`, `Event`, and `Relationship` all need this, but doing all three
+at once would compound whatever issues came up in any one of them. This
+covers `Person` only.
+
+**`POST /collections/{id}/persons/{id}`** now accepts an updated `media`
+array, diffed against `MediaLinkTable` rather than replaced wholesale --
+entries newly present get a new row, entries newly absent get their row
+removed, entries in both are left completely untouched, including
+columns this server doesn't otherwise touch at all (see below). The
+shared diffing logic (`rmdb.UpdateOwnerMedia`) is parameterized by owner
+type/id specifically so `Event` and `Relationship` can reuse it directly
+when their turn comes, rather than reimplementing it.
+
+**The real `MediaLinkTable` schema turned out to have more in it than
+the earlier planning discussion assumed** -- `IsPrimary`, `Include1-4`,
+`RectLeft/Top/Right/Bottom`, `Comments`, on top of the core
+`MediaID`/`OwnerType`/`OwnerID`. Checked against the data dictionary
+before deciding anything: `Include2-4` and all four `Rect*` columns are
+documented as "Not implemented," safe to leave at `0` unconditionally.
+`IsPrimary` and `Include1` are real, though:
+
+- `IsPrimary`: "Primary Photo checkbox... Determines image displayed in
+  reports, the Pedigree view, and the People Side View pane." New links
+  always get `0` -- this server has no basis to assert a newly-created
+  link should be someone's primary photo, the same reasoning as `fsID`/
+  `anID` in `UpdatePlace`: it's a real editorial choice, not something to
+  claim on a user's behalf without evidence.
+- `Include1`: "Include in Scrapbook." Also always `0` on new links. There
+  is no GEDCOM X data type conceptually similar to RootsMagic's Scrapbook
+  at all -- checked the conceptual model specifically looking for one --
+  so this is **documented here as RootsMagic-only functionality this API
+  doesn't expose**, not a gap to close later. A newly-linked artifact
+  simply won't appear in the Scrapbook, or be treated as anyone's primary
+  photo, until a person sets that manually in RootsMagic itself.
+
+**Duplicate links**: `MediaLinkTable` has no uniqueness constraint on
+`(MediaID, OwnerType, OwnerID)` -- nothing stops the same artifact being
+linked to the same owner more than once (confirmed by deliberately
+creating that state and testing against it, not just reasoning about
+whether the schema allows it). Removing a media id removes *every*
+matching row, not just one, so a removal can't leave an orphaned
+duplicate behind.
+
+**Scoped to `media` only, not general `Person` editing.** `names`/
+`gender`/`facts`/`sources` aren't writable through this endpoint. A
+request that includes any of them isn't rejected -- a client following
+the ordinary GET-then-modify-then-POST pattern will naturally send
+whatever it got back, unchanged, and refusing that over fields this
+endpoint doesn't touch would just make the natural client pattern
+unusable for the one thing it does support -- but it is logged
+(`log.Printf` naming exactly which fields were present), specifically so
+there's a visible trail of real demand if this needs expanding later,
+rather than a silent gap nobody notices until someone asks why it doesn't
+work.
+
+**Doesn't bump the owner's own `UTCModDate`** (e.g. `PersonTable`'s), on
+purpose, not by oversight: unlike a `Name`/`Note`/coordinate edit, there's
+no real captured RootsMagic diff yet confirming whether attaching or
+detaching media touches the owner row's own timestamp the way editing one
+of its own fields does. Asserting that without evidence would be exactly
+the kind of unverified claim this project has consistently avoided
+elsewhere -- `ConfigTable`'s own `UTCModDate` is still bumped, since
+that's confirmed to happen on every write regardless of what changed.
+
+**Verified directly, not just unit-tested**: attaching `M1` (real data,
+previously only linked to the marriage event) to a person correctly
+creates a new row with `IsPrimary=0`/`Include1=0`, while the pre-existing
+event link survives completely untouched; detaching correctly removes
+only the intended row; a request naming a nonexistent artifact is
+rejected atomically -- confirmed the *other*, valid artifact in the same
+request does **not** get linked either, not just that the invalid one is
+rejected; a nonexistent person 404s; a body/URL id mismatch 400s;
+read-only mode still 405s the identical request; sending `names` alongside
+`media` succeeds and produces the expected log line, not a rejection; an
+actually-unknown field still 400s via `decodeStrictJSON`.
+
+### Stage 2c -- `MediaLinkTable` CRUD for `Event` (done)
+
+The small increment Stage 2b's own "What's next" anticipated: `POST
+/collections/{id}/events/{id}`, same shape as `Person`'s, reusing
+`rmdb.UpdateOwnerMedia` unchanged (`OwnerTypeEvent` instead of
+`OwnerTypePerson` is the only difference at the data layer). Unsupported
+fields for `Event` are `type`/`date`/`place`/`roles`/`sources`/`notes` --
+logged, not rejected, same reasoning as `Person`.
+
+Verified the same way, against real data: `M1` (already linked to Event
+5049, the marriage, in `royal92.rmtree`) moved to a different,
+previously-unlinked event via a real HTTP request; Event 5049's own
+original link independently detached by a separate request and confirmed
+untouched by the first one; re-sending an already-linked media id doesn't
+create a duplicate row (confirmed by `LinkID` staying the same across
+both calls, not just that the end state looked right); nonexistent
+artifact/event, id mismatch, read-only mode, and the unknown-field
+rejection all behave identically to `Person`'s. A dedicated
+`rmdb`-level test (`TestUpdateOwnerMediaWorksForEventOwners`) exists
+specifically to confirm the shared core isn't accidentally
+`Person`-specific, not just that `Event`'s own HTTP layer happens to
+work.
+
 ### What's next
 
-`MediaLinkTable` CRUD -- creating, editing, and deleting the links between
-an artifact and the person/fact/event it documents. Per `Subject.media`
-(see "Sources versus media" above), the natural shape is extending the
-existing `POST /persons/{id}` (and `/relationships/{id}`, `/events/{id}`)
-pattern to accept an updated `media` array, diffed against existing
-`MediaLinkTable` rows for that owner rather than requiring a separate
-link/unlink endpoint -- not yet built.
+`Relationship` remains deferred, per Stage 2b's own reasoning: GEDAM's
+stated requirement was linking media to "person/fact/event," not
+relationships, and with `Person` and `Event` both done, that requirement
+is now met in full. Nothing currently drives building `Relationship`
+media support; it's a small increment (`OwnerTypeFamily`, same shared
+core) whenever a real need for it appears.
 
 ## RootsMagic version handling
 

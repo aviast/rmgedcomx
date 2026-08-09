@@ -278,3 +278,145 @@ func (db *DB) UpdateArtifactPath(id int64, mediaFolder, realPath string) error {
 	}
 	return nil
 }
+
+// ErrArtifactNotFound is returned by UpdateOwnerMedia when the desired
+// media list references an artifact that doesn't exist -- distinct from
+// ErrNotFound (which means the *owner* -- the person, event, etc. --
+// doesn't exist) so callers can map the two to the right response: a
+// missing owner is a 404 against the URL the client asked for, a missing
+// artifact is a 400 against something inside the request body.
+var ErrArtifactNotFound = errors.New("artifact not found")
+
+// UpdateOwnerMedia diffs a desired set of media (artifact) ids against
+// the MediaLinkTable rows that currently exist for a given owner (a
+// person, event, family, etc. -- see the OwnerType* constants), creating
+// the ones newly present and removing the ones newly absent. Entries
+// present in both are left completely untouched, including columns this
+// function doesn't otherwise touch at all (IsPrimary, Include1,
+// Comments, ...) -- whatever a human set for an existing link through
+// RootsMagic's own UI survives a media-list update unrelated to it.
+//
+// If the same media id happens to be linked more than once for this
+// owner (MediaLinkTable has no uniqueness constraint on
+// (MediaID, OwnerType, OwnerID) -- nothing stops this happening, e.g. via
+// RootsMagic's own UI), removing that id deletes every matching row, not
+// just one, so a removal can't leave an orphaned duplicate behind.
+//
+// New links are always created with IsPrimary=0 and Include1=0 --
+// deliberately, not just as an unconsidered default. IsPrimary
+// ("Determines image displayed in reports, the Pedigree view, and the
+// People Side View pane") and Include1 ("Include in Scrapbook") are both
+// real, documented, user-facing choices in RootsMagic's own UI that this
+// server has no basis to assert on someone's behalf -- the same
+// reasoning as fsID/anID in UpdatePlace. GEDCOM X has no data type
+// conceptually similar to RootsMagic's Scrapbook at all, so this is
+// documented as RootsMagic-only functionality this API doesn't expose --
+// see SCOPE.md's "Write support" section. A newly-linked artifact simply
+// won't appear in the Scrapbook, or be treated as anyone's primary photo,
+// until a person sets that manually in RootsMagic itself.
+//
+// Every other column not mentioned above (Include2-4, Rect*) is
+// documented as "Not implemented" in RootsMagic's own data dictionary and
+// is left at 0 on new rows for that reason.
+//
+// Returns ErrArtifactNotFound if any desired media id doesn't exist in
+// MultimediaTable -- this server won't create a link to an artifact that
+// isn't there.
+func (db *DB) UpdateOwnerMedia(ownerType int, ownerID int64, desiredMediaIDs []int64) error {
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	desired := make(map[int64]bool, len(desiredMediaIDs))
+	for _, mid := range desiredMediaIDs {
+		if desired[mid] {
+			continue // duplicate in the request itself; harmless, just don't double-process it
+		}
+		desired[mid] = true
+
+		var exists int
+		err := tx.QueryRow("SELECT 1 FROM MultimediaTable WHERE MediaID = ?", mid).Scan(&exists)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("%w: M%d", ErrArtifactNotFound, mid)
+		}
+		if err != nil {
+			return fmt.Errorf("checking artifact M%d exists: %w", mid, err)
+		}
+	}
+
+	rows, err := tx.Query("SELECT MediaID FROM MediaLinkTable WHERE OwnerType = ? AND OwnerID = ?", ownerType, ownerID)
+	if err != nil {
+		return fmt.Errorf("reading existing media links: %w", err)
+	}
+	existing := map[int64]bool{}
+	for rows.Next() {
+		var mid int64
+		if err := rows.Scan(&mid); err != nil {
+			rows.Close()
+			return fmt.Errorf("reading existing media links: %w", err)
+		}
+		existing[mid] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("reading existing media links: %w", err)
+	}
+	rows.Close()
+
+	for mid := range desired {
+		if existing[mid] {
+			continue
+		}
+		_, err := tx.Exec(
+			`INSERT INTO MediaLinkTable
+			 (MediaID, OwnerType, OwnerID, IsPrimary, Include1, Include2, Include3, Include4,
+			  SortOrder, RectLeft, RectTop, RectRight, RectBottom, Comments, UTCModDate)
+			 VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', `+utcModDateExpr+`)`,
+			mid, ownerType, ownerID)
+		if err != nil {
+			return fmt.Errorf("linking artifact M%d: %w", mid, err)
+		}
+	}
+	for mid := range existing {
+		if desired[mid] {
+			continue
+		}
+		if _, err := tx.Exec("DELETE FROM MediaLinkTable WHERE OwnerType = ? AND OwnerID = ? AND MediaID = ?", ownerType, ownerID, mid); err != nil {
+			return fmt.Errorf("unlinking artifact M%d: %w", mid, err)
+		}
+	}
+
+	// Deliberately does NOT bump the owner's own UTCModDate (e.g.
+	// PersonTable.UTCModDate) -- unlike Name/Note/coordinate edits, there's
+	// no real captured RootsMagic diff yet confirming whether attaching or
+	// detaching media touches the owner row's own timestamp the way
+	// editing one of its own fields does. Asserting that without evidence
+	// would be exactly the kind of unverified claim this project has
+	// consistently avoided elsewhere. ConfigTable's own UTCModDate is
+	// still bumped, since that's confirmed to happen on every write
+	// regardless of what changed.
+	if err := bumpConfigTableModDate(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing media link update for %s %d: %w", ownerTypeName(ownerType), ownerID, err)
+	}
+	return nil
+}
+
+func ownerTypeName(ownerType int) string {
+	switch ownerType {
+	case OwnerTypePerson:
+		return "person"
+	case OwnerTypeFamily:
+		return "family"
+	case OwnerTypeEvent:
+		return "event"
+	case OwnerTypePlace:
+		return "place"
+	default:
+		return fmt.Sprintf("owner type %d", ownerType)
+	}
+}

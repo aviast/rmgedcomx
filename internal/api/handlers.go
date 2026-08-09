@@ -1,9 +1,9 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -68,6 +68,106 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, gedcomx.PersonDocument{Persons: []gedcomx.Person{p}, Links: p.Links})
+}
+
+// handleUpdatePerson implements the Person state's POST operation (RS
+// spec Section 4.4.2: "Update a person", OPTIONAL) -- only registered
+// when this collection's database is writable (see resourceHandler).
+//
+// Deliberately scoped to ONLY media links for now, not general person
+// editing -- see SCOPE.md's "Write support" section. names/gender/facts/
+// sources aren't writable yet; a request that includes any of them isn't
+// rejected (a client following the ordinary GET-then-modify-then-POST
+// pattern will naturally send them back unchanged, and breaking that
+// pattern over fields this endpoint doesn't touch would be its own kind
+// of unhelpful), but is logged, so there's a visible trail of real
+// demand for expanding this later rather than a silent gap.
+func (s *Server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	pid, err := parsePersonID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	rp, err := s.db.GetPerson(pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rp == nil {
+		notFound(w, "person", id)
+		return
+	}
+
+	var body gedcomx.PersonDocument
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.Persons) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one person (RS spec Section 4.4.3)")
+		return
+	}
+	person := body.Persons[0]
+	if person.ID != "" && person.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", person.ID, id))
+		return
+	}
+
+	var ignoredFields []string
+	if len(person.Names) > 0 {
+		ignoredFields = append(ignoredFields, "names")
+	}
+	if person.Gender != nil {
+		ignoredFields = append(ignoredFields, "gender")
+	}
+	if len(person.Facts) > 0 {
+		ignoredFields = append(ignoredFields, "facts")
+	}
+	if len(person.Sources) > 0 {
+		ignoredFields = append(ignoredFields, "sources")
+	}
+	if len(ignoredFields) > 0 {
+		log.Printf("POST /persons/%s: ignoring unsupported field(s) %v -- only media is currently writable for Person, see SCOPE.md's \"Write support\" section", id, ignoredFields)
+	}
+
+	mediaIDs := make([]int64, 0, len(person.Media))
+	for _, ref := range person.Media {
+		mid, err := mediaIDFromReference(ref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid media reference: %v", err))
+			return
+		}
+		mediaIDs = append(mediaIDs, mid)
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateOwnerMedia(rmdb.OwnerTypePerson, pid, mediaIDs); err != nil {
+		if errors.Is(err, rmdb.ErrArtifactNotFound) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// mediaIDFromReference extracts an artifact id from a SourceReference
+// sent in a write request -- prefers descriptionId (e.g. "M1") since it's
+// simplest and most direct; falls back to parsing the id off the end of
+// description (e.g. ".../artifacts/M1") for a client that only sent that.
+func mediaIDFromReference(ref gedcomx.SourceReference) (int64, error) {
+	if ref.DescriptionID != "" {
+		return parseMediaID(ref.DescriptionID)
+	}
+	if ref.Description != "" {
+		parts := strings.Split(strings.TrimRight(ref.Description, "/"), "/")
+		return parseMediaID(parts[len(parts)-1])
+	}
+	return 0, fmt.Errorf("media reference has neither descriptionId nor description")
 }
 
 // --- Person Parents / Children / Spouses ---
@@ -578,7 +678,7 @@ func (s *Server) handleUpdatePlace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body gedcomx.PlaceDescriptionDocument
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeStrictJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -688,7 +788,7 @@ func (s *Server) handleUpdateSourceDescription(w http.ResponseWriter, r *http.Re
 	}
 
 	var body gedcomx.SourceDescriptionDocument
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeStrictJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -799,7 +899,7 @@ func (s *Server) handleUpdateArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body gedcomx.SourceDescriptionDocument
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeStrictJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -954,4 +1054,94 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, gedcomx.EventDocument{Events: []gedcomx.Event{ev}, Links: ev.Links})
+}
+
+// handleUpdateEvent implements the Event state's POST operation (RS spec
+// Section 4.9.2: "Update an event", OPTIONAL) -- only registered when
+// this collection's database is writable (see resourceHandler).
+//
+// Scoped to ONLY media links, same as handleUpdatePerson and for the same
+// reason -- see its own doc comment, and SCOPE.md's "Write support"
+// section, for the full reasoning (shared verbatim here: unsupported
+// fields are logged, not rejected, so the natural GET-then-modify-then-
+// POST client pattern keeps working for the one thing this endpoint
+// supports, while leaving a visible trail of real demand for anything
+// beyond that).
+func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	eid, err := parseEventID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	e, err := s.db.GetEvent(eid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if e == nil {
+		notFound(w, "event", id)
+		return
+	}
+
+	var body gedcomx.EventDocument
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.Events) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one event (RS spec Section 4.9.3)")
+		return
+	}
+	event := body.Events[0]
+	if event.ID != "" && event.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", event.ID, id))
+		return
+	}
+
+	var ignoredFields []string
+	if event.Type != "" {
+		ignoredFields = append(ignoredFields, "type")
+	}
+	if event.Date != nil {
+		ignoredFields = append(ignoredFields, "date")
+	}
+	if event.Place != nil {
+		ignoredFields = append(ignoredFields, "place")
+	}
+	if len(event.Roles) > 0 {
+		ignoredFields = append(ignoredFields, "roles")
+	}
+	if len(event.Sources) > 0 {
+		ignoredFields = append(ignoredFields, "sources")
+	}
+	if len(event.Notes) > 0 {
+		ignoredFields = append(ignoredFields, "notes")
+	}
+	if len(ignoredFields) > 0 {
+		log.Printf("POST /events/%s: ignoring unsupported field(s) %v -- only media is currently writable for Event, see SCOPE.md's \"Write support\" section", id, ignoredFields)
+	}
+
+	mediaIDs := make([]int64, 0, len(event.Media))
+	for _, ref := range event.Media {
+		mid, err := mediaIDFromReference(ref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid media reference: %v", err))
+			return
+		}
+		mediaIDs = append(mediaIDs, mid)
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateOwnerMedia(rmdb.OwnerTypeEvent, eid, mediaIDs); err != nil {
+		if errors.Is(err, rmdb.ErrArtifactNotFound) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

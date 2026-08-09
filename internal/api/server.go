@@ -148,6 +148,8 @@ func (s *Server) resourceHandler() http.Handler {
 		mux.HandleFunc("POST /places/{id}", s.handleUpdatePlace)
 		mux.HandleFunc("POST /source-descriptions/{id}", s.handleUpdateSourceDescription)
 		mux.HandleFunc("POST /artifacts/{id}", s.handleUpdateArtifact)
+		mux.HandleFunc("POST /persons/{id}", s.handleUpdatePerson)
+		mux.HandleFunc("POST /events/{id}", s.handleUpdateEvent)
 	}
 
 	return mux
@@ -252,6 +254,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	if err := enc.Encode(v); err != nil {
 		log.Printf("error encoding response: %v", err)
 	}
+}
+
+// decodeStrictJSON decodes a write request's body, rejecting any field
+// the target type doesn't recognize rather than silently ignoring it.
+// This matters more than it might look: a client that mistypes a field
+// name (e.g. "value" instead of "text" on a Note) produces a request
+// that's still valid JSON and still decodes without error by default --
+// the mistyped field is just dropped, and whatever it would have set
+// stays at its zero value. If that zero value happens to make every
+// field on the update empty, the request looks like a legitimate no-op
+// and returns a misleading success, when what actually happened is the
+// client's intended write never took effect. Rejecting unknown fields
+// turns that into an immediate, clear 400 instead. See SCOPE.md's "Write
+// support" section for the real case this was found from.
+func decodeStrictJSON(r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
 }
 
 // problemDetails is the RFC 7807 "Problem Details for HTTP APIs" JSON
