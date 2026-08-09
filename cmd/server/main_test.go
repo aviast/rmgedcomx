@@ -335,6 +335,33 @@ var ancestryIDRegex = regexp.MustCompile(`,\s*anID=-?[0-9]+`)
 var latLongExactRegex = regexp.MustCompile(`,\s*LatLongExact=[0-9]+`)
 var isPrivateRegex = regexp.MustCompile(`,\s*IsPrivate=[0-9]+`)
 
+// configTableDataRecRegex strips ConfigTable's DataRec column -- an
+// opaque, undocumented XML blob (~15KB in royal92.rmtree) holding
+// RootsMagic's own UI layout/window state (panel collapsed/expanded
+// flags, last-viewed person, and the like), not genealogical data. A
+// real captured diff showed this whole blob rewritten by a plain "add a
+// comment to a Source" edit -- turned out to be a red herring, not new
+// functionality this server needs: the one specific value that had
+// changed (MediaCollapsed_Citations) matched byte-for-byte between a
+// completely unrelated reference copy and the "after" state here, which
+// means it reflects whatever a UI panel was left at, not a deterministic
+// consequence of the edit that was actually made. See SCOPE.md's "Write
+// support" section for the full account. This server never writes
+// DataRec at all (only ConfigTable's UTCModDate), so this regex is a
+// no-op against this server's own output -- it exists to also strip the
+// same pattern from a golden file's raw content at comparison time (see
+// where this is used below), as a safety net against a future capture
+// leaving a multi-kilobyte hex blob only partially cleaned up by hand.
+//
+// Matches with a *trailing* comma, not a leading one like the other
+// strip regexes above -- confirmed directly against a real capture that
+// DataRec is always the first column ConfigTable's SET clause touches
+// (UTCModDate always follows it, never precedes it), the opposite
+// position from fsID/anID/LatLongExact/IsPrivate, which are never first
+// in their own SET clauses. A leading-comma pattern here would silently
+// fail to match at all.
+var configTableDataRecRegex = regexp.MustCompile(`DataRec=x'[0-9a-fA-F]*',\s*`)
+
 func TestWriteOperations(t *testing.T) {
 	tests := []struct {
 		name               string       // Name of the test case
@@ -428,6 +455,28 @@ func TestWriteOperations(t *testing.T) {
 			defaultGenerations: 4,
 			maxPageSize:        200,
 		},
+		{
+			// ConfigTable.DataRec was in RootsMagic's own real captured
+			// diff for this exact edit -- an opaque ~15KB XML blob of UI
+			// layout state (see configTableDataRecRegex's own comment)
+			// that turned out to be unrelated to this edit at all, not
+			// something this server needs to reproduce. Stripped from
+			// the golden file itself and from comparison via
+			// configTableDataRecRegex, same as fsID/anID/LatLongExact/
+			// IsPrivate above.
+			name:               "POST Source Comments Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/source-descriptions/S2",
+			reqBody:            `{"sourceDescriptions":[{"id":"S2","notes":[{"text":"Added comment."}]}]}`,
+			goldenFile:         "testdata/post_sources_comments_expected.sql",
+			verifyFields:       []fieldCheck{{table: "SourceTable", idCol: "SourceID", idVal: "2", expected: map[string]int{"IsPrivate": 0}}},
+			expectedStatus:     http.StatusNoContent,
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
 	}
 
 	for _, tc := range tests {
@@ -481,7 +530,20 @@ func TestWriteOperations(t *testing.T) {
 				// strings that are identical except for trailing whitespace
 				// aren't equal to require.Equal, and that's not the kind of
 				// difference this test is meant to catch.
-				normalizedExpected := strings.TrimSpace(string(expectedBytes))
+				//
+				// configTableDataRecRegex is also applied here, to the
+				// golden file's own raw content, not just inside
+				// normalizeSQL -- unlike the other stripped fields (which
+				// rely on whoever captured the golden file having removed
+				// them by hand, an established and so far reliable
+				// convention), a ~15KB hex blob is exactly the kind of
+				// thing that's easy to leave only partially cleaned up.
+				// Stripping it from both sides means a future golden file
+				// that still has a leftover DataRec clause won't cause a
+				// spurious failure -- see configTableDataRecRegex's own
+				// comment for the full story behind why this field is
+				// excluded at all.
+				normalizedExpected := configTableDataRecRegex.ReplaceAllString(strings.TrimSpace(string(expectedBytes)), "")
 				// Normalize line endings and mask/strip dynamic fields in test output
 				normalizedActual := normalizeSQL(actualDiff)
 
@@ -636,6 +698,7 @@ func normalizeSQL(s string) string {
 	s = ancestryIDRegex.ReplaceAllString(s, "")
 	s = latLongExactRegex.ReplaceAllString(s, "")
 	s = isPrivateRegex.ReplaceAllString(s, "")
+	s = configTableDataRecRegex.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }
 

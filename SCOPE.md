@@ -812,6 +812,58 @@ diffs, not assumed:**
   whatever the "before" state happened to be, or what RootsMagic itself
   happened to produce in one particular capture.
 
+### `ConfigTable.DataRec` -- deliberately never written
+
+A real captured diff, for a plain "add a comment to a Source" edit,
+showed RootsMagic rewriting the whole of `ConfigTable.DataRec` -- a
+~15KB, undocumented XML blob (see "Multiple databases / Collections"
+above for the two other things this same blob holds: `UniqueID` and
+`RootPerson`). This server does not, and will not, write to it.
+
+Investigated before deciding that, not assumed: decoded the blob from
+both the golden file's captured "after" state and a completely unrelated
+reference copy of `royal92.rmtree`, and diffed them byte-for-byte --
+identical, all 15,192 bytes. That's the key piece of evidence: it means
+the one tag that had actually changed in the golden file's own
+before/after (`<MediaCollapsed_Citations>true</MediaCollapsed_Citations>`
+to `...false...`) matched whatever an entirely separate, previously
+untouched copy of the same file happened to already have, for reasons
+having nothing to do with the edit that was captured. Combined with what
+the tag name plainly suggests, and independent confirmation that
+RootsMagic's citation-editing UI does have a collapsible "Media list
+panel" (checked directly against RootsMagic's own published
+documentation, not just inferred) -- this is UI window/panel state, not
+genealogical data, and not a deterministic consequence of the specific
+edit that triggered its capture.
+
+Three separate reasons this stays out of scope, not just one:
+
+- **It's not data this server has any business asserting.** rmgedcomx is
+  a headless server with no UI of its own -- there's no panel to be
+  collapsed or expanded on its behalf, so there's nothing true to write
+  here even in principle.
+- **RootsMagic's own value for it isn't reliable evidence of anything**,
+  the same conclusion already reached for `IsPrivate` and the
+  `fsID`/`anID`/`LatLongExact` non-determinism (see above and TESTING.md's
+  "Non-deterministic fields" section) -- just reached here by a different
+  route (UI session state rather than a network race).
+- **The mechanism would be categorically riskier than anything else this
+  server writes.** Every other write is a single, well-understood column.
+  Touching `DataRec` at all would mean parsing an entire undocumented XML
+  document, mutating one element among 160+ others never individually
+  investigated, and re-serializing the whole thing byte-for-byte
+  correctly -- real risk of corrupting settings this project doesn't
+  understand, in service of a value that (per the two points above)
+  there's no reason to get right in the first place.
+
+`cmd/server/main_test.go`'s `configTableDataRecRegex` strips this column
+from *both* sides of the golden-file comparison, not just this server's
+actual output (unlike `fsID`/`anID`/`LatLongExact`/`IsPrivate`, which rely
+on whoever captured the golden file having removed them by hand) --
+deliberately more defensive, since a multi-kilobyte hex blob is a much
+easier thing to leave only partially cleaned up in a future capture than
+a short numeric field.
+
 Every write is wrapped in an explicit SQL transaction
 (`internal/rmdb/writes.go`), even though a single `UPDATE` statement is
 already atomic on its own without one -- introducing the pattern now,

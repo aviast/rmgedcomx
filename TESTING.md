@@ -57,6 +57,22 @@ This server's own behavior for all four fields is fully deterministic regardless
 `internal/rmdb/writes.go`'s comments on `UpdatePlace`/`UpdateSource` for exactly what's written and
 why -- it's specifically RootsMagic's own captured value that can't be treated as ground truth.
 
+**`ConfigTable.DataRec` is a related but separate trap, worth calling out on its own: strip it from
+new golden files too, whenever it shows up.** Unlike the four fields above, this isn't about network
+timing -- `DataRec` is a ~15KB, undocumented XML blob holding RootsMagic's own UI window/panel
+layout state, not genealogical data. A real capture for a plain "add a comment to a Source" edit
+showed RootsMagic rewriting the entire blob over one changed tag
+(`MediaCollapsed_Citations`) -- confirmed, by decoding and diffing it against a separate reference
+copy, to be unrelated to the edit that triggered its capture (see SCOPE.md's "Write support" section
+for the full account). This server doesn't and won't write `DataRec` at all. Unlike the other four
+fields, you don't have to remember to strip this one by hand: `configTableDataRecRegex` in
+`cmd/server/main_test.go` strips it automatically from *both* sides of the comparison (the golden
+file's own raw content included, not just this server's actual output) -- deliberately more
+defensive than the other four, since a multi-kilobyte hex blob is a much easier thing to leave only
+partially cleaned up by hand than a short numeric field. Still worth removing it from a golden file
+before committing it, for anyone reading the file later, even though the test itself doesn't
+strictly require that.
+
 ## Requirements
 
 Running the write tests (`TestWriteOperations`) requires `sqldiff` to be available on `PATH`.
@@ -94,7 +110,7 @@ macOS isn't specifically handled -- not tested against, not a supported claim ei
 | 15 | Malformed JSON body: `400`, not a `500` or crash. | No golden file. |
 | 16 | Same request as #7, but without `-write`: `405`, database confirmed untouched. | No golden file. |
 | 17 | `POST` a source, `titles` only. | **Done** -- `testdata/post_sources_expected.sql`. |
-| 18 | `POST` a source, `notes` (→ `Comments`) only. | Needs golden file, e.g. `testdata/post_sources_comments_expected.sql`. |
+| 18 | `POST` a source, `notes` (→ `Comments`) only. | **Done** -- `testdata/post_sources_comments_expected.sql`. `ConfigTable.DataRec` stripped from it -- see "Non-deterministic fields" above, this is the exact case that finding came from. |
 | 19 | `POST` a source, both `titles` and `notes` at once. | Needs golden file, e.g. `testdata/post_sources_all_fields_expected.sql`. |
 | 20 | `POST` a source with a non-empty `citations` array: `400` with the explanatory message; confirm `titles`/`notes` in the *same* request weren't partially applied either (clean all-or-nothing rejection). | No golden file -- request rejected before any write. |
 | 21a | `POST` to a `SourceID` that doesn't exist: `404`. | No golden file. |
