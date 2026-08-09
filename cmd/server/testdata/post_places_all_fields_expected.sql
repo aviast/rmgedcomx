@@ -1,0 +1,2 @@
+UPDATE ConfigTable SET UTCModDate=[TIMESTAMP_UPDATED] WHERE RecID=1;
+UPDATE PlaceTable SET Name='Odessa, Ukraine', Latitude=464857220, Longitude=307434440, Note='Odesa, also spelled Odessa, is the third-most populous city and municipality in Ukraine and a major seaport and transport hub located in the south-west of the country, on the northwestern shore of the Black Sea.', Reverse='Ukraine, Odessa', UTCModDate=[TIMESTAMP_UPDATED] WHERE PlaceID=882;
