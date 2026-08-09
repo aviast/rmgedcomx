@@ -33,6 +33,35 @@ type Config struct {
 	DefaultGenerations int
 	MaxPageSize        int
 	Media              rmdb.MediaFolderConfig
+	// WriteGuard is consulted before every write, in addition to (not
+	// instead of) db.ReadOnly() -- see WriteGuard's own doc comment for
+	// why a single startup-time check isn't enough for a long-running
+	// server. nil means "no additional gating," which every collection
+	// sharing one server process gets by construction, since exactly one
+	// guard instance is built in cmd/server/main.go and shared across
+	// every collection's Config -- RootsMagic.exe running is a
+	// whole-machine condition, not a per-database one, and a shared
+	// guard means one collection tripping it is immediately reflected
+	// for every other collection this server is also serving, not just
+	// the one collection whose own periodic check happened to run first.
+	WriteGuard WriteGuard
+}
+
+// WriteGuard is consulted by every write handler before it does
+// anything else, on top of (not instead of) the existing db.ReadOnly()
+// gate that decides whether write routes are registered at all. Defined
+// as an interface here, in the package that consumes it, rather than
+// this package depending on cmd/server's concrete implementation (which
+// shells out to Windows' tasklist -- OS-specific, and not something this
+// package needs to know about to do its job). See
+// cmd/server/writeguard.go for the concrete implementation and the full
+// reasoning behind rate-limiting and latching, both of which are that
+// implementation's concern, not this interface's.
+type WriteGuard interface {
+	// Allow reports whether a write should be permitted to proceed right
+	// now. When ok is false, reason is a human-readable explanation
+	// suitable for returning directly in an error response.
+	Allow() (ok bool, reason string)
 }
 
 // Server holds the shared state used by all HTTP handlers for one
@@ -129,6 +158,10 @@ func (s *Server) resourceHandler() http.Handler {
 	mux.HandleFunc("GET /artifacts", s.handleArtifacts)
 	mux.HandleFunc("GET /artifacts/{id}", s.handleArtifact)
 	mux.HandleFunc("GET /artifacts/{id}/content", s.handleArtifactContent)
+	mux.HandleFunc("GET /artifacts/{id}/subjects", s.handleArtifactSubjects)
+	mux.HandleFunc("GET /artifacts/{id}/persons", s.handleArtifactPersons)
+	mux.HandleFunc("GET /artifacts/{id}/events", s.handleArtifactEvents)
+	mux.HandleFunc("GET /artifacts/{id}/relationships", s.handleArtifactRelationships)
 
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("GET /events/{id}", s.handleEvent)
@@ -145,11 +178,11 @@ func (s *Server) resourceHandler() http.Handler {
 	// isn't implemented yet." See SCOPE.md's "Write support" section for
 	// the staged plan this is part of.
 	if !s.db.ReadOnly() {
-		mux.HandleFunc("POST /places/{id}", s.handleUpdatePlace)
-		mux.HandleFunc("POST /source-descriptions/{id}", s.handleUpdateSourceDescription)
-		mux.HandleFunc("POST /artifacts/{id}", s.handleUpdateArtifact)
-		mux.HandleFunc("POST /persons/{id}", s.handleUpdatePerson)
-		mux.HandleFunc("POST /events/{id}", s.handleUpdateEvent)
+		mux.HandleFunc("POST /places/{id}", s.requireWriteAllowed(s.handleUpdatePlace))
+		mux.HandleFunc("POST /source-descriptions/{id}", s.requireWriteAllowed(s.handleUpdateSourceDescription))
+		mux.HandleFunc("POST /artifacts/{id}", s.requireWriteAllowed(s.handleUpdateArtifact))
+		mux.HandleFunc("POST /persons/{id}", s.requireWriteAllowed(s.handleUpdatePerson))
+		mux.HandleFunc("POST /events/{id}", s.requireWriteAllowed(s.handleUpdateEvent))
 	}
 
 	return mux
@@ -316,6 +349,33 @@ func (s *Server) ensureBackupForWrite(w http.ResponseWriter) error {
 		return err
 	}
 	return nil
+}
+
+// requireWriteAllowed wraps a write handler with cfg.WriteGuard, checked
+// in addition to (not instead of) db.ReadOnly() -- see WriteGuard's own
+// doc comment for why db.ReadOnly() alone, decided once at server
+// startup, isn't enough for a server meant to run for a long time: it
+// can't notice RootsMagic being opened after this server already started
+// in write mode. A tripped guard returns 405 with the same Allow header a
+// genuinely read-only server would send for the identical request --
+// deliberate, not incidental: from a client's point of view, "this server
+// started read-only" and "this server was writable but RootsMagic showed
+// up" should look the same and need the same handling, not a second error
+// shape to build separate logic for. cfg.WriteGuard being nil (every
+// caller except cmd/server/main.go, including every test in this
+// project) means no additional gating -- only main.go's real,
+// process-checking guard can ever say no.
+func (s *Server) requireWriteAllowed(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.WriteGuard != nil {
+			if ok, reason := s.cfg.WriteGuard.Allow(); !ok {
+				w.Header().Set("Allow", "GET, HEAD")
+				writeError(w, http.StatusMethodNotAllowed, reason)
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 // pagingParams reads and clamps ?limit=&offset= query parameters.

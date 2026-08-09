@@ -1156,14 +1156,152 @@ specifically to confirm the shared core isn't accidentally
 `Person`-specific, not just that `Event`'s own HTTP layer happens to
 work.
 
-### What's next
+### GEDAM specification review
 
-`Relationship` remains deferred, per Stage 2b's own reasoning: GEDAM's
-stated requirement was linking media to "person/fact/event," not
-relationships, and with `Person` and `Event` both done, that requirement
-is now met in full. Nothing currently drives building `Relationship`
-media support; it's a small increment (`OwnerTypeFamily`, same shared
-core) whenever a real need for it appears.
+A working draft of GEDAM's own specification (the DAM client this project
+exists to serve) was reviewed directly against rmgedcomx's actual current
+behavior, not against what either side assumed about the other. Two
+things came out of that review as real, concrete follow-on work (below);
+a few other findings were spec-side issues (`sources`/`media`
+terminology predating the split, `Fact`/`Event` naming) with nothing for
+rmgedcomx to change, and a couple of GEDAM's stated "enhancement needed"
+asks (the startup table's `UniqueID` column, `Collection.identifiers`)
+turned out to already be shipped.
+
+### Write availability now re-checked periodically, not just at startup
+
+**The problem, precisely stated**: SQLite's own file locking already
+prevents genuine data corruption from two processes writing at once --
+that was never the actual risk. The real risk is RootsMagic itself
+receiving a `SQLITE_BUSY` error in a code path it was never written to
+expect, with unknown consequences -- and the original `-write` design
+(`checkRootsMagicNotRunning`, checked exactly once, in `main()`, before
+this server starts accepting any requests) can't protect against
+RootsMagic being opened *after* this server already started in write
+mode. That gap matters specifically because GEDAM (see above) is a
+long-running background service, potentially running for days at a
+stretch, not a short CLI invocation -- a startup-only check has no way
+to ever notice RootsMagic showing up partway through that lifetime.
+
+**The fix**: every write handler now goes through `requireWriteAllowed`
+(`internal/api/server.go`), consulting a new `WriteGuard` interface on
+top of (not instead of) the existing `db.ReadOnly()` gate. The concrete
+implementation (`cmd/server/writeguard.go`) re-checks whether
+RootsMagic is running, rate-limited to once per 10 seconds and only
+triggered by an actual write attempt (not a background timer) -- by
+explicit design: writes from GEDAM are expected to be infrequent but
+occasionally bulk (e.g. relocating every artifact's path at once), and
+10 seconds is judged fast enough to catch RootsMagic before it's itself
+ready to attempt a write, without shelling out to `tasklist` on every
+single request regardless of whether anything is actually happening.
+
+**Once tripped, it latches permanently** -- every write for the rest of
+this server process's life gets `405`, even after RootsMagic later
+closes again, requiring a restart to resume. Deliberately the simpler of
+two reasonable designs (the alternative, re-checking and auto-recovering
+once RootsMagic closes, was explicitly set aside for now): a person
+should never be left wondering whether a write might silently start
+working again on its own while they're still unsure what happened.
+`isRootsMagicRunning` (`cmd/server/rootsmagic_running_check.go`) was
+factored out as the shared detection primitive behind both the original
+startup check and this new one, so each can build its own contextually
+correct message rather than sharing text written for only one of the two
+situations.
+
+The tripped response reuses the exact shape a genuinely read-only
+server already returns for the identical request -- `405`, `Allow: GET,
+HEAD`, the same RFC 7807 error body -- deliberately, so "this server
+started read-only" and "this server was writable but RootsMagic showed
+up" look identical from a client's point of view and need no second
+error-handling path. A real, if easy-to-miss, bug was caught before this
+shipped: passing a nil `*writeGuard` directly into `Config.WriteGuard`
+(an interface field) does **not** produce a nil interface in Go -- a
+classic trap, confirmed by testing it directly rather than trusting the
+reasoning. `cmd/server/main.go` only assigns the field when the concrete
+guard is genuinely non-nil, keeping `Config.WriteGuard` a true nil
+interface (and therefore correctly bypassed by `requireWriteAllowed`) in
+read-only mode. One shared guard instance is constructed once and passed
+into every collection's `Config`, not one per collection -- RootsMagic
+running is a whole-machine condition, so every collection needs to see
+the same tripped state at the same moment, not learn about it on its own
+independently-timed schedule.
+
+Verified with a fake `WriteGuard` standing in for the real
+process-checking logic (which can't itself be exercised outside a real
+Windows machine): confirmed a nil guard doesn't panic, an allowing guard
+lets a write through normally, and a tripped guard returns exactly the
+expected `405`/`Allow`/error-body shape. The rate-limiting and latching
+state machine itself (`cmd/server/writeguard_test.go`) is unit-tested
+with an injectable check function, deterministically -- confirmed
+directly, not just reasoned about: three rapid calls trigger exactly one
+underlying check; waiting past the interval triggers a second; a tripped
+guard stays tripped and never re-checks again even after the interval
+passes and even though the underlying condition is still "found running"
+each time; a failure in the check itself fails open rather than blocking
+writes over an unrelated problem.
+
+### Reverse lookup: what references a given artifact
+
+GEDAM's own role-resolution algorithm (for computing its `Family`/
+`Individual` folder views) needs to answer "which people, relationships,
+events, and places reference this specific artifact" -- and there was no
+way to answer that efficiently. `buildSourcesAndMedia` only ever
+traverses forward (a given owner -> its sources/media); nothing let a
+client start from an artifact and find its owners without enumerating
+every `Person`/`Relationship`/`Event` in a collection and checking each
+one's own `media` array by hand, which doesn't scale past a small
+sample file.
+
+Three new, non-spec extension endpoints close that gap: `GET
+/artifacts/{id}/subjects` (every `Person`, `Relationship`, `Event`, and
+`PlaceDescription` referencing this artifact), and `/persons`/`/events`/
+`/relationships` (the same lookup, filtered to one type). Response shape
+is a lightweight reference list (`gedcomx.SubjectReference`/
+`SubjectReferencesDocument`), not embedded full resources -- deliberately,
+matching GEDAM's own stated pattern of resolving each distinct context
+independently: a caller that needs full details fetches them separately
+via each reference's `href`. `resourceType` reuses the existing
+`ResourceType*` URI constants already defined for `CollectionContent`,
+rather than inventing a second vocabulary for the same four data types.
+
+The underlying traversal (`rmdb.OwnersOfMedia`) is the reverse of
+`buildSourcesAndMedia`'s own two-hop walk, structurally: direct
+`MediaLinkTable` rows naming the artifact, plus (since a real file's
+media is more often attached to a *citation* than directly to what it
+documents -- see "Multimedia" above) a second hop through
+`CitationLinkTable` for any citation the artifact is attached to. Two
+owner types get special handling before a result is ever returned, not
+passed through as-is:
+
+- **`OwnerTypeName`** isn't a Subject with its own resource in this API
+  (a name is a sub-part of a `Person`) -- resolved up to its owning
+  `Person` via `NameTable.OwnerID`, confirmed against real data to
+  actually hold the owning `PersonID` despite the generic column name.
+  An orphaned name reference is skipped, not treated as a request
+  failure.
+- **`OwnerTypeSource`** (media attached directly to a bibliographic
+  source record) is dropped outright -- not a `Subject` type this API
+  exposes a `media` field for at all.
+
+Verified thoroughly against real and deliberately-constructed data, not
+simulated: `M1`'s existing real link to `royal92.rmtree`'s marriage
+event, confirmed correctly returned before touching anything; attached
+to a person via the real `POST /persons/{id}` write path, confirmed both
+old and new links appear together and each type-filtered endpoint
+correctly narrows the result; a nonexistent artifact 404s. The
+citation/name-resolution path needed real care: an initial test using
+one of `royal92.rmtree`'s two real citations produced thousands of
+results in the raw response, which turned out to be correct, not a
+bug -- that citation turned out to be a widely-shared "base import"
+citation referenced by 11,698 separate rows, confirmed by direct count
+rather than assumed. A
+clean, deliberately small, synthetic scenario (one citation, cited by
+exactly one name) gave an unambiguous, readable confirmation instead.
+`internal/rmdb/reverselookup_test.go` covers the direct-link, via-citation
+plus Name resolution, direct-Family-link, Source-exclusion, and
+deduplication (the same Subject reached via two separate citation paths
+must appear exactly once) cases directly against real data, independent
+of the HTTP layer.
 
 ## RootsMagic version handling
 

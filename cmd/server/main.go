@@ -185,8 +185,19 @@ func SetupRouter(dbPaths []string, baseURL string, mediaFolder string, write boo
 	}
 
 	collectionEntries := make([]api.CollectionEntry, 0, len(entries))
+
+	// One shared guard, not one per collection -- RootsMagic.exe running
+	// is a whole-machine condition, not specific to any one database, so
+	// every collection this server serves needs to see the same tripped
+	// state at the same time. See WriteGuard's own doc comment in
+	// internal/api/server.go, and writeguard.go, for the full reasoning.
+	var guard *writeGuard
+	if write {
+		guard = newWriteGuard()
+	}
+
 	for _, e := range entries {
-		srv, err := api.NewServer(e.db, api.Config{
+		cfg := api.Config{
 			ID:                 e.id,
 			BaseURL:            baseURL,
 			Title:              e.title,
@@ -197,7 +208,20 @@ func SetupRouter(dbPaths []string, baseURL string, mediaFolder string, write boo
 				HomeDir:     homeDir,
 				MediaFolder: mediaFolder,
 			},
-		})
+		}
+		// Deliberately not "WriteGuard: guard" directly above: guard is a
+		// typed *writeGuard, nil when write is false, and assigning a
+		// nil *concrete* pointer to an interface field produces a
+		// non-nil interface value wrapping that nil pointer -- not a nil
+		// interface. requireWriteAllowed's own `!= nil` check would then
+		// pass, calling Allow() on a nil receiver and panicking on
+		// g.mu.Lock(). Only assigning when guard is genuinely non-nil
+		// keeps cfg.WriteGuard a true nil interface in read-only mode,
+		// which is what requireWriteAllowed actually checks for.
+		if guard != nil {
+			cfg.WriteGuard = guard
+		}
+		srv, err := api.NewServer(e.db, cfg)
 		if err != nil {
 			log.Fatalf("initializing server for %q: %v", e.path, err)
 		}

@@ -375,6 +375,31 @@ const (
 // specific than the generic SourceDescription identifier.
 const ResourceTypeDigitalArtifact = "http://gedcomx.org/DigitalArtifact"
 
+// SubjectReference and SubjectReferencesDocument are rmgedcomx's own
+// non-spec extension for reverse lookup: given an artifact, which
+// Subjects (Person, Relationship, Event, or PlaceDescription) reference
+// it? GEDCOM X RS defines no such operation -- SourceDescription has no
+// inverse "referencedBy" field in the conceptual model (see SCOPE.md's
+// "Sources versus media" section), so a client can only ever discover
+// this by enumerating every Subject in a collection and checking each
+// one's own media array, which doesn't scale. See
+// /artifacts/{id}/persons, /events, and /subjects in handlers.go.
+//
+// Deliberately a lightweight reference, not the embedded full resource:
+// a caller that needs the full resource fetches it separately via Href.
+// ResourceType uses the same ResourceType* URIs as CollectionContent
+// above, so a client already handling those doesn't need a second
+// vocabulary to recognize which kind of Subject each reference is.
+type SubjectReference struct {
+	ResourceType string `json:"resourceType"`
+	ID           string `json:"id"`
+	Href         string `json:"href"`
+}
+
+type SubjectReferencesDocument struct {
+	References []SubjectReference `json:"references"`
+}
+
 // CollectionsDocument is the `Collections` application state representation
 // (RS spec Section 4.4): a list of collections.
 type CollectionsDocument struct {
