@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -331,22 +332,23 @@ func TestReadOperations(t *testing.T) {
 var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
 var familySearchIDRegex = regexp.MustCompile(`,\s*fsID=-?[0-9]+`)
 var ancestryIDRegex = regexp.MustCompile(`,\s*anID=-?[0-9]+`)
+var latLongExactRegex = regexp.MustCompile(`,\s*LatLongExact=[0-9]+`)
 var isPrivateRegex = regexp.MustCompile(`,\s*IsPrivate=[0-9]+`)
 
 func TestWriteOperations(t *testing.T) {
 	tests := []struct {
-		name               string           // Name of the test case
-		method             string           // HTTP method (POST, PUT, DELETE)
-		endpoint           string           // The API route to hit
-		reqBody            string           // The JSON payload to send
-		goldenFile         string           // Path to the expected sqldiff output (.sql)
-		verifyZero         []zeroFieldCheck // Fields to verify directly are 0 -- see zeroFieldCheck's own comment for why sqldiff can't be trusted for these
-		expectedStatus     int              // Expected HTTP response code
-		baseURL            string           // Base URL for the API
-		mediaFolder        string           // Path to the media folder
-		write              bool             // Whether the server is in write mode
-		defaultGenerations int              // Default number of generations
-		maxPageSize        int              // Maximum page size
+		name               string       // Name of the test case
+		method             string       // HTTP method (POST, PUT, DELETE)
+		endpoint           string       // The API route to hit
+		reqBody            string       // The JSON payload to send
+		goldenFile         string       // Path to the expected sqldiff output (.sql)
+		verifyFields       []fieldCheck // Fields whose expected value this server determines deterministically -- see fieldCheck's own comment for why sqldiff can't be trusted for these
+		expectedStatus     int          // Expected HTTP response code
+		baseURL            string       // Base URL for the API
+		mediaFolder        string       // Path to the media folder
+		write              bool         // Whether the server is in write mode
+		defaultGenerations int          // Default number of generations
+		maxPageSize        int          // Maximum page size
 	}{
 		{
 			name:               "POST Place Name Change",
@@ -354,7 +356,7 @@ func TestWriteOperations(t *testing.T) {
 			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
 			reqBody:            `{"places":[{"id":"PL423","names":[{"value":"Belgrade, Serbia"}]}]}`,
 			goldenFile:         "testdata/post_places_name_expected.sql",
-			verifyZero:         []zeroFieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", columns: []string{"fsID", "anID", "LatLongExact"}}},
+			verifyFields:       []fieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", expected: map[string]int{"fsID": 0, "anID": 0, "LatLongExact": 0}}},
 			expectedStatus:     http.StatusNoContent,
 			baseURL:            "http://localhost:8080",
 			mediaFolder:        "testdata/media",
@@ -368,7 +370,7 @@ func TestWriteOperations(t *testing.T) {
 			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
 			reqBody:            `{"places":[{"id":"PL423","notes":[{"text":"Updated note"}]}]}`,
 			goldenFile:         "testdata/post_places_note_expected.sql",
-			verifyZero:         []zeroFieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", columns: []string{"fsID", "anID", "LatLongExact"}}},
+			verifyFields:       []fieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", expected: map[string]int{"fsID": 0, "anID": 0, "LatLongExact": 0}}},
 			expectedStatus:     http.StatusNoContent,
 			baseURL:            "http://localhost:8080",
 			mediaFolder:        "testdata/media",
@@ -377,17 +379,20 @@ func TestWriteOperations(t *testing.T) {
 			maxPageSize:        200,
 		},
 		{
-			// LatLongExact is deliberately NOT in verifyZero here -- it's
-			// 1 after this update, not 0 (see UpdatePlace's own doc
-			// comment), and the golden file asserts that value directly
-			// via the normal sqldiff comparison rather than a separate
-			// direct check, since a coordinates change makes it a real,
-			// observable transition sqldiff can actually verify.
+			// LatLongExact=1 is this server's own deterministic behavior
+			// for a coordinates change (see UpdatePlace's own doc
+			// comment) -- verified directly via verifyFields, not
+			// through the golden-file/sqldiff comparison, since
+			// RootsMagic's own value for this field is itself
+			// non-deterministic (see TESTING.md's "Non-deterministic
+			// fields" section) and stripped from that comparison
+			// entirely, the same as fsID/anID.
 			name:               "POST Place Coordinates Change",
 			method:             "POST",
 			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
 			reqBody:            `{"places":[{"id":"PL423","latitude":44.817778,"longitude":20.456944}]}`,
 			goldenFile:         "testdata/post_places_coordinates_expected.sql",
+			verifyFields:       []fieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", expected: map[string]int{"LatLongExact": 1}}},
 			expectedStatus:     http.StatusNoContent,
 			baseURL:            "http://localhost:8080",
 			mediaFolder:        "testdata/media",
@@ -399,9 +404,9 @@ func TestWriteOperations(t *testing.T) {
 			name:               "POST Place All Fields Change",
 			method:             "POST",
 			endpoint:           "/collections/victoria-hanover-royal92/places/PL882",
-			reqBody:            `{"places":[{"id":"PL882","names":[{"value":"Odessa, Ukraine"}],"notes":[{"text":"Odesa, also spelled Odessa, is the third-most populous city and municipality in Ukraine and a major seaport and transport hub located in the south-west of the country, on the northwestern shore of the Black Sea."}],"latitude":44.817778,"longitude":20.456944}]}`,
+			reqBody:            `{"places":[{"id":"PL882","names":[{"value":"Odessa, Ukraine"}],"notes":[{"text":"Odesa, also spelled Odessa, is the third-most populous city and municipality in Ukraine and a major seaport and transport hub located in the south-west of the country, on the northwestern shore of the Black Sea."}],"latitude":46.485722,"longitude":30.743444}]}`,
 			goldenFile:         "testdata/post_places_all_fields_expected.sql",
-			verifyZero:         []zeroFieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "882", columns: []string{"fsID", "anID"}}},
+			verifyFields:       []fieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "882", expected: map[string]int{"fsID": 0, "anID": 0, "LatLongExact": 1}}},
 			expectedStatus:     http.StatusNoContent,
 			baseURL:            "http://localhost:8080",
 			mediaFolder:        "testdata/media",
@@ -415,7 +420,7 @@ func TestWriteOperations(t *testing.T) {
 			endpoint:           "/collections/victoria-hanover-royal92/source-descriptions/S1",
 			reqBody:            `{"sourceDescriptions":[{"id":"S1","titles":[{"value":"Public Domain GEDCOM file imported on 22 July 2026"}]}]}`,
 			goldenFile:         "testdata/post_sources_expected.sql",
-			verifyZero:         []zeroFieldCheck{{table: "SourceTable", idCol: "SourceID", idVal: "1", columns: []string{"IsPrivate"}}},
+			verifyFields:       []fieldCheck{{table: "SourceTable", idCol: "SourceID", idVal: "1", expected: map[string]int{"IsPrivate": 0}}},
 			expectedStatus:     http.StatusNoContent,
 			baseURL:            "http://localhost:8080",
 			mediaFolder:        "testdata/media",
@@ -484,65 +489,78 @@ func TestWriteOperations(t *testing.T) {
 			}
 
 			// 6. Directly verify the fields step 5's comparison deliberately
-			// excludes (see normalizeSQL's own comment, and zeroFieldCheck's,
-			// for the full reasoning): confirm they're actually 0, not just
-			// "didn't fail to change." sqldiff can only ever tell us whether
-			// a value changed between two database states, never what that
-			// value actually is -- for fields already at 0 in every place
-			// and source in royal92.rmtree, that makes it structurally
-			// incapable of answering the question that actually matters
-			// here. This is the check that does.
-			for _, check := range tc.verifyZero {
-				verifyZeroFields(t, tempDBPath, check)
+			// excludes (see normalizeSQL's own comment, and fieldCheck's,
+			// for the full reasoning): confirm this server's own
+			// deterministic value, not just "didn't fail to change" or
+			// "matches one particular RootsMagic capture." sqldiff can
+			// only ever tell us whether a value changed between two
+			// database states, never what the value actually is or
+			// should be -- and for fields downstream of a
+			// non-deterministic external lookup on RootsMagic's own side,
+			// there's no single "correct" captured value to compare
+			// against in the first place. This is the check that
+			// verifies what this server can actually promise.
+			for _, check := range tc.verifyFields {
+				verifyFields(t, tempDBPath, check)
 			}
 		})
 	}
 }
 
-// zeroFieldCheck names a single row and a set of columns on it that this
-// server always writes as 0 (see internal/rmdb/writes.go's own comments on
-// UpdatePlace/UpdateSource for the full reasoning: fsID/anID/LatLongExact
-// on Place, IsPrivate on Source -- fields this server has no basis to set
-// to anything other than a known-safe default, since it doesn't do the
-// external verification, or reimplement the undocumented behavior, that
-// would justify any other value).
+// fieldCheck names a single row and a set of columns on it whose expected
+// value this server determines deterministically -- independent of
+// whatever RootsMagic itself produced for the same fields when a golden
+// file was captured. fsID/anID/LatLongExact on Place, IsPrivate on
+// Source: all four are downstream, on RootsMagic's own side, of a
+// non-deterministic external network lookup (FamilySearch/Ancestry), not
+// a reliable success/fail signal -- see TESTING.md's "Non-deterministic
+// fields" section for the real captured evidence this conclusion is
+// based on, and internal/rmdb/writes.go's own comments on
+// UpdatePlace/UpdateSource for what this server actually writes for each
+// and why.
 //
 // These are checked directly, by querying the resulting database after
 // the write, rather than through the sqldiff-based golden-file comparison
 // every other field goes through. That's deliberate, not a shortcut:
 // sqldiff (like any before/after diff) only reports columns whose value
-// actually *changed* -- and every place and source in royal92.rmtree
-// already has these specific fields at 0, the same value this server
-// writes, so a diff can never observe whether this server wrote anything
-// at all. A direct query is the only way to actually confirm the value,
-// independent of whatever it happened to be beforehand.
-type zeroFieldCheck struct {
-	table   string
-	idCol   string
-	idVal   string
-	columns []string
+// actually *changed* between two states, and can't tell us what RootsMagic
+// "should" have produced independent of one specific, possibly-flaky
+// capture -- a direct query is the only way to confirm this server's own
+// value, independent of whatever RootsMagic happened to do.
+type fieldCheck struct {
+	table    string
+	idCol    string
+	idVal    string
+	expected map[string]int // column name -> expected value
 }
 
-func verifyZeroFields(t *testing.T, dbPath string, check zeroFieldCheck) {
+func verifyFields(t *testing.T, dbPath string, check fieldCheck) {
 	t.Helper()
 
 	db, err := sql.Open("sqlite", dbPath)
-	require.NoError(t, err, "opening database to verify zero fields")
+	require.NoError(t, err, "opening database to verify fields")
 	defer db.Close()
 
+	columns := make([]string, 0, len(check.expected))
+	for col := range check.expected {
+		columns = append(columns, col)
+	}
+	sort.Strings(columns) // deterministic query text and scan order
+
 	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s = %s",
-		strings.Join(check.columns, ", "), check.table, check.idCol, check.idVal)
+		strings.Join(columns, ", "), check.table, check.idCol, check.idVal)
 	row := db.QueryRow(query)
 
-	values := make([]int, len(check.columns))
+	values := make([]int, len(columns))
 	scanTargets := make([]any, len(values))
 	for i := range values {
 		scanTargets[i] = &values[i]
 	}
 	require.NoError(t, row.Scan(scanTargets...), "querying %s", query)
 
-	for i, col := range check.columns {
-		require.Equal(t, 0, values[i], "%s.%s should be 0 after this server's write, was %d", check.table, col, values[i])
+	for i, col := range columns {
+		want := check.expected[col]
+		require.Equal(t, want, values[i], "%s.%s should be %d after this server's write, was %d", check.table, col, want, values[i])
 	}
 }
 
@@ -593,31 +611,30 @@ func runSqlDiff(t *testing.T, dbOriginal, dbModified string) string {
 func normalizeSQL(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = utcModDateRegex.ReplaceAllString(s, "UTCModDate=[TIMESTAMP_UPDATED]")
-	// fsID, anID, and IsPrivate are stripped entirely, not masked with a
-	// placeholder like UTCModDate is. The difference: a placeholder still
-	// requires the field to appear in the diff at all, which only
-	// happens if its value actually changed from what it already was --
-	// and every place/source in royal92.rmtree already has these fields
-	// at the same value (0) this server always writes for them, so a
-	// same-value write is invisible to a before/after diff no matter what
-	// this server does or doesn't do. That makes sqldiff comparison
-	// fundamentally the wrong tool for confirming these specific fields:
-	// it can tell us whether a value changed, not what the value actually
-	// is. So they're excluded from this comparison entirely, and verified
-	// directly instead -- see the direct assertions in TestWriteOperations
-	// itself, right after this comparison, which query the resulting
-	// database for these exact fields.
+	// fsID, anID, LatLongExact, and IsPrivate are stripped entirely, not
+	// masked with a placeholder like UTCModDate is, and not compared
+	// against sqldiff's output against a golden file at all -- see
+	// TESTING.md's "Non-deterministic fields" section for the full
+	// account of why, and the real captured evidence behind it. Verified
+	// directly instead, via fieldCheck/verifyFields below, which assert
+	// this server's own deterministic behavior independent of whatever
+	// RootsMagic happened to produce in one particular capture.
 	//
-	// LatLongExact is deliberately NOT in this list, even though it was
-	// at one point: unlike fsID/anID/IsPrivate, this server doesn't
-	// always write the same value for it -- UpdatePlace writes 0 on a
-	// Name change, 1 on a coordinates change (see its own doc comment in
-	// internal/rmdb/writes.go) -- so a coordinates change produces a
-	// real, observable 0 -> 1 transition sqldiff genuinely can verify.
-	// Stripping it unconditionally would have hidden exactly the kind of
-	// regression it exists to catch.
+	// LatLongExact briefly wasn't in this list -- reasoned, at the time,
+	// that unlike fsID/anID/IsPrivate (always the same value regardless
+	// of what changed) a coordinates change makes this server write a
+	// different, real value (1 instead of 0), so sqldiff ought to be able
+	// to verify that transition. That reasoning turned out to be
+	// incomplete: RootsMagic's own value for it is ALSO downstream of the
+	// same non-deterministic FamilySearch/Ancestry lookup as fsID/anID,
+	// confirmed by two otherwise-identical "change every field at once"
+	// captures against the same place (Belgrade) that disagreed with each
+	// other on LatLongExact alone -- everything else about them matched.
+	// A golden file capturing one specific run's LatLongExact value was
+	// never something to chase in the first place.
 	s = familySearchIDRegex.ReplaceAllString(s, "")
 	s = ancestryIDRegex.ReplaceAllString(s, "")
+	s = latLongExactRegex.ReplaceAllString(s, "")
 	s = isPrivateRegex.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }

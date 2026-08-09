@@ -688,14 +688,26 @@ be called.
   over) the `Name` branch's `LatLongExact = 0` -- confirmed empirically
   that SQLite resolves a column set twice in one `UPDATE` by taking the
   last occurrence, so this ordering is load-bearing, not incidental.
-  `cmd/server/main_test.go`'s `normalizeSQL` no longer strips
-  `LatLongExact` from the comparison unconditionally the way it once did
-  -- since the value is genuinely context-dependent now (not always the
-  same value regardless of what changed, the way `fsID`/`anID`/
-  `IsPrivate` still are), a coordinates change produces a real,
-  observable `0 -> 1` transition `sqldiff` can actually verify, and
-  stripping it unconditionally would have hidden exactly the kind of
-  regression it exists to catch.
+
+  **`LatLongExact` turned out to belong with `fsID`/`anID`/`IsPrivate`
+  after all -- excluded from the `sqldiff` golden-file comparison
+  entirely, not compared directly.** An earlier version of this section
+  said the opposite: that a coordinates change makes it a real,
+  observable transition `sqldiff` can verify, unlike the always-`0`
+  fields. That reasoning held for a coordinates-only change, but two
+  otherwise-identical real captures -- the same "change every field at
+  once" edit, applied to two different places -- disagreed with each
+  other on `LatLongExact` alone; everything else about them matched
+  exactly. RootsMagic's own value for it is downstream of the same
+  non-deterministic FamilySearch/Ancestry lookup as `fsID`/`anID` (see
+  TESTING.md's "Non-deterministic fields" section for the full captured
+  evidence), so there's no single correct value in a golden file to
+  compare against when `Name` and coordinates change together -- trying
+  to match one specific capture risks chasing what's actually just
+  network timing, not a real behavioral difference. This server's own
+  value is still fully deterministic and still verified, just directly
+  (`fieldCheck`/`verifyFields` in `cmd/server/main_test.go`) rather than
+  through `sqldiff`.
 - `Source`: `titles[0].value` -> `SourceTable.Name`; `notes[0].text` ->
   `SourceTable.Comments`. **`citations` is deliberately rejected with
   `400`** if present at all, rather than silently accepted and ignored, or
@@ -781,18 +793,24 @@ diffs, not assumed:**
   contradicts the only documentation available, writing the
   well-evidenced, only-ever-observed value is the more defensible choice
   than reproducing an unexplained one-off.
-- **Verifying these specific fields doesn't go through the `sqldiff`
-  golden-file comparison at all**, unlike every other field Stage 1
-  writes. `sqldiff` (like any before/after diff) only reports columns
-  whose value actually *changed* -- and every place/source in
-  `royal92.rmtree` already has these fields at the same value (`0`) this
-  server writes, so a same-value write is invisible to a diff regardless
-  of whether this server did anything right. `cmd/server/main_test.go`'s
-  golden `.sql` files strip these fields out of the comparison entirely
-  (regex match replaced with an empty string, not masked with a
-  placeholder), and `zeroFieldCheck`/`verifyZeroFields` query the
-  resulting database directly instead, asserting the value is exactly
-  `0` -- independent of whatever the "before" state happened to be.
+- **Verifying these specific fields (plus `LatLongExact` -- see below)
+  doesn't go through the `sqldiff` golden-file comparison at all**,
+  unlike every other field Stage 1 writes. `sqldiff` (like any
+  before/after diff) only reports columns whose value actually
+  *changed* -- and every place/source in `royal92.rmtree` already has
+  `fsID`/`anID`/`IsPrivate` at the same value (`0`) this server always
+  writes, so a same-value write is invisible to a diff regardless of
+  whether this server did anything right. `LatLongExact` is excluded for
+  a related but distinct reason (see below): this server's value for it
+  genuinely does vary by context, but RootsMagic's own real value is
+  itself non-deterministic, so there's no single correct captured value
+  to compare against. `cmd/server/main_test.go`'s golden `.sql` files
+  strip all four fields out of the comparison entirely (regex match
+  replaced with an empty string, not masked with a placeholder), and
+  `fieldCheck`/`verifyFields` query the resulting database directly
+  instead, asserting each one's actual expected value -- independent of
+  whatever the "before" state happened to be, or what RootsMagic itself
+  happened to produce in one particular capture.
 
 Every write is wrapped in an explicit SQL transaction
 (`internal/rmdb/writes.go`), even though a single `UPDATE` statement is

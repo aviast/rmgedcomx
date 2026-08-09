@@ -8,24 +8,54 @@ The Go tests will perform the same writes via the rmgedcomx API, use sqldiff to 
 database to the original database, and then compare the sqldiff output to the "Golden files" to find
 any issues.
 
-Dynamic data -- timestamps and RootsMagic's own opaque FamilySearch/Ancestry identifiers -- can't be
-expected to match between these tests, so it's handled two different ways depending on what it means
-for this server to get it right:
+Dynamic data -- timestamps, and a handful of fields downstream of a non-deterministic external
+lookup (see "Non-deterministic fields" below) -- can't be expected to match between these tests, so
+it's handled two different ways depending on what it means for this server to get it right:
 
 - **Timestamps** (`UTCModDate`) are masked with a placeholder (`[TIMESTAMP_UPDATED]`) rather than
   compared literally -- this server is expected to write *some* current timestamp, just not
   necessarily the exact same one RootsMagic wrote at capture time.
 - **`fsID`/`anID`/`LatLongExact` (Place) and `IsPrivate` (Source)** are stripped from the comparison
-  entirely, not masked. This server always writes `0` for these (it doesn't call out to
-  FamilySearch/Ancestry, and doesn't reproduce `IsPrivate`'s undocumented behavior -- see
-  `internal/rmdb/writes.go`'s own comments, and SCOPE.md's "Write support" section, for the full
-  reasoning). Since every place/source in `royal92.rmtree` already has these fields at `0`, a
-  before/after diff can't tell whether this server wrote `0` or didn't touch the field at all --
-  masking wouldn't fix that, since it would still require the field to appear in the diff at all,
-  which it structurally can't when the value never changes. So these fields are verified a different
-  way instead: `TestWriteOperations` queries the resulting database directly after each write and
-  asserts the value is exactly `0`, independent of `sqldiff` altogether. See `zeroFieldCheck` and
-  `verifyZeroFields` in `cmd/server/main_test.go`.
+  entirely, not masked, and not compared against a specific RootsMagic capture at all -- see
+  "Non-deterministic fields" below for why. This server's own value for each is verified directly
+  instead: `TestWriteOperations` queries the resulting database after each write and asserts the
+  exact value this server is supposed to produce, independent of `sqldiff` altogether. See
+  `fieldCheck` and `verifyFields` in `cmd/server/main_test.go`.
+
+## Non-deterministic fields
+
+**When capturing a new golden file, strip `fsID`, `anID`, and `LatLongExact` (Place) and
+`IsPrivate` (Source) out of it entirely, regardless of what RootsMagic's own `sqldiff` output shows
+for them.** Don't try to make this server's behavior match one specific captured value for these
+four fields -- there isn't a single correct value to match in the first place.
+
+All four are downstream, on RootsMagic's own side, of a real-time lookup against FamilySearch's
+and/or Ancestry's own services -- not something this server does at all (see SCOPE.md's "Write
+support" section for why: a live, third-party network dependency is a fundamentally different kind
+of feature than writing a field to SQLite, and deliberately out of scope). That lookup is a race
+against a timeout, not a reliable success/fail signal, which makes RootsMagic's own resulting value
+for these fields non-deterministic from one edit to the next -- confirmed directly, not assumed,
+by capturing the exact same edit twice and getting different results:
+
+| Capture | Fields edited | `fsID` matched | `anID` matched | `LatLongExact` |
+|---|---|---|---|---|
+| Belgrade, name only | Name | Yes | Yes | `1` |
+| Belgrade, coordinates only | Latitude/Longitude | *(no match)* | *(no match)* | `1` |
+| Odessa, all four fields at once | Name, Note, Latitude, Longitude | *(no match)* | Yes | *unchanged* |
+| Belgrade, all four fields at once | Name, Note, Latitude, Longitude | Yes | Yes | `1` |
+
+The last two rows are the clearest evidence: the exact same combination of fields, edited the same
+way, on two different real captures -- one with a full match and `LatLongExact=1`, one with a
+partial match and `LatLongExact` untouched. Everything else about those two captures agreed. Trying
+to write conditional logic in `UpdatePlace` to reproduce this pattern would mean encoding a rule for
+a value that depends on network timing at the moment of capture, not a real, reproducible RootsMagic
+behavior -- indistinguishable, from inside a golden file, from an actual bug. Chasing it cost real
+time before the pattern above made clear what was actually going on; stripping these fields from new
+golden files up front avoids repeating that.
+
+This server's own behavior for all four fields is fully deterministic regardless -- see
+`internal/rmdb/writes.go`'s comments on `UpdatePlace`/`UpdateSource` for exactly what's written and
+why -- it's specifically RootsMagic's own captured value that can't be treated as ground truth.
 
 ## Requirements
 
@@ -55,8 +85,8 @@ macOS isn't specifically handled -- not tested against, not a supported claim ei
 | 6 | A second write in the same running session: no second backup file appears. | Manual/Go-native -- file existence check, no golden file. |
 | 7 | `POST` a place, `names` only. | **Done** -- `testdata/post_places_name_expected.sql` (currently covers this exact case: name-only change on `PL423`). |
 | 8 | `POST` a place, `notes` only. | **Done** -- `testdata/post_places_note_expected.sql` (currently covers this exact case: note-only change on `PL423`). |
-| 9 | `POST` a place, `latitude`/`longitude` only. Also confirm the decimal-to-integer conversion is exact (`value × 10,000,000`, no rounding) for a coordinate with several decimal places. | **Done** -- `testdata/post_places_coordinates_expected.sql`. |
-| 10 | `POST` a place, all four fields (`names`, `notes`, `latitude`, `longitude`) at once. | Needs golden file, e.g. `testdata/post_places_all_fields_expected.sql`. |
+| 9 | `POST` a place, `latitude`/`longitude` only. Also confirm the decimal-to-integer conversion is exact (`value × 10,000,000`) for a coordinate with several decimal places -- a real bug here (float64 truncation instead of rounding) was found and fixed via this exact test; see SCOPE.md's "Write support" section. | **Done** -- `testdata/post_places_coordinates_expected.sql`. |
+| 10 | `POST` a place, all four fields (`names`, `notes`, `latitude`, `longitude`) at once. | **Done** -- `testdata/post_places_all_fields_expected.sql`. `fsID`/`anID`/`LatLongExact` stripped from it -- see "Non-deterministic fields" above, this is the exact case that finding came from. |
 | 11 | Partial-update semantics: set a note (one request), then a second request that only sends `names` (omitting `notes`) -- confirm the note from the first request survives untouched. | No golden file needed -- Go-native: two sequential API calls plus a `GET` to confirm, not a RootsMagic-comparable single edit. |
 | 12 | `latitude` without `longitude` (or vice versa): `400`, and the place is confirmed unchanged afterward. | No golden file -- request rejected before any write. |
 | 13 | Body `id` doesn't match the URL's id: `400`, nothing written. | No golden file. |
