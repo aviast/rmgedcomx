@@ -33,7 +33,7 @@ jobs:
           sqlite-year: '2025'
 
       - name: Verify sqldiff installation
-        run: sqldiff --version
+        run: sqlite3 --version
 
       - name: Run tests
         run: go test ./...
