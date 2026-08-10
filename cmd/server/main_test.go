@@ -1,0 +1,717 @@
+package main
+
+import (
+	"bytes"
+	"database/sql"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/go-openapi/testify/v2/require"
+	_ "modernc.org/sqlite"
+)
+
+func TestReadOperations(t *testing.T) {
+	tests := []struct {
+		name               string   // Name of the test case
+		method             string   // HTTP method (POST, PUT, DELETE)
+		endpoint           string   // The API route to hit
+		reqBody            string   // The JSON payload to send
+		goldenFile         string   // Path to the expected JSON response (leave blank if expecting an error code)
+		expectedStatus     int      // Expected HTTP response code
+		dbPaths            []string // Paths to the database files
+		baseURL            string   // Base URL for the API
+		mediaFolder        string   // Path to the media folder
+		write              bool     // Whether the server is in write mode
+		defaultGenerations int      // Default number of generations for ancestry/descendancy queries
+		maxPageSize        int      // Maximum page size for paginated responses
+	}{
+		// --- Collection Endpoints ---
+		{
+			name:               "GET Root Collection",
+			method:             "GET",
+			endpoint:           "/",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_root_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "POST Root Collection (Read-only check)",
+			method:             "POST",
+			endpoint:           "/",
+			reqBody:            `{"name": "Attempt to modify"}`,
+			goldenFile:         "",
+			expectedStatus:     http.StatusMethodNotAllowed,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+
+		// --- Persons Endpoints ---
+		{
+			name:               "GET Persons Collection",
+			method:             "GET",
+			endpoint:           "/collections/victoria-hanover-royal92/persons",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_persons_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "POST Persons Collection (Read-only check)",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/persons",
+			reqBody:            `{"names":[{"nameForms":[{"fullText":"New Person"}]}]}`,
+			goldenFile:         "",
+			expectedStatus:     http.StatusMethodNotAllowed,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "GET Single Person",
+			method:             "GET",
+			endpoint:           "/collections/victoria-hanover-royal92/persons/P1",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_person_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "PUT Single Person (Read-only check)",
+			method:             "PUT",
+			endpoint:           "/collections/victoria-hanover-royal92/persons/P1",
+			reqBody:            `{"id":"P1"}`,
+			goldenFile:         "",
+			expectedStatus:     http.StatusMethodNotAllowed,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "DELETE Single Person (Read-only check)",
+			method:             "DELETE",
+			endpoint:           "/collections/victoria-hanover-royal92/persons/P1",
+			reqBody:            ``,
+			goldenFile:         "",
+			expectedStatus:     http.StatusMethodNotAllowed,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+
+		// --- Person Relationships & Trees ---
+		{
+			name:               "GET Person Ancestry",
+			method:             "GET",
+			endpoint:           "/collections/victoria-hanover-royal92/persons/P1/ancestry?generations=2",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_person_ancestry_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "GET Person Descendancy",
+			method:             "GET",
+			endpoint:           "/collections/victoria-hanover-royal92/persons/P1/descendancy?generations=2",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_person_descendancy_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+
+		// --- Relationships Endpoints ---
+		{
+			name:               "GET Relationships Collection",
+			method:             "GET",
+			endpoint:           "/collections/victoria-hanover-royal92/relationships",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_relationships_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "POST Relationships Collection (Read-only check)",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/relationships",
+			reqBody:            `{"type":"http://gedcomx.org/Couple"}`,
+			goldenFile:         "",
+			expectedStatus:     http.StatusMethodNotAllowed,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "GET Single Relationship",
+			method:             "GET",
+			endpoint:           "/collections/victoria-hanover-royal92/relationships/F1",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_relationship_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "DELETE Single Relationship (Read-only check)",
+			method:             "DELETE",
+			endpoint:           "/collections/victoria-hanover-royal92/relationships/F1",
+			reqBody:            ``,
+			goldenFile:         "",
+			expectedStatus:     http.StatusMethodNotAllowed,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+
+		// --- Source Descriptions Endpoints ---
+		{
+			name:               "GET Source Descriptions Collection",
+			method:             "GET",
+			endpoint:           "/collections/victoria-hanover-royal92/source-descriptions",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_source_descriptions_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "POST Source Descriptions Collection (Read-only check)",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/source-descriptions",
+			reqBody:            `{"about":"http://example.com/source"}`,
+			goldenFile:         "",
+			expectedStatus:     http.StatusMethodNotAllowed,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "GET Single Source Description",
+			method:             "GET",
+			endpoint:           "/collections/victoria-hanover-royal92/source-descriptions/S1",
+			reqBody:            ``,
+			goldenFile:         "testdata/get_source_description_expected.json",
+			expectedStatus:     http.StatusOK,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "PATCH Single Source Description (Read-only check)",
+			method:             "PATCH",
+			endpoint:           "/collections/victoria-hanover-royal92/source-descriptions/S1",
+			reqBody:            `{"about":"http://example.com/updated"}`,
+			goldenFile:         "",
+			expectedStatus:     http.StatusMethodNotAllowed,
+			dbPaths:            []string{"../../royal92.rmtree"},
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              false,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+	}
+
+	for _, tc := range tests {
+		// t.Run creates a sub-test. This shows up nicely formatted in the CLI output.
+		t.Run(tc.name, func(t *testing.T) {
+			// ### Start rmgedcomx ###
+			// Call the function from your main code that builds your router.
+			// If your router needs the database path, you would pass it in here.
+			router, cleanup := SetupRouter(
+				tc.dbPaths,
+				tc.baseURL,
+				tc.mediaFolder,
+				tc.write,
+				tc.defaultGenerations,
+				tc.maxPageSize,
+			)
+			defer cleanup()
+
+			// Pass the router directly to httptest
+			testServer := httptest.NewServer(router)
+			defer testServer.Close()
+			defer cleanup()
+
+			req, err := http.NewRequest(tc.method, testServer.URL+tc.endpoint, bytes.NewBufferString(tc.reqBody))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			require.Equal(t, tc.expectedStatus, resp.StatusCode)
+
+			if tc.goldenFile != "" {
+				expectedBytes, err := os.ReadFile(tc.goldenFile)
+				require.NoError(t, err, "Failed to read golden file")
+
+				actualBytes, err := io.ReadAll(resp.Body)
+				require.NoError(t, err, "Failed to read response body")
+
+				require.JSONEq(t, string(expectedBytes), string(actualBytes))
+			}
+		})
+	}
+}
+
+// Pre-compile regex to replace dynamic timestamps in sqldiff output
+var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
+var familySearchIDRegex = regexp.MustCompile(`,\s*fsID=-?[0-9]+`)
+var ancestryIDRegex = regexp.MustCompile(`,\s*anID=-?[0-9]+`)
+var latLongExactRegex = regexp.MustCompile(`,\s*LatLongExact=[0-9]+`)
+var isPrivateRegex = regexp.MustCompile(`,\s*IsPrivate=[0-9]+`)
+
+// configTableDataRecRegex strips ConfigTable's DataRec column -- an
+// opaque, undocumented XML blob (~15KB in royal92.rmtree) holding
+// RootsMagic's own UI layout/window state (panel collapsed/expanded
+// flags, last-viewed person, and the like), not genealogical data. A
+// real captured diff showed this whole blob rewritten by a plain "add a
+// comment to a Source" edit -- turned out to be a red herring, not new
+// functionality this server needs: the one specific value that had
+// changed (MediaCollapsed_Citations) matched byte-for-byte between a
+// completely unrelated reference copy and the "after" state here, which
+// means it reflects whatever a UI panel was left at, not a deterministic
+// consequence of the edit that was actually made. See SCOPE.md's "Write
+// support" section for the full account. This server never writes
+// DataRec at all (only ConfigTable's UTCModDate), so this regex is a
+// no-op against this server's own output -- it exists to also strip the
+// same pattern from a golden file's raw content at comparison time (see
+// where this is used below), as a safety net against a future capture
+// leaving a multi-kilobyte hex blob only partially cleaned up by hand.
+//
+// Matches with a *trailing* comma, not a leading one like the other
+// strip regexes above -- confirmed directly against a real capture that
+// DataRec is always the first column ConfigTable's SET clause touches
+// (UTCModDate always follows it, never precedes it), the opposite
+// position from fsID/anID/LatLongExact/IsPrivate, which are never first
+// in their own SET clauses. A leading-comma pattern here would silently
+// fail to match at all.
+var configTableDataRecRegex = regexp.MustCompile(`DataRec=x'[0-9a-fA-F]*',\s*`)
+
+func TestWriteOperations(t *testing.T) {
+	tests := []struct {
+		name               string       // Name of the test case
+		method             string       // HTTP method (POST, PUT, DELETE)
+		endpoint           string       // The API route to hit
+		reqBody            string       // The JSON payload to send
+		goldenFile         string       // Path to the expected sqldiff output (.sql)
+		verifyFields       []fieldCheck // Fields whose expected value this server determines deterministically -- see fieldCheck's own comment for why sqldiff can't be trusted for these
+		expectedStatus     int          // Expected HTTP response code
+		baseURL            string       // Base URL for the API
+		mediaFolder        string       // Path to the media folder
+		write              bool         // Whether the server is in write mode
+		defaultGenerations int          // Default number of generations
+		maxPageSize        int          // Maximum page size
+	}{
+		{
+			name:               "POST Place Name Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
+			reqBody:            `{"places":[{"id":"PL423","names":[{"value":"Belgrade, Serbia"}]}]}`,
+			goldenFile:         "testdata/post_places_name_expected.sql",
+			verifyFields:       []fieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", expected: map[string]int{"fsID": 0, "anID": 0, "LatLongExact": 0}}},
+			expectedStatus:     http.StatusNoContent,
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "POST Place Note Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
+			reqBody:            `{"places":[{"id":"PL423","notes":[{"text":"Updated note"}]}]}`,
+			goldenFile:         "testdata/post_places_note_expected.sql",
+			verifyFields:       []fieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", expected: map[string]int{"fsID": 0, "anID": 0, "LatLongExact": 0}}},
+			expectedStatus:     http.StatusNoContent,
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			// LatLongExact=1 is this server's own deterministic behavior
+			// for a coordinates change (see UpdatePlace's own doc
+			// comment) -- verified directly via verifyFields, not
+			// through the golden-file/sqldiff comparison, since
+			// RootsMagic's own value for this field is itself
+			// non-deterministic (see TESTING.md's "Non-deterministic
+			// fields" section) and stripped from that comparison
+			// entirely, the same as fsID/anID.
+			name:               "POST Place Coordinates Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/places/PL423",
+			reqBody:            `{"places":[{"id":"PL423","latitude":44.817778,"longitude":20.456944}]}`,
+			goldenFile:         "testdata/post_places_coordinates_expected.sql",
+			verifyFields:       []fieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "423", expected: map[string]int{"LatLongExact": 1}}},
+			expectedStatus:     http.StatusNoContent,
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "POST Place All Fields Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/places/PL882",
+			reqBody:            `{"places":[{"id":"PL882","names":[{"value":"Odessa, Ukraine"}],"notes":[{"text":"Odesa, also spelled Odessa, is the third-most populous city and municipality in Ukraine and a major seaport and transport hub located in the south-west of the country, on the northwestern shore of the Black Sea."}],"latitude":46.485722,"longitude":30.743444}]}`,
+			goldenFile:         "testdata/post_places_all_fields_expected.sql",
+			verifyFields:       []fieldCheck{{table: "PlaceTable", idCol: "PlaceID", idVal: "882", expected: map[string]int{"fsID": 0, "anID": 0, "LatLongExact": 1}}},
+			expectedStatus:     http.StatusNoContent,
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			name:               "POST Source Name Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/source-descriptions/S1",
+			reqBody:            `{"sourceDescriptions":[{"id":"S1","titles":[{"value":"Public Domain GEDCOM file imported on 22 July 2026"}]}]}`,
+			goldenFile:         "testdata/post_sources_expected.sql",
+			verifyFields:       []fieldCheck{{table: "SourceTable", idCol: "SourceID", idVal: "1", expected: map[string]int{"IsPrivate": 0}}},
+			expectedStatus:     http.StatusNoContent,
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+		{
+			// ConfigTable.DataRec was in RootsMagic's own real captured
+			// diff for this exact edit -- an opaque ~15KB XML blob of UI
+			// layout state (see configTableDataRecRegex's own comment)
+			// that turned out to be unrelated to this edit at all, not
+			// something this server needs to reproduce. Stripped from
+			// the golden file itself and from comparison via
+			// configTableDataRecRegex, same as fsID/anID/LatLongExact/
+			// IsPrivate above.
+			name:               "POST Source Comments Change",
+			method:             "POST",
+			endpoint:           "/collections/victoria-hanover-royal92/source-descriptions/S2",
+			reqBody:            `{"sourceDescriptions":[{"id":"S2","notes":[{"text":"Added comment."}]}]}`,
+			goldenFile:         "testdata/post_sources_comments_expected.sql",
+			verifyFields:       []fieldCheck{{table: "SourceTable", idCol: "SourceID", idVal: "2", expected: map[string]int{"IsPrivate": 0}}},
+			expectedStatus:     http.StatusNoContent,
+			baseURL:            "http://localhost:8080",
+			mediaFolder:        "testdata/media",
+			write:              true,
+			defaultGenerations: 4,
+			maxPageSize:        200,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// 1. Create a isolated copy of royal92.rmtree in a temporary directory
+			tempDir := t.TempDir()
+			tempDBPath := filepath.Join(tempDir, "royal92.rmtree")
+			copyFile(t, "../../royal92.rmtree", tempDBPath)
+
+			// 2. Initialize router using the temporary database copy
+			router, cleanup := SetupRouter(
+				[]string{tempDBPath},
+				tc.baseURL,
+				tc.mediaFolder,
+				tc.write,
+				tc.defaultGenerations,
+				tc.maxPageSize,
+			)
+
+			testServer := httptest.NewServer(router)
+
+			// 3. Send HTTP Request
+			req, err := http.NewRequest(tc.method, testServer.URL+tc.endpoint, bytes.NewBufferString(tc.reqBody))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			resp.Body.Close()
+
+			require.Equal(t, tc.expectedStatus, resp.StatusCode)
+
+			// 4. CRITICAL: Close server and DB connections BEFORE running sqldiff
+			// This releases SQLite file locks on Windows
+			testServer.Close()
+			cleanup()
+
+			// 5. Compare database diff against golden SQL file
+			if tc.goldenFile != "" {
+				expectedBytes, err := os.ReadFile(tc.goldenFile)
+				require.NoError(t, err, "Failed to read golden file")
+
+				// Run sqldiff comparing the clean original against our modified temp copy
+				actualDiff := runSqlDiff(t, "../../royal92.rmtree", tempDBPath)
+
+				// TrimSpace both sides symmetrically -- comparing the golden
+				// file's raw bytes (which may or may not end in a trailing
+				// newline, depending on how the file was saved) against only
+				// the actual side being trimmed (inside normalizeSQL) was a
+				// real, if easy to miss, source of spurious failures: two
+				// strings that are identical except for trailing whitespace
+				// aren't equal to require.Equal, and that's not the kind of
+				// difference this test is meant to catch.
+				//
+				// configTableDataRecRegex is also applied here, to the
+				// golden file's own raw content, not just inside
+				// normalizeSQL -- unlike the other stripped fields (which
+				// rely on whoever captured the golden file having removed
+				// them by hand, an established and so far reliable
+				// convention), a ~15KB hex blob is exactly the kind of
+				// thing that's easy to leave only partially cleaned up.
+				// Stripping it from both sides means a future golden file
+				// that still has a leftover DataRec clause won't cause a
+				// spurious failure -- see configTableDataRecRegex's own
+				// comment for the full story behind why this field is
+				// excluded at all.
+				normalizedExpected := configTableDataRecRegex.ReplaceAllString(strings.TrimSpace(string(expectedBytes)), "")
+				// Normalize line endings and mask/strip dynamic fields in test output
+				normalizedActual := normalizeSQL(actualDiff)
+
+				require.Equal(t, normalizedExpected, normalizedActual)
+			}
+
+			// 6. Directly verify the fields step 5's comparison deliberately
+			// excludes (see normalizeSQL's own comment, and fieldCheck's,
+			// for the full reasoning): confirm this server's own
+			// deterministic value, not just "didn't fail to change" or
+			// "matches one particular RootsMagic capture." sqldiff can
+			// only ever tell us whether a value changed between two
+			// database states, never what the value actually is or
+			// should be -- and for fields downstream of a
+			// non-deterministic external lookup on RootsMagic's own side,
+			// there's no single "correct" captured value to compare
+			// against in the first place. This is the check that
+			// verifies what this server can actually promise.
+			for _, check := range tc.verifyFields {
+				verifyFields(t, tempDBPath, check)
+			}
+		})
+	}
+}
+
+// fieldCheck names a single row and a set of columns on it whose expected
+// value this server determines deterministically -- independent of
+// whatever RootsMagic itself produced for the same fields when a golden
+// file was captured. fsID/anID/LatLongExact on Place, IsPrivate on
+// Source: all four are downstream, on RootsMagic's own side, of a
+// non-deterministic external network lookup (FamilySearch/Ancestry), not
+// a reliable success/fail signal -- see TESTING.md's "Non-deterministic
+// fields" section for the real captured evidence this conclusion is
+// based on, and internal/rmdb/writes.go's own comments on
+// UpdatePlace/UpdateSource for what this server actually writes for each
+// and why.
+//
+// These are checked directly, by querying the resulting database after
+// the write, rather than through the sqldiff-based golden-file comparison
+// every other field goes through. That's deliberate, not a shortcut:
+// sqldiff (like any before/after diff) only reports columns whose value
+// actually *changed* between two states, and can't tell us what RootsMagic
+// "should" have produced independent of one specific, possibly-flaky
+// capture -- a direct query is the only way to confirm this server's own
+// value, independent of whatever RootsMagic happened to do.
+type fieldCheck struct {
+	table    string
+	idCol    string
+	idVal    string
+	expected map[string]int // column name -> expected value
+}
+
+func verifyFields(t *testing.T, dbPath string, check fieldCheck) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err, "opening database to verify fields")
+	defer db.Close()
+
+	columns := make([]string, 0, len(check.expected))
+	for col := range check.expected {
+		columns = append(columns, col)
+	}
+	sort.Strings(columns) // deterministic query text and scan order
+
+	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s = %s",
+		strings.Join(columns, ", "), check.table, check.idCol, check.idVal)
+	row := db.QueryRow(query)
+
+	values := make([]int, len(columns))
+	scanTargets := make([]any, len(values))
+	for i := range values {
+		scanTargets[i] = &values[i]
+	}
+	require.NoError(t, row.Scan(scanTargets...), "querying %s", query)
+
+	for i, col := range columns {
+		want := check.expected[col]
+		require.Equal(t, want, values[i], "%s.%s should be %d after this server's write, was %d", check.table, col, want, values[i])
+	}
+}
+
+// sqldiffCommand returns the sqldiff executable name for the current
+// platform: "sqldiff.exe" on Windows, "sqldiff" everywhere else. Either
+// way, it's expected to be on PATH -- see TESTING.md for where to get it.
+//
+// macOS isn't specifically handled -- deliberately out of scope for now,
+// not an oversight (this project doesn't currently target it). It falls
+// through to the non-Windows case, which will find a real "sqldiff" on
+// PATH if one happens to be installed the same way as on Linux, but
+// that's untested, not a supported claim.
+func sqldiffCommand() string {
+	if runtime.GOOS == "windows" {
+		return "sqldiff.exe"
+	}
+	return "sqldiff"
+}
+
+// unifuzzLibPath returns the path to the unifuzz collation library
+// (needed for sqldiff to correctly compare RMNOCASE-collated columns) for
+// the current platform: testdata/unifuzz.dll on Windows,
+// testdata/unifuzz.so everywhere else. Same macOS caveat as
+// sqldiffCommand.
+func unifuzzLibPath() string {
+	name := "unifuzz.so"
+	if runtime.GOOS == "windows" {
+		name = "unifuzz.dll"
+	}
+	return filepath.Join("testdata", name)
+}
+
+// Helper to run sqldiff with the unifuzz collation library
+func runSqlDiff(t *testing.T, dbOriginal, dbModified string) string {
+	cmd := exec.Command(sqldiffCommand(), "--lib", unifuzzLibPath(), dbOriginal, dbModified)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+
+	err := cmd.Run()
+	require.NoError(t, err, "sqldiff execution failed: %s", errOut.String())
+
+	return out.String()
+}
+
+// Helper to sanitize dynamic values and normalize line endings
+func normalizeSQL(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = utcModDateRegex.ReplaceAllString(s, "UTCModDate=[TIMESTAMP_UPDATED]")
+	// fsID, anID, LatLongExact, and IsPrivate are stripped entirely, not
+	// masked with a placeholder like UTCModDate is, and not compared
+	// against sqldiff's output against a golden file at all -- see
+	// TESTING.md's "Non-deterministic fields" section for the full
+	// account of why, and the real captured evidence behind it. Verified
+	// directly instead, via fieldCheck/verifyFields below, which assert
+	// this server's own deterministic behavior independent of whatever
+	// RootsMagic happened to produce in one particular capture.
+	//
+	// LatLongExact briefly wasn't in this list -- reasoned, at the time,
+	// that unlike fsID/anID/IsPrivate (always the same value regardless
+	// of what changed) a coordinates change makes this server write a
+	// different, real value (1 instead of 0), so sqldiff ought to be able
+	// to verify that transition. That reasoning turned out to be
+	// incomplete: RootsMagic's own value for it is ALSO downstream of the
+	// same non-deterministic FamilySearch/Ancestry lookup as fsID/anID,
+	// confirmed by two otherwise-identical "change every field at once"
+	// captures against the same place (Belgrade) that disagreed with each
+	// other on LatLongExact alone -- everything else about them matched.
+	// A golden file capturing one specific run's LatLongExact value was
+	// never something to chase in the first place.
+	s = familySearchIDRegex.ReplaceAllString(s, "")
+	s = ancestryIDRegex.ReplaceAllString(s, "")
+	s = latLongExactRegex.ReplaceAllString(s, "")
+	s = isPrivateRegex.ReplaceAllString(s, "")
+	s = configTableDataRecRegex.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
+// Helper to copy files
+func copyFile(t *testing.T, src, dst string) {
+	source, err := os.Open(src)
+	require.NoError(t, err)
+	defer source.Close()
+
+	destination, err := os.Create(dst)
+	require.NoError(t, err)
+	defer destination.Close()
+
+	_, err = io.Copy(destination, source)
+	require.NoError(t, err)
+}

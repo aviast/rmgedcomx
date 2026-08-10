@@ -1,9 +1,14 @@
 package api
 
 import (
+	"errors"
+	"fmt"
+	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/aviast/rmgedcomx/internal/gedcomx"
 	"github.com/aviast/rmgedcomx/internal/rmdb"
@@ -64,6 +69,106 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, gedcomx.PersonDocument{Persons: []gedcomx.Person{p}, Links: p.Links})
+}
+
+// handleUpdatePerson implements the Person state's POST operation (RS
+// spec Section 4.4.2: "Update a person", OPTIONAL) -- only registered
+// when this collection's database is writable (see resourceHandler).
+//
+// Deliberately scoped to ONLY media links for now, not general person
+// editing -- see SCOPE.md's "Write support" section. names/gender/facts/
+// sources aren't writable yet; a request that includes any of them isn't
+// rejected (a client following the ordinary GET-then-modify-then-POST
+// pattern will naturally send them back unchanged, and breaking that
+// pattern over fields this endpoint doesn't touch would be its own kind
+// of unhelpful), but is logged, so there's a visible trail of real
+// demand for expanding this later rather than a silent gap.
+func (s *Server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	pid, err := parsePersonID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	rp, err := s.db.GetPerson(pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rp == nil {
+		notFound(w, "person", id)
+		return
+	}
+
+	var body gedcomx.PersonDocument
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.Persons) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one person (RS spec Section 4.4.3)")
+		return
+	}
+	person := body.Persons[0]
+	if person.ID != "" && person.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", person.ID, id))
+		return
+	}
+
+	var ignoredFields []string
+	if len(person.Names) > 0 {
+		ignoredFields = append(ignoredFields, "names")
+	}
+	if person.Gender != nil {
+		ignoredFields = append(ignoredFields, "gender")
+	}
+	if len(person.Facts) > 0 {
+		ignoredFields = append(ignoredFields, "facts")
+	}
+	if len(person.Sources) > 0 {
+		ignoredFields = append(ignoredFields, "sources")
+	}
+	if len(ignoredFields) > 0 {
+		log.Printf("POST /persons/%s: ignoring unsupported field(s) %v -- only media is currently writable for Person, see SCOPE.md's \"Write support\" section", id, ignoredFields)
+	}
+
+	mediaIDs := make([]int64, 0, len(person.Media))
+	for _, ref := range person.Media {
+		mid, err := mediaIDFromReference(ref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid media reference: %v", err))
+			return
+		}
+		mediaIDs = append(mediaIDs, mid)
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateOwnerMedia(rmdb.OwnerTypePerson, pid, mediaIDs); err != nil {
+		if errors.Is(err, rmdb.ErrArtifactNotFound) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// mediaIDFromReference extracts an artifact id from a SourceReference
+// sent in a write request -- prefers descriptionId (e.g. "M1") since it's
+// simplest and most direct; falls back to parsing the id off the end of
+// description (e.g. ".../artifacts/M1") for a client that only sent that.
+func mediaIDFromReference(ref gedcomx.SourceReference) (int64, error) {
+	if ref.DescriptionID != "" {
+		return parseMediaID(ref.DescriptionID)
+	}
+	if ref.Description != "" {
+		parts := strings.Split(strings.TrimRight(ref.Description, "/"), "/")
+		return parseMediaID(parts[len(parts)-1])
+	}
+	return 0, fmt.Errorf("media reference has neither descriptionId nor description")
 }
 
 // --- Person Parents / Children / Spouses ---
@@ -516,7 +621,12 @@ func (s *Server) handlePlaces(w http.ResponseWriter, r *http.Request) {
 	}
 	places := make([]gedcomx.PlaceDescription, 0, len(rows))
 	for _, p := range rows {
-		places = append(places, s.buildPlaceDescription(p))
+		pd, err := s.buildPlaceDescription(p)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		places = append(places, pd)
 	}
 	status := http.StatusOK
 	if len(places) == 0 {
@@ -545,8 +655,87 @@ func (s *Server) handlePlace(w http.ResponseWriter, r *http.Request) {
 		notFound(w, "place", id)
 		return
 	}
-	pd := s.buildPlaceDescription(*place)
+	pd, err := s.buildPlaceDescription(*place)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, gedcomx.PlaceDescriptionDocument{Places: []gedcomx.PlaceDescription{pd}, Links: pd.Links})
+}
+
+// handleUpdatePlace implements the Place Description state's POST
+// operation (RS spec Section 4.16.2: "Update a place description",
+// OPTIONAL) -- only registered at all when this collection's database is
+// writable (see resourceHandler). Updates PlaceTable's Name,
+// Latitude/Longitude, and Note; see rmdb.PlaceUpdate and SCOPE.md's
+// "Write support" section for the current, deliberately limited, set of
+// writable fields and update semantics.
+func (s *Server) handleUpdatePlace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	plid, err := parsePlaceID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var body gedcomx.PlaceDescriptionDocument
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.Places) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one place description (RS spec Section 4.16.3)")
+		return
+	}
+	place := body.Places[0]
+	// RS spec Section 8: a data element WITH an id is an update candidate
+	// for that id -- cross-check it matches the URL rather than silently
+	// trusting or ignoring a mismatch.
+	if place.ID != "" && place.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", place.ID, id))
+		return
+	}
+	if (place.Latitude == nil) != (place.Longitude == nil) {
+		writeError(w, http.StatusBadRequest, "latitude and longitude must be provided together, or not at all")
+		return
+	}
+
+	var update rmdb.PlaceUpdate
+	if len(place.Names) > 0 && strings.TrimSpace(place.Names[0].Value) != "" {
+		name := place.Names[0].Value
+		update.Name = &name
+	}
+	if place.Latitude != nil && place.Longitude != nil {
+		// math.Round, not a bare int64(...) conversion: float64 can't
+		// represent most decimal fractions exactly (44.817778 * 1e7
+		// evaluates to 448177779.9999999404 in float64 arithmetic, not
+		// exactly 448177780.0), and int64(...) truncates toward zero
+		// rather than rounding -- so a bare conversion here silently
+		// rounds coordinates down by up to 1 in the last digit (roughly
+		// a centimeter), confirmed directly against this exact value.
+		// math.Round first gives the mathematically intended integer.
+		lat := int64(math.Round(*place.Latitude * 1e7))
+		lon := int64(math.Round(*place.Longitude * 1e7))
+		update.Latitude = &lat
+		update.Longitude = &lon
+	}
+	if len(place.Notes) > 0 && strings.TrimSpace(place.Notes[0].Text) != "" {
+		note := place.Notes[0].Text
+		update.Note = &note
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdatePlace(plid, update); err != nil {
+		if errors.Is(err, rmdb.ErrNotFound) {
+			notFound(w, "place", id)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Source descriptions ---
@@ -591,6 +780,64 @@ func (s *Server) handleSourceDescription(w http.ResponseWriter, r *http.Request)
 	}
 	sd := s.buildSourceDescription(*src)
 	writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
+}
+
+// handleUpdateSourceDescription implements the Source Description state's
+// POST operation (RS spec Section 4.23.2: "Update a source description",
+// OPTIONAL) -- only registered at all when this collection's database is
+// writable (see resourceHandler). Updates SourceTable's Name and
+// Comments; see rmdb.SourceUpdate and SCOPE.md's "Write support" section
+// for why `citations` is deliberately not (yet) writable.
+func (s *Server) handleUpdateSourceDescription(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid, err := parseSourceID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var body gedcomx.SourceDescriptionDocument
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.SourceDescriptions) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one source description (RS spec Section 4.23.3)")
+		return
+	}
+	src := body.SourceDescriptions[0]
+	if src.ID != "" && src.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", src.ID, id))
+		return
+	}
+	if len(src.Citations) > 0 {
+		writeError(w, http.StatusBadRequest,
+			"updating citations isn't supported yet -- RootsMagic's ActualText and RefNumber fields are combined into this API's single citations value on the way out, and can't be unambiguously split back apart on the way in; see SCOPE.md's \"Write support\" section. Omit citations from the request body to update the other fields.")
+		return
+	}
+
+	var update rmdb.SourceUpdate
+	if len(src.Titles) > 0 && strings.TrimSpace(src.Titles[0].Value) != "" {
+		name := src.Titles[0].Value
+		update.Name = &name
+	}
+	if len(src.Notes) > 0 && strings.TrimSpace(src.Notes[0].Text) != "" {
+		comments := src.Notes[0].Text
+		update.Comments = &comments
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateSource(sid, update); err != nil {
+		if errors.Is(err, rmdb.ErrNotFound) {
+			notFound(w, "source description", id)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Artifacts (multimedia) ---
@@ -638,6 +885,68 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	sd := s.buildArtifactDescription(*item)
 	writeJSON(w, http.StatusOK, gedcomx.SourceDescriptionDocument{SourceDescriptions: []gedcomx.SourceDescription{sd}, Links: sd.Links})
+}
+
+// handleUpdateArtifact updates a multimedia item's stored location --
+// there's no dedicated RS spec transition for this either, same as
+// handleArtifactContent above; only registered at all when this
+// collection's database is writable (see resourceHandler). The request
+// body's mediaPath is a real, absolute filesystem path (see
+// gedcomx.SourceDescription.MediaPath's own doc comment); this server
+// encodes it into RootsMagic's "?"-relative notation itself
+// (rmdb.UpdateArtifactPath / encodeMediaPath) -- the client never
+// constructs RootsMagic's own path syntax. Requires this server to have a
+// configured Media Folder (write mode's own startup precondition -- see
+// SCOPE.md's "Write support" section); if somehow missing here anyway,
+// that's a server misconfiguration (500), not a bad request.
+func (s *Server) handleUpdateArtifact(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	mid, err := parseMediaID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var body gedcomx.SourceDescriptionDocument
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.SourceDescriptions) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one artifact description")
+		return
+	}
+	artifact := body.SourceDescriptions[0]
+	if artifact.ID != "" && artifact.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", artifact.ID, id))
+		return
+	}
+	mediaPath := strings.TrimSpace(artifact.MediaPath)
+	if mediaPath == "" {
+		writeError(w, http.StatusBadRequest, "mediaPath is required to update an artifact's location")
+		return
+	}
+	if s.cfg.Media.MediaFolder == "" {
+		writeError(w, http.StatusInternalServerError, "no Media Folder is configured for this server -- artifact locations can't be written without one")
+		return
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateArtifactPath(mid, s.cfg.Media.MediaFolder, mediaPath); err != nil {
+		if errors.Is(err, rmdb.ErrNotFound) {
+			notFound(w, "artifact", id)
+			return
+		}
+		if errors.Is(err, rmdb.ErrPathNotUnderMediaFolder) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleArtifactContent streams the actual bytes of a multimedia item --
@@ -754,4 +1063,94 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, gedcomx.EventDocument{Events: []gedcomx.Event{ev}, Links: ev.Links})
+}
+
+// handleUpdateEvent implements the Event state's POST operation (RS spec
+// Section 4.9.2: "Update an event", OPTIONAL) -- only registered when
+// this collection's database is writable (see resourceHandler).
+//
+// Scoped to ONLY media links, same as handleUpdatePerson and for the same
+// reason -- see its own doc comment, and SCOPE.md's "Write support"
+// section, for the full reasoning (shared verbatim here: unsupported
+// fields are logged, not rejected, so the natural GET-then-modify-then-
+// POST client pattern keeps working for the one thing this endpoint
+// supports, while leaving a visible trail of real demand for anything
+// beyond that).
+func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	eid, err := parseEventID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	e, err := s.db.GetEvent(eid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if e == nil {
+		notFound(w, "event", id)
+		return
+	}
+
+	var body gedcomx.EventDocument
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.Events) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one event (RS spec Section 4.9.3)")
+		return
+	}
+	event := body.Events[0]
+	if event.ID != "" && event.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", event.ID, id))
+		return
+	}
+
+	var ignoredFields []string
+	if event.Type != "" {
+		ignoredFields = append(ignoredFields, "type")
+	}
+	if event.Date != nil {
+		ignoredFields = append(ignoredFields, "date")
+	}
+	if event.Place != nil {
+		ignoredFields = append(ignoredFields, "place")
+	}
+	if len(event.Roles) > 0 {
+		ignoredFields = append(ignoredFields, "roles")
+	}
+	if len(event.Sources) > 0 {
+		ignoredFields = append(ignoredFields, "sources")
+	}
+	if len(event.Notes) > 0 {
+		ignoredFields = append(ignoredFields, "notes")
+	}
+	if len(ignoredFields) > 0 {
+		log.Printf("POST /events/%s: ignoring unsupported field(s) %v -- only media is currently writable for Event, see SCOPE.md's \"Write support\" section", id, ignoredFields)
+	}
+
+	mediaIDs := make([]int64, 0, len(event.Media))
+	for _, ref := range event.Media {
+		mid, err := mediaIDFromReference(ref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid media reference: %v", err))
+			return
+		}
+		mediaIDs = append(mediaIDs, mid)
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateOwnerMedia(rmdb.OwnerTypeEvent, eid, mediaIDs); err != nil {
+		if errors.Is(err, rmdb.ErrArtifactNotFound) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

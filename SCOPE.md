@@ -18,12 +18,9 @@ support things a single-user desktop database doesn't need:
   real search implementation (indexing, ranking, paging as Atom/JSON feeds) is a
   project in itself. `GET /persons?name=...` is provided instead, as a simpler
   non-Atom filter, and is a natural place to grow real search later.
-- **Write operations** — you asked for read-only. RootsMagic's own file locking and
-  UI assumptions make concurrent external writes risky; if you want write support
-  later, it should go through RootsMagic's documented update patterns and probably
-  a `-write` flag that's off by default. See "SQLite driver" below for how the
-  current read-only enforcement is deliberately centralized in one place to make
-  that easy to add later.
+- **Write operations** — off by default, and the vast majority of resources are
+  still read-only even when write support is enabled. See the "Write support"
+  section below for what's actually implemented, staged incrementally, and why.
 
 `Collections` / `Collection`, `Artifacts`, and `Events` / `Event` **are**
 implemented -- see the "Multiple databases / Collections", "Multimedia", and
@@ -362,6 +359,42 @@ before falling back to Go's `mime.TypeByExtension`, so behavior doesn't
 depend on the deployment environment having a populated `/etc/mime.types` --
 fine on a typical dev machine, not guaranteed on a minimal container image.
 
+### Sources versus media
+
+`Person`, `Relationship`, `Event`, and `PlaceDescription` -- everything that
+extends the conceptual model's `Subject` data type -- expose two separate
+arrays, `sources` and `media`, not one combined list. `Fact` (a
+`Conclusion`, not a `Subject`) only ever gets `sources`.
+
+This wasn't the original design. An earlier version of this server
+combined bibliographic citations and attached artifacts into one `sources`
+array everywhere, on the reasoning that both "evidence" a conclusion in
+some sense. That reasoning doesn't survive contact with the spec's own
+text, which draws the line explicitly: `Subject.media` is defined as
+references to multimedia "intended to provide additional context or
+illustration for the subject and *not* considered evidence supporting the
+identity of the subject or its supporting conclusions" -- a direct,
+deliberate contrast with `sources`, not a stylistic one. Checked against
+two independent implementations, not just the spec's prose, to make sure
+this wasn't a single source's idiosyncratic reading: `gedcomx-js`
+(`Subject.js`) and `gedcomx-rs` (`person.rs`, `relationship.rs`,
+`event.rs`, `placedescription.rs`) both have a distinct `media` field
+alongside `sources`, with doc comments quoting the same spec language.
+Neither contradicts the other, or the spec.
+
+`buildSourcesAndMedia` (`internal/api/convert.go`) replaced the earlier
+`buildSourceReferences`, returning both arrays from the same underlying
+query rather than one merged list -- bibliographic citations go in
+`sources`; artifacts (attached directly via `MediaLinkTable`, or via the
+owner's citations -- see above) go in `media`. `Fact` calls this and
+deliberately discards the `media` return value: a `Fact` has nowhere to
+put it, but the same `EventTable` row's corresponding standalone `Event`
+(same id, see "Events" below) does, and that's where it actually surfaces
+instead -- not dropped, just relocated to the one place the spec actually
+allows it. `PlaceDescription` gained a query for this that didn't exist at
+all before (`rmdb.OwnerTypePlace`), since a place's own citations/media
+were never being surfaced prior to this.
+
 ## Events
 
 `GET /events` and `GET /events/{id}` implement the RS spec's `Events`/`Event`
@@ -504,6 +537,771 @@ them can, how `EventRole.details` already works for the twelve witnesses
 who *are* real `Person`s (below): the role type and its free-text details
 are always two distinct pieces of information, never one replacing the
 other.
+
+## Write support
+
+Off by default. `-write` enables it; without it, this server behaves
+exactly as it always has -- every write attempt gets a `405 Method Not
+Allowed` with a correct `Allow` header (see "HTTP semantics" below), the
+same as any resource this server doesn't implement writes for at all.
+
+This is being built in deliberately small, independently-testable stages,
+not as one large change, specifically so problems surface against a small
+diff rather than a large one. Each stage below is a real, separate unit of
+work; the ones marked done have been built, and verified against a real
+RootsMagic database, not just written and assumed correct.
+
+### Why this is risky enough to be careful about
+
+A `.rmtree` file is frequently years of someone's actual research. Getting
+this wrong isn't like getting a read endpoint wrong -- a read bug returns
+bad data; a write bug can destroy real data, permanently, in a file most
+people don't rigorously version-control. Two things follow from that,
+both decided before any real write code existed:
+
+- **RootsMagic must not be running at the same time.** Two writers on one
+  SQLite file -- RootsMagic's own desktop app and this server -- is a real
+  corruption risk, not a hypothetical one. `-write` refuses to start at all
+  if `RootsMagic.exe` appears to be running (checked via `tasklist`, a
+  built-in Windows command -- no new dependency). This is enforced as a
+  hard precondition, not a warning: the server exits with a clear error
+  rather than proceeding. See `cmd/server/rootsmagic_running_check.go` for
+  the exact mechanism and its real limits, both worth knowing:
+  - It only checks at startup. It cannot, and does not try to, protect
+    against someone opening RootsMagic *after* rmgedcomx has already
+    started with `-write`. That gap is real and currently unaddressed.
+  - It's meaningful only on Windows, where RootsMagic actually runs (a
+    no-op everywhere else).
+  - Unlike everything else in this project, this piece could not be
+    verified empirically during development -- it was written and tested
+    from Linux, which can run neither `tasklist` nor RootsMagic itself.
+    The code comment says this plainly. If you're relying on this check,
+    actually test it once on a real Windows machine (start `-write` with
+    RootsMagic open and confirm it refuses; close RootsMagic and confirm
+    it proceeds) rather than trusting it on the strength of the code
+    reading correctly.
+- **A backup happens automatically before this server's first write.**
+  `DB.EnsureBackup()` (`internal/rmdb/backup.go`) copies the source file to
+  a timestamped sibling (`royal92-backup-20260806-091724.rmtree`) the first
+  time it's called on a given connection -- once per server session, not
+  once per write, via `sync.Once`, so every write handler can call it
+  unconditionally without worrying about redundant copies. It defaults to
+  the same directory as the source file; that's a placeholder for a better
+  default (RootsMagic's own configured Backup folder, from
+  `RootsMagicUser.xml` -- see "Multimedia" above for the sibling
+  discussion about that file's Media Folder setting, which applies here
+  too), not a permanent design decision. This isn't a substitute for
+  RootsMagic's own backup feature, and doesn't try to be -- it's a
+  narrower, automatic safety net specifically for changes made by this
+  server, so a mistake here (a bug, a bad request, this server writing
+  something RootsMagic doesn't expect) can always be undone by restoring
+  one file, without depending on anyone having remembered to make their
+  own backup first.
+
+### Stage 0 -- plumbing only, no capability (done)
+
+`-write` threads a `readOnly bool` all the way down to `rmdb.Open`, which
+now opens `mode=rw` (with a 5-second `busy_timeout`, so a brief, incidental
+lock -- e.g. RootsMagic autosaving, if it were open, which the check above
+means it shouldn't be -- causes a short wait-and-retry rather than an
+immediate failure) instead of `mode=ro`. `DB.ReadOnly()` and `DB.Path()`
+expose that state and the source path for later stages to use. With
+`-write` off, this changes nothing observable; with it on, the underlying
+connection can write, but nothing yet asks it to -- no HTTP write handlers
+existed at this stage. Verified directly at the SQL level (not just
+assumed from the code): a raw `UPDATE` against a read-only connection to a
+real database failed with `attempt to write a readonly database`; the
+identical `UPDATE` against a write-mode connection to the same file
+succeeded.
+
+The startup table (`cmd/server/main.go`, `printCollectionTable`) also
+gained a `UNIQUE ID` column (RootsMagic's own per-database identifier --
+see "Multiple databases / Collections" above for what it is and why it's
+useful alongside the human-recognizable but unstable Collection id) and a
+prominent read-only/`*** WRITE MODE ENABLED ***` banner, since write mode
+is a whole-server setting, not a per-collection one.
+
+### Stage 1 -- UPDATE, `Place` and `Source` (done)
+
+`POST /collections/{id}/places/{id}` and `POST
+/collections/{id}/source-descriptions/{id}`, per RS spec Sections 4.16.2
+and 4.23.2 ("Update a place description" / "Update a source description",
+both `OPTIONAL`) and Section 8 ("Updating Application States": a data
+element supplying its own `id` is an update candidate for that id). A
+successful update returns `204 No Content`, exactly as the spec says it
+SHOULD; an invalid request returns `400` with an
+[RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) body explaining what
+was wrong, also per spec ("a `400` response code is RECOMMENDED").
+
+These two were chosen first specifically *because* they're structurally
+simple (`PlaceTable`/`SourceTable` are single tables, with none of
+`Person`'s or `Relationship`'s cross-table consistency concerns) -- the
+point of this stage was to prove out the reusable plumbing (request
+parsing, the write-route registration pattern, transactions, response
+codes, the backup call) against the lowest-risk case, not because these
+two resources matter most. They may not even end up mattering much in
+practice: GEDAM (the DAM tool this server was originally built to support)
+doesn't need to modify `Place` or `Source` at all -- but since they were
+cheap to add correctly once the plumbing existed, they're here anyway.
+
+**Write route registration is gated by `Server.resourceHandler()` checking
+`!s.db.ReadOnly()` directly** -- not a separately-tracked "is this
+collection writable" setting that could drift out of sync with the
+database connection's own actual state. When false, `POST
+/places/{id}`/`POST /source-descriptions/{id}` simply aren't registered at
+all, so a request there gets the same automatic `405` (with the correct
+`Allow` header) as any other write this server doesn't implement -- there
+is no code path by which a write can reach the database in read-only mode;
+it's not merely checked at runtime, the handler function doesn't exist to
+be called.
+
+**What's writable, and what deliberately isn't yet:**
+
+- `Place`: `names[0].value` -> `PlaceTable.Name`; `latitude`/`longitude`
+  together -> `PlaceTable.Latitude`/`Longitude` (converted to RootsMagic's
+  own decimal-degrees-times-1e7 integer encoding); `notes[0].text` ->
+  `PlaceTable.Note`. Providing exactly one of `latitude`/`longitude`
+  without the other is rejected with `400` rather than silently storing a
+  nonsensical half-coordinate.
+
+  **The decimal-to-integer conversion uses `math.Round`, not a bare
+  `int64(...)` conversion** -- found from a real golden-file mismatch, not
+  caught in advance: `44.817778 * 1e7` evaluates to
+  `448177779.9999999404` in float64 arithmetic, not exactly `448177780.0`
+  (most decimal fractions have no exact binary representation), and
+  `int64(...)` truncates toward zero rather than rounding, so a bare
+  conversion silently rounded real coordinates down by up to 1 in the
+  last digit (roughly a centimeter) depending on which specific decimal
+  values happened to land on the wrong side of a float64 rounding
+  boundary -- confirmed directly against this exact value, not a
+  generic/theoretical concern.
+
+  **A coordinates change also sets `LatLongExact = 1`** (`PlaceTable`),
+  confirmed against a real captured diff -- deliberately different from
+  the `0` `UpdatePlace` writes on a `Name` change (see its own doc
+  comment for the full reasoning): this server has just as much basis to
+  assert "these coordinates are exact" as RootsMagic's own manual
+  coordinate-entry UI does, since a client explicitly provided them
+  through this API, the same kind of deliberate, explicit value either
+  way. If a single request changes both `Name` and coordinates, the
+  coordinates' `LatLongExact = 1` is appended after (and therefore wins
+  over) the `Name` branch's `LatLongExact = 0` -- confirmed empirically
+  that SQLite resolves a column set twice in one `UPDATE` by taking the
+  last occurrence, so this ordering is load-bearing, not incidental.
+
+  **`LatLongExact` turned out to belong with `fsID`/`anID`/`IsPrivate`
+  after all -- excluded from the `sqldiff` golden-file comparison
+  entirely, not compared directly.** An earlier version of this section
+  said the opposite: that a coordinates change makes it a real,
+  observable transition `sqldiff` can verify, unlike the always-`0`
+  fields. That reasoning held for a coordinates-only change, but two
+  otherwise-identical real captures -- the same "change every field at
+  once" edit, applied to two different places -- disagreed with each
+  other on `LatLongExact` alone; everything else about them matched
+  exactly. RootsMagic's own value for it is downstream of the same
+  non-deterministic FamilySearch/Ancestry lookup as `fsID`/`anID` (see
+  TESTING.md's "Non-deterministic fields" section for the full captured
+  evidence), so there's no single correct value in a golden file to
+  compare against when `Name` and coordinates change together -- trying
+  to match one specific capture risks chasing what's actually just
+  network timing, not a real behavioral difference. This server's own
+  value is still fully deterministic and still verified, just directly
+  (`fieldCheck`/`verifyFields` in `cmd/server/main_test.go`) rather than
+  through `sqldiff`.
+- `Source`: `titles[0].value` -> `SourceTable.Name`; `notes[0].text` ->
+  `SourceTable.Comments`. **`citations` is deliberately rejected with
+  `400`** if present at all, rather than silently accepted and ignored, or
+  guessed at: this API's own `citations` output is `ActualText` and
+  `RefNumber` concatenated into one string (see "Fact type mapping"'s
+  sibling reasoning elsewhere in this file about not reusing ambiguous
+  mappings), and there's no way to safely split an arbitrary string back
+  into those two original fields. Getting this wrong would mean silently
+  corrupting a citation, which is worse than refusing outright. A future
+  revision could expose `ActualText`/`RefNumber` as genuinely separate
+  fields (on both the read and write sides) to resolve this properly,
+  rather than guessing now.
+
+**Every write handler decodes its request body via `decodeStrictJSON`
+(`internal/api/server.go`), not `json.Decoder.Decode` directly** -- it
+sets `DisallowUnknownFields`, so a field name a target type doesn't
+recognize is a `400`, not silently dropped. Found the hard way: a request
+using `{"value": "..."}` instead of `{"text": "..."}` on a `Note` decodes
+without error by default (the mistyped field is just ignored, leaving
+`Text` at its zero value), and if that happens to be the only field in
+the update, the request looks like a legitimate no-op and returns a
+misleading `204` -- the client's intended write never took effect, with
+no signal that anything went wrong. Confirmed directly: the exact request
+that caused this now returns `400` naming the specific unrecognized
+field (`json: unknown field "value"`), and a legitimate GET-then-echo-back
+request (real fields like `id`/`links`/`notes` all present together)
+still works normally -- `DisallowUnknownFields` only rejects names a type
+genuinely doesn't have, not the ordinary pattern of a client sending back
+more of a resource's own fields than strictly changed.
+
+**Update semantics: a field that's absent, or present-but-empty, is left
+unchanged -- there is currently no way to explicitly clear a field back to
+empty via this API.** This is a real, deliberate limitation, not an
+oversight: cleanly distinguishing "the client omitted this key" from "the
+client explicitly wants to blank it" requires either JSON presence
+detection against the raw request body (parse into
+`map[string]json.RawMessage` first, check key existence, then decode) or
+restructuring the existing output types to use pointers throughout, and
+Stage 1's whole point was to keep the first real write endpoint simple
+enough to get right on the first attempt. `latitude`/`longitude` are the
+one exception, and get this for free: `PlaceDescription.Latitude`/
+`Longitude` are already `*float64` (nil when a place has no coordinates,
+for output purposes), so Go's JSON decoding already distinguishes "key
+absent" from "key present" for those two fields specifically, without any
+extra code. If explicit field-clearing turns out to matter in practice,
+that's the point to revisit this, once there's a real use case driving the
+choice rather than a hypothetical one.
+
+**Fields RootsMagic itself touches as a side effect, that this server
+deliberately handles differently -- confirmed against real captured
+diffs, not assumed:**
+
+- **`fsID`/`anID`/`LatLongExact` (Place, only when `Name` changes)** are
+  reset to `0` -- see `UpdatePlace`'s own doc comment in
+  `internal/rmdb/writes.go` for the full account (why `0` is the correct
+  "never looked up" sentinel, confirmed exhaustively against all 922
+  places in `royal92.rmtree`; why clearing is more honest than leaving a
+  stale match once the name has changed).
+  - **A second real captured diff showed RootsMagic re-running its
+    FamilySearch/Ancestry lookup on *any* field edit -- a `Note`-only
+    change, not just `Name`.** Reasonable on RootsMagic's side (a fresh
+    match adds value regardless of which field triggered the save). This
+    server deliberately does *not* replicate that broader trigger: the
+    justification for clearing these fields is specifically that a stale
+    match against the *old name* is misleading once the name changes --
+    that reasoning doesn't apply when the name hasn't changed at all, so
+    `UpdatePlace` only touches `fsID`/`anID`/`LatLongExact` inside the
+    `Name != nil` branch, never on a `Note`-only or coordinates-only
+    update.
+  - **`fsID` can be negative** (a real captured value:
+    `fsID=-1184254214`) -- worth remembering if this area is touched
+    again, since it's an easy thing to get wrong in a regex or validation
+    check (and once was -- see the git history around
+    `cmd/server/main_test.go`'s `familySearchIDRegex`).
+- **`IsPrivate` (Source, unconditionally on every update)** is set to `0`.
+  The data dictionary documents this field as "not implemented," noting
+  only `0` has ever been observed. A real captured diff for this project
+  showed it flipping to `1` during a name-only edit, which contradicts
+  that documentation and doesn't have an obvious causal explanation --
+  quite possibly an artifact of that specific RootsMagic edit session
+  rather than deterministic behavior tied to the edit itself. Given a
+  field documented as unimplemented, with one observation that
+  contradicts the only documentation available, writing the
+  well-evidenced, only-ever-observed value is the more defensible choice
+  than reproducing an unexplained one-off.
+- **Verifying these specific fields (plus `LatLongExact` -- see below)
+  doesn't go through the `sqldiff` golden-file comparison at all**,
+  unlike every other field Stage 1 writes. `sqldiff` (like any
+  before/after diff) only reports columns whose value actually
+  *changed* -- and every place/source in `royal92.rmtree` already has
+  `fsID`/`anID`/`IsPrivate` at the same value (`0`) this server always
+  writes, so a same-value write is invisible to a diff regardless of
+  whether this server did anything right. `LatLongExact` is excluded for
+  a related but distinct reason (see below): this server's value for it
+  genuinely does vary by context, but RootsMagic's own real value is
+  itself non-deterministic, so there's no single correct captured value
+  to compare against. `cmd/server/main_test.go`'s golden `.sql` files
+  strip all four fields out of the comparison entirely (regex match
+  replaced with an empty string, not masked with a placeholder), and
+  `fieldCheck`/`verifyFields` query the resulting database directly
+  instead, asserting each one's actual expected value -- independent of
+  whatever the "before" state happened to be, or what RootsMagic itself
+  happened to produce in one particular capture.
+
+### `ConfigTable.DataRec` -- deliberately never written
+
+A real captured diff, for a plain "add a comment to a Source" edit,
+showed RootsMagic rewriting the whole of `ConfigTable.DataRec` -- a
+~15KB, undocumented XML blob (see "Multiple databases / Collections"
+above for the two other things this same blob holds: `UniqueID` and
+`RootPerson`). This server does not, and will not, write to it.
+
+Investigated before deciding that, not assumed: decoded the blob from
+both the golden file's captured "after" state and a completely unrelated
+reference copy of `royal92.rmtree`, and diffed them byte-for-byte --
+identical, all 15,192 bytes. That's the key piece of evidence: it means
+the one tag that had actually changed in the golden file's own
+before/after (`<MediaCollapsed_Citations>true</MediaCollapsed_Citations>`
+to `...false...`) matched whatever an entirely separate, previously
+untouched copy of the same file happened to already have, for reasons
+having nothing to do with the edit that was captured. Combined with what
+the tag name plainly suggests, and independent confirmation that
+RootsMagic's citation-editing UI does have a collapsible "Media list
+panel" (checked directly against RootsMagic's own published
+documentation, not just inferred) -- this is UI window/panel state, not
+genealogical data, and not a deterministic consequence of the specific
+edit that triggered its capture.
+
+Three separate reasons this stays out of scope, not just one:
+
+- **It's not data this server has any business asserting.** rmgedcomx is
+  a headless server with no UI of its own -- there's no panel to be
+  collapsed or expanded on its behalf, so there's nothing true to write
+  here even in principle.
+- **RootsMagic's own value for it isn't reliable evidence of anything**,
+  the same conclusion already reached for `IsPrivate` and the
+  `fsID`/`anID`/`LatLongExact` non-determinism (see above and TESTING.md's
+  "Non-deterministic fields" section) -- just reached here by a different
+  route (UI session state rather than a network race).
+- **The mechanism would be categorically riskier than anything else this
+  server writes.** Every other write is a single, well-understood column.
+  Touching `DataRec` at all would mean parsing an entire undocumented XML
+  document, mutating one element among 160+ others never individually
+  investigated, and re-serializing the whole thing byte-for-byte
+  correctly -- real risk of corrupting settings this project doesn't
+  understand, in service of a value that (per the two points above)
+  there's no reason to get right in the first place.
+
+`cmd/server/main_test.go`'s `configTableDataRecRegex` strips this column
+from *both* sides of the golden-file comparison, not just this server's
+actual output (unlike `fsID`/`anID`/`LatLongExact`/`IsPrivate`, which rely
+on whoever captured the golden file having removed them by hand) --
+deliberately more defensive, since a multi-kilobyte hex blob is a much
+easier thing to leave only partially cleaned up in a future capture than
+a short numeric field.
+
+Every write is wrapped in an explicit SQL transaction
+(`internal/rmdb/writes.go`), even though a single `UPDATE` statement is
+already atomic on its own without one -- introducing the pattern now,
+against the simplest possible case, means it's already proven correct by
+the time a later stage genuinely needs it (a multi-table `Person` write
+touching both `PersonTable` and `NameTable`, for instance, where a partial
+failure partway through would be a real problem without one).
+
+### Stage 2 -- Artifact location updates (done)
+
+GEDAM's actual requirements, clarified during Stage 1: updating a digital
+asset's stored path, and creating/editing/deleting links between media and
+the person/fact/event it documents -- notably, **not** creating new
+`Person`/`Relationship`/`Event` records, and not a general "source record"
+concept (GEDAM handles that independently of RootsMagic's own data model).
+That meaningfully narrowed what full write support actually needs to
+cover: `Artifacts` UPDATE (this stage) and `MediaLinkTable` CRUD (next)
+are the resources with a real, driving use case behind them, not
+`Person`/`Relationship` CREATE, which may end up out of scope entirely
+rather than merely a later stage.
+
+**`POST /collections/{id}/artifacts/{id}`** updates a multimedia item's
+stored location. The request body's `mediaPath` (a new, write-only,
+non-spec field on `SourceDescription` -- see its own doc comment in
+`internal/gedcomx/model.go`) is a real, absolute filesystem path, exactly
+as it exists on disk; the client never constructs RootsMagic's own path
+syntax itself. This server encodes it into RootsMagic's `?`-relative
+notation (`internal/rmdb/encodemediapath.go`), the same way `UpdatePlace`
+computes `Reverse` rather than expecting a client to.
+
+#### Why the Media Folder has to come from RootsMagic itself, not a flag
+
+`?` is the only one of RootsMagic's three path symbols (`*`/`~`/`?`) this
+server will ever *write* -- reasoned through directly, not just by
+elimination:
+
+- An absolute path is only meaningful on whichever machine typed it. Once
+  the client sending a write request is potentially a different machine
+  from the one running this server (which is potentially yet another
+  machine from wherever RootsMagic itself runs), an absolute path stops
+  meaning anything portable the moment it's written down.
+- `*` (relative to the database's own directory) and `~` (relative to a
+  home directory) both depend on machine-specific context a remote client
+  has no way to see or reconstruct -- it doesn't know, and structurally
+  can't know, where the database file lives on disk or whose home
+  directory is relevant.
+- `?` is different in kind, not just in degree: it isn't relative to a
+  filesystem location at all, it's relative to a named, centrally
+  configured setting. That's the one piece of context that can be resolved
+  on the server side alone, without the client needing to know anything
+  about the server's filesystem.
+
+But resolving `?` requires actually knowing the Media Folder's value, and
+the only place that value exists is `RootsMagicUser.xml` -- not the
+database, not something a client can reliably supply (see "Multimedia"
+above for where and how this was confirmed: `%APPDATA%\RootsMagic\Version
+N\RootsMagicUser.xml`, `<Folders><Media>`). For *reading*, a wrong
+`-media-folder` just means this server fails to find a file -- a
+contained, visible failure. For *writing*, a wrong assumption means
+writing a `?`-relative path that resolves correctly for this server but
+doesn't match what RootsMagic itself believes the Media Folder is --
+silently corrupting the link from RootsMagic's own point of view, not
+surfacing until someone opens the file in RootsMagic later and finds it
+broken. That asymmetry is why this isn't treated as a flag-level detail:
+
+- **`-write` and `-media-folder` are mutually exclusive.** Passing both is
+  refused at startup with a clear error, not silently resolved by picking
+  one -- supplying both suggests confusion about which is actually in
+  effect, not a deliberate override.
+- **`-write` reads the Media Folder itself**, straight from
+  `RootsMagicUser.xml` (`cmd/server/mediafolder_discovery.go`,
+  `discoverMediaFolder`), and refuses to start if it can't. Two real
+  locations are supported:
+  - **Windows**: `%APPDATA%\RootsMagic\Version N\RootsMagicUser.xml` --
+    confirmed directly against a real installation.
+  - **macOS**: `~/RootsMagic/Version N\RootsMagicUser.xml` -- based on
+    two community reports (RootsMagic's own forum: ["How to Change the
+    Location of RootsMagic settings folder on
+    Mac"](https://community.rootsmagic.com/t/how-to-change-the-location-of-rootsmagic-settings-folder-on-mac/15774),
+    and a support thread with a staff reply giving the exact path,
+    ["RM10 on Mac keeps closing
+    suddenly"](https://community.rootsmagic.com/t/rm10-on-mac-keeps-closing-suddenly/12794)).
+    Treat this with a bit more caution than the Windows location: it's a
+    community report, including one direct quote from RootsMagic's own
+    support staff, not something confirmed against a real Mac installation
+    the way the Windows path was.
+  - Anywhere else, `-write` refuses to start with a clear error explaining
+    why -- not a silent fallback to some guessed behavior.
+- **Multiple RootsMagic versions**: `RootsMagicUser.xml` lives under a
+  per-version folder (`Version 9`/`Version 10` in the confirmed examples),
+  so someone who's used more than one RootsMagic version could have more
+  than one, on either platform. The highest version number found is used
+  -- RootsMagic's schema migrations are understood to be one-directional,
+  so the highest version installed is presumed to be the one actually in
+  current use. If the found configurations' Media Folder values disagree
+  with each other, that's logged in detail (which versions, which values)
+  but isn't fatal; the highest version's value is used regardless. This
+  logic (`discoverMediaFolderIn`) is identical across Windows and macOS --
+  only the base directory differs between them, everything about
+  interpreting what's inside it is shared.
+- **`-bypass-os-check`** is a hidden flag -- deliberately not registered
+  via the `flag` package at all (see `extractBypassOSCheckFlag` in
+  `main.go`), so it never appears in `-h`/`--help` output. It forces
+  `discoverMediaFolder` to use the macOS-style discovery path regardless
+  of the actual platform. This is meaningful, not a no-op stand-in,
+  because `os.UserHomeDir()` returns a real, usable directory on any
+  platform -- so this is the genuine macOS convention, pointed at
+  whatever the current platform's actual home directory is, not a
+  simulated one. It exists specifically so write mode's Media Folder
+  discovery -- including the version-conflict handling above -- can be
+  exercised for real, end to end, from a development environment that's
+  neither Windows nor macOS, rather than only being testable by
+  constructing the `api`/`rmdb` layers directly and skipping
+  `discoverMediaFolder` entirely (which is what an earlier version of
+  this verification had to resort to). Confirmed working exactly this
+  way: two fake `RootsMagicUser.xml` files under `~/RootsMagic/Version
+  9/` and `~/RootsMagic/Version 10/` on a Linux machine, with
+  deliberately different Media Folder values, correctly produced the
+  version-conflict warning and picked Version 10's value; a subsequent
+  real `POST /artifacts/{id}` request, using that genuinely-discovered
+  folder, correctly updated a real database row. `-write` + `-media-folder`
+  together is still refused even with `-bypass-os-check` present -- the
+  bypass changes *how* the Media Folder is discovered, not whether a
+  manually supplied one can substitute for discovery. This is a
+  development/testing aid, not a supported way to run write mode in
+  production on an unsupported platform, and nothing else about write
+  mode is affected by it (the `RootsMagic.exe` check and the backup
+  mechanism are both untouched).
+
+#### `encodeMediaPath`: the reverse of reading, and why it's not `path/filepath`
+
+`ResolveMediaPath` (see "Multimedia" above) turns RootsMagic's `?`
+notation into a real path, for reads. `encodeMediaPath`
+(`internal/rmdb/encodemediapath.go`) does the reverse for writes: given a
+real path and the Media Folder, compute the `?`-relative `MediaPath` and
+`MediaFile` RootsMagic itself would produce. Deliberately implemented with
+explicit backslash normalization and manual string manipulation rather
+than the standard `path/filepath` package -- the same reasoning already
+applied to `ResolveMediaPath` and `collectionid.fileStem`: `path/filepath`
+behaves according to the *build* platform, not a chosen one, but this
+needs Windows path semantics specifically (backslashes, case-insensitive
+comparison) regardless of what platform this code happens to be compiled
+on. It's also what makes this function fully unit-testable on Linux
+(`encodemediapath_test.go`), including the real path pattern confirmed
+earlier against `royal92.rmtree` (`*\royal92\marriage-of-queen-victoria.jpg`)
+as one of the test cases, not just invented examples.
+
+A real path that isn't actually under the Media Folder is rejected
+(`ErrPathNotUnderMediaFolder`, surfaced as `400`) rather than written
+anyway as an absolute path -- writing anything else would break the one
+guarantee this whole mechanism exists to provide. The prefix check
+requires a genuine path-separator boundary, not just a string prefix match
+(`C:\tmp2\...` correctly does NOT match a Media Folder of `C:\tmp`) --
+confirmed with a dedicated test case, since this is exactly the kind of
+boundary bug that's easy to get subtly wrong.
+
+#### Verification, and what's still genuinely unverified
+
+Full, real, end-to-end verification (server startup through the HTTP
+request, using the real `-write ./rmgedcomx` binary, not a constructed
+test harness) is now possible on Linux, via `-bypass-os-check` -- this
+closes a gap from an earlier version of this section, which could only
+exercise the `api`/`rmdb` layers directly with a manually supplied Media
+Folder, skipping `discoverMediaFolder` (and its version-conflict handling)
+entirely. Confirmed this way, against real `royal92.rmtree` data and two
+deliberately-conflicting fake `RootsMagicUser.xml` files: the
+version-conflict warning fires correctly and picks the higher version's
+value; `M1`'s real `*\royal92\marriage-of-queen-victoria.jpg` correctly
+became `?\Weddings\victoria-albert.jpg` after a real HTTP request, using
+the genuinely-discovered Media Folder end to end, not a hand-supplied one;
+a path outside the Media Folder correctly `400`s with a clear explanation;
+a nonexistent artifact `404`s; a missing `mediaPath` and a body/URL id
+mismatch both `400` before any write is attempted; read-only mode still
+`405`s the identical request; `-write` + `-media-folder` together is
+still refused even with `-bypass-os-check` present; a missing
+`~/RootsMagic` directory produces a clear error rather than a confusing
+one; `-bypass-os-check` doesn't appear in `-h` output and is a silent
+no-op without `-write`.
+
+What's still genuinely unverified, and can't be from here: the *real*
+locations on a *real* Windows or macOS machine -- `%APPDATA%\RootsMagic\...`
+was confirmed against a real Windows installation earlier in this
+project, but `~/RootsMagic\...` on macOS is still only a community report
+(see above), not independently confirmed. `-bypass-os-check` proves the
+discovery *mechanism* is correct wherever it looks; it can't prove *where*
+it should be looking on a platform this project doesn't have direct
+access to. Same caveat as `rootsmagic_running_check.go`'s own doc comment
+-- please confirm the macOS location specifically on a real Mac before
+relying on it.
+
+### Stage 2b -- `MediaLinkTable` CRUD for `Person` (done)
+
+Deliberately split from the rest of Stage 2 into one entity at a time --
+`Person`, `Event`, and `Relationship` all need this, but doing all three
+at once would compound whatever issues came up in any one of them. This
+covers `Person` only.
+
+**`POST /collections/{id}/persons/{id}`** now accepts an updated `media`
+array, diffed against `MediaLinkTable` rather than replaced wholesale --
+entries newly present get a new row, entries newly absent get their row
+removed, entries in both are left completely untouched, including
+columns this server doesn't otherwise touch at all (see below). The
+shared diffing logic (`rmdb.UpdateOwnerMedia`) is parameterized by owner
+type/id specifically so `Event` and `Relationship` can reuse it directly
+when their turn comes, rather than reimplementing it.
+
+**The real `MediaLinkTable` schema turned out to have more in it than
+the earlier planning discussion assumed** -- `IsPrimary`, `Include1-4`,
+`RectLeft/Top/Right/Bottom`, `Comments`, on top of the core
+`MediaID`/`OwnerType`/`OwnerID`. Checked against the data dictionary
+before deciding anything: `Include2-4` and all four `Rect*` columns are
+documented as "Not implemented," safe to leave at `0` unconditionally.
+`IsPrimary` and `Include1` are real, though:
+
+- `IsPrimary`: "Primary Photo checkbox... Determines image displayed in
+  reports, the Pedigree view, and the People Side View pane." New links
+  always get `0` -- this server has no basis to assert a newly-created
+  link should be someone's primary photo, the same reasoning as `fsID`/
+  `anID` in `UpdatePlace`: it's a real editorial choice, not something to
+  claim on a user's behalf without evidence.
+- `Include1`: "Include in Scrapbook." Also always `0` on new links. There
+  is no GEDCOM X data type conceptually similar to RootsMagic's Scrapbook
+  at all -- checked the conceptual model specifically looking for one --
+  so this is **documented here as RootsMagic-only functionality this API
+  doesn't expose**, not a gap to close later. A newly-linked artifact
+  simply won't appear in the Scrapbook, or be treated as anyone's primary
+  photo, until a person sets that manually in RootsMagic itself.
+
+**Duplicate links**: `MediaLinkTable` has no uniqueness constraint on
+`(MediaID, OwnerType, OwnerID)` -- nothing stops the same artifact being
+linked to the same owner more than once (confirmed by deliberately
+creating that state and testing against it, not just reasoning about
+whether the schema allows it). Removing a media id removes *every*
+matching row, not just one, so a removal can't leave an orphaned
+duplicate behind.
+
+**Scoped to `media` only, not general `Person` editing.** `names`/
+`gender`/`facts`/`sources` aren't writable through this endpoint. A
+request that includes any of them isn't rejected -- a client following
+the ordinary GET-then-modify-then-POST pattern will naturally send
+whatever it got back, unchanged, and refusing that over fields this
+endpoint doesn't touch would just make the natural client pattern
+unusable for the one thing it does support -- but it is logged
+(`log.Printf` naming exactly which fields were present), specifically so
+there's a visible trail of real demand if this needs expanding later,
+rather than a silent gap nobody notices until someone asks why it doesn't
+work.
+
+**Doesn't bump the owner's own `UTCModDate`** (e.g. `PersonTable`'s), on
+purpose, not by oversight: unlike a `Name`/`Note`/coordinate edit, there's
+no real captured RootsMagic diff yet confirming whether attaching or
+detaching media touches the owner row's own timestamp the way editing one
+of its own fields does. Asserting that without evidence would be exactly
+the kind of unverified claim this project has consistently avoided
+elsewhere -- `ConfigTable`'s own `UTCModDate` is still bumped, since
+that's confirmed to happen on every write regardless of what changed.
+
+**Verified directly, not just unit-tested**: attaching `M1` (real data,
+previously only linked to the marriage event) to a person correctly
+creates a new row with `IsPrimary=0`/`Include1=0`, while the pre-existing
+event link survives completely untouched; detaching correctly removes
+only the intended row; a request naming a nonexistent artifact is
+rejected atomically -- confirmed the *other*, valid artifact in the same
+request does **not** get linked either, not just that the invalid one is
+rejected; a nonexistent person 404s; a body/URL id mismatch 400s;
+read-only mode still 405s the identical request; sending `names` alongside
+`media` succeeds and produces the expected log line, not a rejection; an
+actually-unknown field still 400s via `decodeStrictJSON`.
+
+### Stage 2c -- `MediaLinkTable` CRUD for `Event` (done)
+
+The small increment Stage 2b's own "What's next" anticipated: `POST
+/collections/{id}/events/{id}`, same shape as `Person`'s, reusing
+`rmdb.UpdateOwnerMedia` unchanged (`OwnerTypeEvent` instead of
+`OwnerTypePerson` is the only difference at the data layer). Unsupported
+fields for `Event` are `type`/`date`/`place`/`roles`/`sources`/`notes` --
+logged, not rejected, same reasoning as `Person`.
+
+Verified the same way, against real data: `M1` (already linked to Event
+5049, the marriage, in `royal92.rmtree`) moved to a different,
+previously-unlinked event via a real HTTP request; Event 5049's own
+original link independently detached by a separate request and confirmed
+untouched by the first one; re-sending an already-linked media id doesn't
+create a duplicate row (confirmed by `LinkID` staying the same across
+both calls, not just that the end state looked right); nonexistent
+artifact/event, id mismatch, read-only mode, and the unknown-field
+rejection all behave identically to `Person`'s. A dedicated
+`rmdb`-level test (`TestUpdateOwnerMediaWorksForEventOwners`) exists
+specifically to confirm the shared core isn't accidentally
+`Person`-specific, not just that `Event`'s own HTTP layer happens to
+work.
+
+### GEDAM specification review
+
+A working draft of GEDAM's own specification (the DAM client this project
+exists to serve) was reviewed directly against rmgedcomx's actual current
+behavior, not against what either side assumed about the other. Two
+things came out of that review as real, concrete follow-on work (below);
+a few other findings were spec-side issues (`sources`/`media`
+terminology predating the split, `Fact`/`Event` naming) with nothing for
+rmgedcomx to change, and a couple of GEDAM's stated "enhancement needed"
+asks (the startup table's `UniqueID` column, `Collection.identifiers`)
+turned out to already be shipped.
+
+### Write availability now re-checked periodically, not just at startup
+
+**The problem, precisely stated**: SQLite's own file locking already
+prevents genuine data corruption from two processes writing at once --
+that was never the actual risk. The real risk is RootsMagic itself
+receiving a `SQLITE_BUSY` error in a code path it was never written to
+expect, with unknown consequences -- and the original `-write` design
+(`checkRootsMagicNotRunning`, checked exactly once, in `main()`, before
+this server starts accepting any requests) can't protect against
+RootsMagic being opened *after* this server already started in write
+mode. That gap matters specifically because GEDAM (see above) is a
+long-running background service, potentially running for days at a
+stretch, not a short CLI invocation -- a startup-only check has no way
+to ever notice RootsMagic showing up partway through that lifetime.
+
+**The fix**: every write handler now goes through `requireWriteAllowed`
+(`internal/api/server.go`), consulting a new `WriteGuard` interface on
+top of (not instead of) the existing `db.ReadOnly()` gate. The concrete
+implementation (`cmd/server/writeguard.go`) re-checks whether
+RootsMagic is running, rate-limited to once per 10 seconds and only
+triggered by an actual write attempt (not a background timer) -- by
+explicit design: writes from GEDAM are expected to be infrequent but
+occasionally bulk (e.g. relocating every artifact's path at once), and
+10 seconds is judged fast enough to catch RootsMagic before it's itself
+ready to attempt a write, without shelling out to `tasklist` on every
+single request regardless of whether anything is actually happening.
+
+**Once tripped, it latches permanently** -- every write for the rest of
+this server process's life gets `405`, even after RootsMagic later
+closes again, requiring a restart to resume. Deliberately the simpler of
+two reasonable designs (the alternative, re-checking and auto-recovering
+once RootsMagic closes, was explicitly set aside for now): a person
+should never be left wondering whether a write might silently start
+working again on its own while they're still unsure what happened.
+`isRootsMagicRunning` (`cmd/server/rootsmagic_running_check.go`) was
+factored out as the shared detection primitive behind both the original
+startup check and this new one, so each can build its own contextually
+correct message rather than sharing text written for only one of the two
+situations.
+
+The tripped response reuses the exact shape a genuinely read-only
+server already returns for the identical request -- `405`, `Allow: GET,
+HEAD`, the same RFC 7807 error body -- deliberately, so "this server
+started read-only" and "this server was writable but RootsMagic showed
+up" look identical from a client's point of view and need no second
+error-handling path. A real, if easy-to-miss, bug was caught before this
+shipped: passing a nil `*writeGuard` directly into `Config.WriteGuard`
+(an interface field) does **not** produce a nil interface in Go -- a
+classic trap, confirmed by testing it directly rather than trusting the
+reasoning. `cmd/server/main.go` only assigns the field when the concrete
+guard is genuinely non-nil, keeping `Config.WriteGuard` a true nil
+interface (and therefore correctly bypassed by `requireWriteAllowed`) in
+read-only mode. One shared guard instance is constructed once and passed
+into every collection's `Config`, not one per collection -- RootsMagic
+running is a whole-machine condition, so every collection needs to see
+the same tripped state at the same moment, not learn about it on its own
+independently-timed schedule.
+
+Verified with a fake `WriteGuard` standing in for the real
+process-checking logic (which can't itself be exercised outside a real
+Windows machine): confirmed a nil guard doesn't panic, an allowing guard
+lets a write through normally, and a tripped guard returns exactly the
+expected `405`/`Allow`/error-body shape. The rate-limiting and latching
+state machine itself (`cmd/server/writeguard_test.go`) is unit-tested
+with an injectable check function, deterministically -- confirmed
+directly, not just reasoned about: three rapid calls trigger exactly one
+underlying check; waiting past the interval triggers a second; a tripped
+guard stays tripped and never re-checks again even after the interval
+passes and even though the underlying condition is still "found running"
+each time; a failure in the check itself fails open rather than blocking
+writes over an unrelated problem.
+
+### Reverse lookup: what references a given artifact
+
+GEDAM's own role-resolution algorithm (for computing its `Family`/
+`Individual` folder views) needs to answer "which people, relationships,
+events, and places reference this specific artifact" -- and there was no
+way to answer that efficiently. `buildSourcesAndMedia` only ever
+traverses forward (a given owner -> its sources/media); nothing let a
+client start from an artifact and find its owners without enumerating
+every `Person`/`Relationship`/`Event` in a collection and checking each
+one's own `media` array by hand, which doesn't scale past a small
+sample file.
+
+Three new, non-spec extension endpoints close that gap: `GET
+/artifacts/{id}/subjects` (every `Person`, `Relationship`, `Event`, and
+`PlaceDescription` referencing this artifact), and `/persons`/`/events`/
+`/relationships` (the same lookup, filtered to one type). Response shape
+is a lightweight reference list (`gedcomx.SubjectReference`/
+`SubjectReferencesDocument`), not embedded full resources -- deliberately,
+matching GEDAM's own stated pattern of resolving each distinct context
+independently: a caller that needs full details fetches them separately
+via each reference's `href`. `resourceType` reuses the existing
+`ResourceType*` URI constants already defined for `CollectionContent`,
+rather than inventing a second vocabulary for the same four data types.
+
+The underlying traversal (`rmdb.OwnersOfMedia`) is the reverse of
+`buildSourcesAndMedia`'s own two-hop walk, structurally: direct
+`MediaLinkTable` rows naming the artifact, plus (since a real file's
+media is more often attached to a *citation* than directly to what it
+documents -- see "Multimedia" above) a second hop through
+`CitationLinkTable` for any citation the artifact is attached to. Two
+owner types get special handling before a result is ever returned, not
+passed through as-is:
+
+- **`OwnerTypeName`** isn't a Subject with its own resource in this API
+  (a name is a sub-part of a `Person`) -- resolved up to its owning
+  `Person` via `NameTable.OwnerID`, confirmed against real data to
+  actually hold the owning `PersonID` despite the generic column name.
+  An orphaned name reference is skipped, not treated as a request
+  failure.
+- **`OwnerTypeSource`** (media attached directly to a bibliographic
+  source record) is dropped outright -- not a `Subject` type this API
+  exposes a `media` field for at all.
+
+Verified thoroughly against real and deliberately-constructed data, not
+simulated: `M1`'s existing real link to `royal92.rmtree`'s marriage
+event, confirmed correctly returned before touching anything; attached
+to a person via the real `POST /persons/{id}` write path, confirmed both
+old and new links appear together and each type-filtered endpoint
+correctly narrows the result; a nonexistent artifact 404s. The
+citation/name-resolution path needed real care: an initial test using
+one of `royal92.rmtree`'s two real citations produced thousands of
+results in the raw response, which turned out to be correct, not a
+bug -- that citation turned out to be a widely-shared "base import"
+citation referenced by 11,698 separate rows, confirmed by direct count
+rather than assumed. A
+clean, deliberately small, synthetic scenario (one citation, cited by
+exactly one name) gave an unambiguous, readable confirmation instead.
+`internal/rmdb/reverselookup_test.go` covers the direct-link, via-citation
+plus Name resolution, direct-Family-link, Source-exclusion, and
+deduplication (the same Subject reached via two separate citation paths
+must appear exactly once) cases directly against real data, independent
+of the HTTP layer.
 
 ## RootsMagic version handling
 

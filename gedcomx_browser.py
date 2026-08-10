@@ -1,12 +1,15 @@
+import calendar
+import json
+import logging
+import re
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
 import tkinter.font as tkfont
-import urllib.request
 import urllib.error
 import urllib.parse
-import json
-import re
-import calendar
+import urllib.request
+from tkinter import messagebox, scrolledtext, ttk
+
+logger = logging.getLogger(__name__)
 
 try:
     from tkintermapview import TkinterMapView
@@ -50,6 +53,13 @@ class GedcomXBrowserApp:
         self.descendancy_active_family_index = 0
         self.descendancy_active_child = None
         self.descendancy_grandchildren = []
+
+        # Collection-level rels that point at a single Collection resource
+        # (itself, or a parent/sibling collection) rather than a list of many
+        # browsable items -- these don't fit the Left Pane list metaphor at all
+        # (their document has a "collections" key, not persons/places/etc.), so
+        # they're opened as the Active Resource instead of fed to the list.
+        self.NON_LIST_COLLECTION_RELS = {"collection", "subcollections"}
 
         self.is_busy = False
 
@@ -359,6 +369,7 @@ class GedcomXBrowserApp:
                     if combo_values:
                         self.show_notification(f"Connected! {len(combo_values)} collection(s) found. Select one from the menu.", "success")
         except Exception as e:
+            logger.exception("Could not connect to server")
             self.show_notification(f"Could not connect to server: {e}", "error")
 
     def on_collection_selected(self, event):
@@ -398,14 +409,8 @@ class GedcomXBrowserApp:
                     self.on_collection_link_selected(None)
 
         except Exception as e:
+            logger.exception("Could not load collection details")
             self.show_notification(f"Could not load collection details: {e}", "error")
-
-    # Collection-level rels that point at a single Collection resource
-    # (itself, or a parent/sibling collection) rather than a list of many
-    # browsable items -- these don't fit the Left Pane list metaphor at all
-    # (their document has a "collections" key, not persons/places/etc.), so
-    # they're opened as the Active Resource instead of fed to the list.
-    NON_LIST_COLLECTION_RELS = {"collection", "subcollections"}
 
     def on_collection_link_selected(self, event):
         """Triggered when a persistent Collection-level link is selected."""
@@ -463,6 +468,7 @@ class GedcomXBrowserApp:
                     )
 
         except Exception as e:
+            logger.exception("Error loading collection list")
             self.show_notification(f"Error loading collection list: {e}", "error")
         finally:
             self.is_fetching_page = False
@@ -518,7 +524,7 @@ class GedcomXBrowserApp:
 
                 raw_data = response.read().decode('utf-8')
                 if not raw_data.strip():
-                    self.show_notification(f"HTTP 204 No Content: Empty response body received.", "warning")
+                    self.show_notification("HTTP 204 No Content: Empty response body received.", "warning")
                     return
 
                 self.current_document = json.loads(raw_data)
@@ -555,10 +561,11 @@ class GedcomXBrowserApp:
 
         except urllib.error.HTTPError as e:
             if e.code == 204:
-                self.show_notification(f"HTTP 204 No Content: The requested relationship or entity does not exist.", "warning")
+                self.show_notification("HTTP 204 No Content: The requested relationship or entity does not exist.", "warning")
             else:
                 self.show_notification(f"HTTP Error {e.code}: {e.reason}", "error")
         except Exception as e:
+            logger.exception(f"Error navigating to {href}")
             self.show_notification(f"Error navigating to {href}: {e}", "error")
         finally:
             self.set_busy(False)
@@ -676,7 +683,7 @@ class GedcomXBrowserApp:
             name = person.get('display', {}).get('name', 'Unknown Name')
             if name == 'Unknown Name':
                 try: name = person['names'][0]['nameForms'][0]['fullText']
-                except: pass
+                except Exception: logger.exception(f"Failed to extract name for person {pid}")
             tree_id = self.entity_tree.insert("", tk.END, values=("Person", pid, name))
             self.loaded_entities[tree_id] = ("Person", person)
 
@@ -684,7 +691,7 @@ class GedcomXBrowserApp:
             pid = place.get('id', 'Unknown')
             name = "Unknown Place"
             try: name = place['names'][0]['value']
-            except: pass
+            except Exception: logger.exception(f"Failed to extract name for place {pid}")
             tree_id = self.entity_tree.insert("", tk.END, values=("Place", pid, name))
             self.loaded_entities[tree_id] = ("Place", place)
 
@@ -692,7 +699,7 @@ class GedcomXBrowserApp:
             sid = src.get('id', 'Unknown')
             title = "Unknown Source"
             try: title = src['titles'][0]['value']
-            except: pass
+            except Exception: logger.exception(f"Failed to extract title for source {sid}")
             tree_id = self.entity_tree.insert("", tk.END, values=("Source", sid, title))
             self.loaded_entities[tree_id] = ("Source", src)
 
@@ -855,11 +862,11 @@ class GedcomXBrowserApp:
 
         if name == 'Unknown Name':
             try: name = person_data['names'][0]['nameForms'][0]['fullText']
-            except: pass
+            except Exception: logger.exception(f"Failed to extract name for person {person_data.get('id', 'Unknown')}")
 
         if gender == 'Unknown Gender':
             try: gender = person_data['gender']['type'].split('/')[-1]
-            except: pass
+            except Exception: logger.exception(f"Failed to extract gender for person {person_data.get('id', 'Unknown')}")
 
         role_text = role_override if role_override else ("Active Person" if is_selected else "Person")
         lbl_role = tk.Label(card, text=role_text.upper(), font=("Arial", 8, "bold"), fg="#2b5c8f" if is_selected else "gray", bg=bg_color)
@@ -924,7 +931,7 @@ class GedcomXBrowserApp:
         if href:
             self.navigate_to(href, navigation_mode="new")
         else:
-            self.show_notification(f"Could not open person: no person/self link was supplied.", "warning")
+            self.show_notification("Could not open person: no person/self link was supplied.", "warning")
 
     def show_person_detail_tab(self, person_data):
         """Renders person_data into the Person tab and switches to it. Used
@@ -980,13 +987,17 @@ class GedcomXBrowserApp:
         name = display.get('name')
         if not name:
             try: name = person_data['names'][0]['nameForms'][0]['fullText']
-            except Exception: name = None
+            except Exception:
+                logger.exception(f"Failed to extract name for person {person_data.get('id', 'Unknown')}")
+                name = None
         self.person_name_label.config(text=name or "Unknown Name")
 
         gender = display.get('gender')
         if not gender:
             try: gender = person_data['gender']['type'].split('/')[-1]
-            except Exception: gender = None
+            except Exception:
+                logger.exception(f"Failed to extract gender for person {person_data.get('id', 'Unknown')}")
+                gender = None
 
         stats_parts = []
         if gender: stats_parts.append(f"Gender: {gender}")
@@ -999,7 +1010,9 @@ class GedcomXBrowserApp:
         alt_names = []
         for n in person_data.get('names', []):
             try: full_text = n['nameForms'][0]['fullText']
-            except Exception: full_text = None
+            except Exception:
+                logger.exception(f"Failed to extract name for person {person_data.get('id', 'Unknown')}")
+                full_text = None
             if full_text and full_text != name:
                 label = f"{n['type'].split('/')[-1]} name" if n.get('type') else "Alternate name"
                 alt_names.append(f"{label}: {full_text}")
@@ -1128,8 +1141,7 @@ class GedcomXBrowserApp:
                 person_birth_date = fact.get('date')
             elif label == 'Death':
                 key = self._date_sort_key(fact.get('date'))
-                if key < person_death_key:
-                    person_death_key = key
+                person_death_key = min(person_death_key, key)
         # True only when this person's own death has a usable date -- that's
         # the cutoff for "during this person's lifetime" below. If it's
         # unknown (still living, or a death with no parseable date), there's
@@ -1163,7 +1175,7 @@ class GedcomXBrowserApp:
             spouse_name = spouse.get('display', {}).get('name', 'Unknown Name')
             if spouse_name == 'Unknown Name':
                 try: spouse_name = spouse['names'][0]['nameForms'][0]['fullText']
-                except Exception: pass
+                except Exception: logger.exception(f"Failed to extract name for spouse {spouse.get('id', 'Unknown')}")
             for fact in (rel.get('facts', []) if rel else []):
                 fact_type = fact.get('type', '')
                 label = fact_type.split('/')[-1] if fact_type else "Marriage"
@@ -1182,7 +1194,7 @@ class GedcomXBrowserApp:
             child_name = child.get('display', {}).get('name', 'Unknown Name')
             if child_name == 'Unknown Name':
                 try: child_name = child['names'][0]['nameForms'][0]['fullText']
-                except Exception: pass
+                except Exception: logger.exception(f"Failed to extract name for child {child.get('id', 'Unknown')}")
             for fact in child.get('facts', []):
                 fact_type = fact.get('type', '')
                 if (fact_type.rsplit('/', 1)[-1] if fact_type else '') != 'Birth':
@@ -1206,7 +1218,7 @@ class GedcomXBrowserApp:
             member_name = member.get('display', {}).get('name', 'Unknown Name')
             if member_name == 'Unknown Name':
                 try: member_name = member['names'][0]['nameForms'][0]['fullText']
-                except Exception: pass
+                except Exception: logger.exception(f"Failed to extract name for family member {member.get('id', 'Unknown')}")
             for fact in member.get('facts', []):
                 fact_type = fact.get('type', '')
                 if (fact_type.rsplit('/', 1)[-1] if fact_type else '') != 'Death':
@@ -1270,7 +1282,9 @@ class GedcomXBrowserApp:
         name = display.get('fullName') or display.get('name')
         if not name:
             try: name = place_data['names'][0]['value']
-            except Exception: name = "Unknown Place"
+            except Exception:
+                logger.exception(f"Failed to extract name for place {place_data.get('id', 'Unknown')}")
+                name = "Unknown Place"
         self.place_title_label.config(text=name)
 
         subtitle_parts = []
@@ -1282,7 +1296,7 @@ class GedcomXBrowserApp:
             if note_text:
                 subtitle_parts.append(note_text)
         except Exception:
-            pass
+            logger.exception(f"Failed to extract note for place {place_data.get('id', 'Unknown')}")
         self.place_subtitle_label.config(text="  •  ".join(subtitle_parts))
 
         lat = place_data.get('latitude')
@@ -1364,6 +1378,7 @@ class GedcomXBrowserApp:
             return result
 
         except Exception as e:
+            logger.exception(f"Could not load {relation} for this person.")
             self.show_notification(f"Could not load {relation} for this person: {e}", "warning")
 
         return []
@@ -1418,7 +1433,7 @@ class GedcomXBrowserApp:
         name = spouse.get('display', {}).get('name', 'Unknown Name')
         if name == 'Unknown Name':
             try: name = spouse['names'][0]['nameForms'][0]['fullText']
-            except Exception: pass
+            except Exception: logger.exception(f"Failed to extract name for spouse {spouse.get('id', 'Unknown')}")
         return f"⚭ {name} ({count})"
 
     def on_family_switch(self):
@@ -1738,6 +1753,7 @@ class GedcomXBrowserApp:
                     raw_data = response.read().decode("utf-8")
                     persons = json.loads(raw_data).get("persons", []) if raw_data.strip() else []
         except Exception as e:
+            logger.exception("Could not load ancestry data.")
             self.show_notification(f"Could not load ancestry data: {e}", "warning")
             self._render_ancestry_empty_state("Could not load ancestry data for this resource.")
             return
@@ -1854,7 +1870,7 @@ class GedcomXBrowserApp:
         name = display.get('name', 'Unknown Name')
         if name == 'Unknown Name':
             try: name = person_data['names'][0]['nameForms'][0]['fullText']
-            except Exception: pass
+            except Exception: logger.exception(f"Failed to extract name for person {person_data.get('id', 'Unknown')}")
 
         if compact:
             # Generations 4+ : name only, no room for a second line. No

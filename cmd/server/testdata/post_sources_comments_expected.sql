@@ -1,0 +1,2 @@
+UPDATE ConfigTable SET UTCModDate=[TIMESTAMP_UPDATED] WHERE RecID=1;
+UPDATE SourceTable SET Comments='Added comment.', UTCModDate=[TIMESTAMP_UPDATED] WHERE SourceID=2;

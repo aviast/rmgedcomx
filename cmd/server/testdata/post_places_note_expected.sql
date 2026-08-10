@@ -1,0 +1,2 @@
+UPDATE ConfigTable SET UTCModDate=[TIMESTAMP_UPDATED] WHERE RecID=1;
+UPDATE PlaceTable SET Note='Updated note', UTCModDate=[TIMESTAMP_UPDATED] WHERE PlaceID=423;

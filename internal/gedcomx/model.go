@@ -135,17 +135,23 @@ type DisplayProperties struct {
 // Person is a description of a person, per the GEDCOM X Conceptual Model,
 // plus the RS extensions `living` and `display` (Section 3.4).
 type Person struct {
-	ID          string             `json:"id"`
-	Identifiers Identifiers        `json:"identifiers,omitempty"`
-	Living      *bool              `json:"living,omitempty"`
-	Private     bool               `json:"private,omitempty"`
-	Gender      *Gender            `json:"gender,omitempty"`
-	Names       []Name             `json:"names,omitempty"`
-	Facts       []Fact             `json:"facts,omitempty"`
-	Sources     []SourceReference  `json:"sources,omitempty"`
-	Notes       []Note             `json:"notes,omitempty"`
-	Display     *DisplayProperties `json:"display,omitempty"`
-	Links       Links              `json:"links,omitempty"`
+	ID          string            `json:"id"`
+	Identifiers Identifiers       `json:"identifiers,omitempty"`
+	Living      *bool             `json:"living,omitempty"`
+	Private     bool              `json:"private,omitempty"`
+	Gender      *Gender           `json:"gender,omitempty"`
+	Names       []Name            `json:"names,omitempty"`
+	Facts       []Fact            `json:"facts,omitempty"`
+	Sources     []SourceReference `json:"sources,omitempty"`
+	// Media holds illustrative artifacts (photos, scans, ...) -- distinct
+	// from Sources (bibliographic evidence), per the Subject data type's
+	// own definition. See SCOPE.md's "Sources versus media" section for
+	// why these were combined in an earlier version of this server, and
+	// why that turned out to be wrong.
+	Media   []SourceReference  `json:"media,omitempty"`
+	Notes   []Note             `json:"notes,omitempty"`
+	Display *DisplayProperties `json:"display,omitempty"`
+	Links   Links              `json:"links,omitempty"`
 }
 
 // RelationshipType URIs, per the GEDCOM X Conceptual Model.
@@ -161,6 +167,8 @@ type Relationship struct {
 	Person1 ResourceReference `json:"person1"`
 	Person2 ResourceReference `json:"person2"`
 	Facts   []Fact            `json:"facts,omitempty"`
+	Sources []SourceReference `json:"sources,omitempty"`
+	Media   []SourceReference `json:"media,omitempty"`
 	Notes   []Note            `json:"notes,omitempty"`
 	Links   Links             `json:"links,omitempty"`
 }
@@ -179,6 +187,8 @@ type PlaceDescription struct {
 	Names     []TextValue             `json:"names"`
 	Latitude  *float64                `json:"latitude,omitempty"`
 	Longitude *float64                `json:"longitude,omitempty"`
+	Sources   []SourceReference       `json:"sources,omitempty"`
+	Media     []SourceReference       `json:"media,omitempty"`
 	Notes     []Note                  `json:"notes,omitempty"`
 	Display   *PlaceDisplayProperties `json:"display,omitempty"`
 	Links     Links                   `json:"links,omitempty"`
@@ -201,7 +211,18 @@ type SourceDescription struct {
 	Titles       []TextValue      `json:"titles,omitempty"`
 	Notes        []Note           `json:"notes,omitempty"`
 	SortKey      string           `json:"sortKey,omitempty"` // RS extension (Section 3.5)
-	Links        Links            `json:"links,omitempty"`
+	// MediaPath is write-only, artifacts-specific, and not part of the
+	// GEDCOM X spec (which has no concept of a raw filesystem path -- see
+	// SCOPE.md's "Write support" section for why one's needed anyway, and
+	// why "?" is the only encoding this server will ever write). Never
+	// populated on read: a real absolute path, from the client's own
+	// filesystem, sent when updating an artifact's location via
+	// POST /artifacts/{id}. Ignored entirely for updates to actual
+	// Source Descriptions (POST /source-descriptions/{id}), which share
+	// this same Go type for their response/request shape but have no
+	// concept of a file location.
+	MediaPath string `json:"mediaPath,omitempty"`
+	Links     Links  `json:"links,omitempty"`
 }
 
 // EntryList is a generic paged list envelope used for the Persons,
@@ -354,6 +375,31 @@ const (
 // specific than the generic SourceDescription identifier.
 const ResourceTypeDigitalArtifact = "http://gedcomx.org/DigitalArtifact"
 
+// SubjectReference and SubjectReferencesDocument are rmgedcomx's own
+// non-spec extension for reverse lookup: given an artifact, which
+// Subjects (Person, Relationship, Event, or PlaceDescription) reference
+// it? GEDCOM X RS defines no such operation -- SourceDescription has no
+// inverse "referencedBy" field in the conceptual model (see SCOPE.md's
+// "Sources versus media" section), so a client can only ever discover
+// this by enumerating every Subject in a collection and checking each
+// one's own media array, which doesn't scale. See
+// /artifacts/{id}/persons, /events, and /subjects in handlers.go.
+//
+// Deliberately a lightweight reference, not the embedded full resource:
+// a caller that needs the full resource fetches it separately via Href.
+// ResourceType uses the same ResourceType* URIs as CollectionContent
+// above, so a client already handling those doesn't need a second
+// vocabulary to recognize which kind of Subject each reference is.
+type SubjectReference struct {
+	ResourceType string `json:"resourceType"`
+	ID           string `json:"id"`
+	Href         string `json:"href"`
+}
+
+type SubjectReferencesDocument struct {
+	References []SubjectReference `json:"references"`
+}
+
 // CollectionsDocument is the `Collections` application state representation
 // (RS spec Section 4.4): a list of collections.
 type CollectionsDocument struct {
@@ -391,6 +437,7 @@ type Event struct {
 	Place   *PlaceReference   `json:"place,omitempty"`
 	Roles   []EventRole       `json:"roles,omitempty"`
 	Sources []SourceReference `json:"sources,omitempty"`
+	Media   []SourceReference `json:"media,omitempty"`
 	Notes   []Note            `json:"notes,omitempty"`
 	Links   Links             `json:"links,omitempty"`
 }
