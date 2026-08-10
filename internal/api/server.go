@@ -183,6 +183,7 @@ func (s *Server) resourceHandler() http.Handler {
 		mux.HandleFunc("POST /artifacts/{id}", s.requireWriteAllowed(s.handleUpdateArtifact))
 		mux.HandleFunc("POST /persons/{id}", s.requireWriteAllowed(s.handleUpdatePerson))
 		mux.HandleFunc("POST /events/{id}", s.requireWriteAllowed(s.handleUpdateEvent))
+		mux.HandleFunc("POST /relationships/{id}", s.requireWriteAllowed(s.handleUpdateRelationship))
 	}
 
 	return mux

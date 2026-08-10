@@ -610,6 +610,106 @@ func (s *Server) handleRelationship(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, gedcomx.RelationshipDocument{Relationships: []gedcomx.Relationship{rel}, Links: rel.Links})
 }
 
+// handleUpdateRelationship implements the Relationship state's POST
+// operation (RS spec Section 4.7.2: "Update a relationship", OPTIONAL)
+// -- only registered when this collection's database is writable.
+//
+// Scoped to ONLY media, same reasoning as handleUpdatePerson/
+// handleUpdateEvent (see their own doc comments) -- names/facts/sources
+// aren't writable, requests including them are logged rather than
+// rejected. One more restriction specific to Relationship: only the
+// "couple" kind is writable, never a parent-child relationship.
+// RootsMagic has no place to attach media to a specific parent-child
+// EDGE at all -- MediaLinkTable's OwnerType=Family, OwnerID=FamilyID
+// belongs to the family as a whole, the same identity the "couple"
+// relationship represents; there's no separate identity for "this one
+// parent-child pair" to attach anything to. A parent-child relationship
+// id is rejected with a clear 400, not silently redirected to the
+// family it belongs to, which would attach media to a different
+// relationship than the one actually named in the URL.
+//
+// Type/Person1/Person2 are deliberately NOT part of the ignored-fields
+// log below, unlike every other write handler's equivalent check --
+// checked directly against buildCoupleRelationship: all three are
+// always populated on every real Relationship this server returns
+// (Person1/Person2 are required by the RS spec itself), so a client
+// following the ordinary GET-then-modify-then-POST pattern will always
+// send back non-empty values for them regardless of intent. Logging
+// their presence would be noise on every single request, not a signal
+// of anything -- unlike Facts/Sources, which are genuinely optional and
+// only present when there's real data behind them.
+func (s *Server) handleUpdateRelationship(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	parsed, err := parseRelationshipID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if parsed.Kind != "couple" {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"media can only be linked to the couple relationship, not a specific parent-child relationship (%q) -- RootsMagic has no place to attach media to a parent-child pair on its own", id))
+		return
+	}
+	fam, err := s.db.GetFamily(parsed.FamilyID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if fam == nil || fam.FatherID == 0 || fam.MotherID == 0 {
+		notFound(w, "relationship", id)
+		return
+	}
+
+	var body gedcomx.RelationshipDocument
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body.Relationships) == 0 {
+		writeError(w, http.StatusBadRequest, "request body must include at least one relationship (RS spec Section 4.7.3)")
+		return
+	}
+	rel := body.Relationships[0]
+	if rel.ID != "" && rel.ID != id {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("body id %q doesn't match URL id %q", rel.ID, id))
+		return
+	}
+
+	var ignoredFields []string
+	if len(rel.Facts) > 0 {
+		ignoredFields = append(ignoredFields, "facts")
+	}
+	if len(rel.Sources) > 0 {
+		ignoredFields = append(ignoredFields, "sources")
+	}
+	if len(ignoredFields) > 0 {
+		log.Printf("POST /relationships/%s: ignoring unsupported field(s) %v -- only media is currently writable for Relationship, see SCOPE.md's \"Write support\" section", id, ignoredFields)
+	}
+
+	mediaIDs := make([]int64, 0, len(rel.Media))
+	for _, ref := range rel.Media {
+		mid, err := mediaIDFromReference(ref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid media reference: %v", err))
+			return
+		}
+		mediaIDs = append(mediaIDs, mid)
+	}
+
+	if s.ensureBackupForWrite(w) != nil {
+		return
+	}
+	if err := s.db.UpdateOwnerMedia(rmdb.OwnerTypeFamily, parsed.FamilyID, mediaIDs); err != nil {
+		if errors.Is(err, rmdb.ErrArtifactNotFound) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // --- Places ---
 
 func (s *Server) handlePlaces(w http.ResponseWriter, r *http.Request) {

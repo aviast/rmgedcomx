@@ -1303,6 +1303,77 @@ deduplication (the same Subject reached via two separate citation paths
 must appear exactly once) cases directly against real data, independent
 of the HTTP layer.
 
+### Stage 2d -- `MediaLinkTable` CRUD for `Relationship` (done)
+
+The gap GEDAM's own specification explicitly flagged (§9.4, §14 of its
+v0.10 draft): `Person` and `Event` media linking existed; `Relationship`
+(a couple with no specific fact attached) didn't, leaving §7.6's
+`Relationship` reference case readable via `/artifacts/{id}/relationships`
+but not creatable. Deferred back at Stage 2b for lack of a confirmed
+need -- GEDAM's spec now confirms the need directly, so this closes that
+gap.
+
+**`POST /relationships/{id}`**, reusing `rmdb.UpdateOwnerMedia` unchanged
+(`OwnerTypeFamily` instead of `OwnerTypePerson`/`OwnerTypeEvent` is the
+only difference at the data layer -- confirmed by a dedicated test,
+`TestUpdateOwnerMediaWorksForFamilyOwners`, the same pattern already used
+to confirm this for `Event`). Unsupported fields: `facts`/`sources` --
+logged, not rejected, same reasoning as `Person`/`Event`.
+
+**One restriction specific to `Relationship`, with no equivalent in
+`Person`/`Event`: only the "couple" relationship kind is writable, never
+a parent-child relationship.** A relationship id like `F1-FC2` (a
+specific parent-child pair) is rejected with a `400`, not silently
+redirected to the family it belongs to. This isn't an arbitrary
+restriction -- RootsMagic's own schema has no identity for "this specific
+parent-child pair" to attach anything to at all; `MediaLinkTable`'s
+`OwnerType=Family` is scoped to the family as a whole, the same identity
+the "couple" relationship already represents. Silently redirecting a
+parent-child request to the family would mean attaching media to a
+*different* relationship than the one actually named in the URL.
+
+A related, correctly-handled edge case: a family with only one recorded
+partner (`FatherID` or `MotherID` is `0` -- `royal92.rmtree` has several,
+e.g. `F70`, and the "Romanov - UNK" example in GEDAM's own §7.1) has no
+valid "couple" relationship for this endpoint to target either, and
+correctly `404`s -- the same existence check `GET /relationships/{id}`
+already applies for reading, reused rather than reimplemented for
+writing.
+
+**`Type`/`Person1`/`Person2` are deliberately excluded from the
+ignored-fields log**, unlike every other field on every other write
+handler's equivalent check. Checked directly against
+`buildCoupleRelationship`: all three are always populated on every real
+`Relationship` this server returns (`Person1`/`Person2` are required by
+the RS spec itself, not optional), so an ordinary GET-then-modify-then-
+POST client will always send back non-empty values for them regardless
+of actual intent to change anything. Logging their presence would be
+noise on every single request, not a signal of anything -- unlike
+`facts`/`sources`, which are genuinely optional and only present when
+there's real data behind them.
+
+Verified against real data: `F1` (Victoria and Albert's actual marriage
+relationship in `royal92.rmtree`, discovered incidentally while testing
+-- confirmed by its `facts`/`sources` already containing `E5049` and the
+citations already documented elsewhere in this file) accepted a real
+media attachment, confirmed via a follow-up `GET` that it actually took,
+and confirmed via `/artifacts/{id}/relationships` that the reverse-lookup
+correctly reflects a link created through the real write path, not just
+raw SQL. `F1-FC2` (parent-child) rejected with `400`; `F70`
+(single-partner) and a nonexistent family both `404`; a nonexistent
+artifact `400`s; read-only mode still `405`s the identical request;
+`facts` alongside `media` succeeds and logs as expected; an actually-
+unknown field still `400`s. `TestRelationshipMediaWrite`
+(`cmd/server/main_test.go`) makes this permanent -- deliberately a
+separate test function from `TestWriteOperations`' own table, since that
+table is specifically for sqldiff-golden-file comparisons against a real
+RootsMagic capture, and media-linking touches no field a golden file
+would show at all (see `rmdb.UpdateOwnerMedia`'s own tests for that
+layer). Unlike `Person`/`Event`, whose own handler-level branching was
+only ever verified manually and not left with a permanent test, this
+one's non-trivial branching (couple vs. parent-child, both-partners-
+present) earned a permanent regression test on its own merits.
+
 ## RootsMagic version handling
 
 RootsMagic 7 or later is required. The data dictionary shows that `PersonTable`,

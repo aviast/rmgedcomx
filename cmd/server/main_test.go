@@ -569,6 +569,95 @@ func TestWriteOperations(t *testing.T) {
 	}
 }
 
+// TestRelationshipMediaWrite covers handleUpdateRelationship's own logic
+// directly -- separate from TestWriteOperations' table above, which is
+// specifically for sqldiff-golden-file comparisons against a real
+// RootsMagic capture. There's no RootsMagic capture to compare against
+// here (media linking doesn't touch any field a golden file would show;
+// see rmdb.UpdateOwnerMedia's own tests in internal/rmdb for the
+// underlying diffing logic), but handleUpdateRelationship has real,
+// non-trivial branching of its own -- couple vs. parent-child id
+// handling, the both-partners-present check -- worth guarding against
+// regression with a permanent test, not just the one-off manual
+// verification used to build it.
+func TestRelationshipMediaWrite(t *testing.T) {
+	post := func(t *testing.T, testServer *httptest.Server, path, body string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest("POST", testServer.URL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(respBody)
+	}
+
+	tempDir := t.TempDir()
+	tempDBPath := filepath.Join(tempDir, "royal92.rmtree")
+	copyFile(t, "../../royal92.rmtree", tempDBPath)
+
+	router, cleanup := SetupRouter(
+		[]string{tempDBPath},
+		"http://localhost:8080",
+		"testdata/media",
+		true, // write
+		4,
+		200,
+	)
+	testServer := httptest.NewServer(router)
+	defer testServer.Close()
+	defer cleanup()
+
+	prefix := "/collections/victoria-hanover-royal92/relationships/"
+
+	// F1 is Victoria and Albert's real couple relationship in
+	// royal92.rmtree -- both FatherID and MotherID present, a valid
+	// target.
+	status, body := post(t, testServer, prefix+"F1", `{"relationships":[{"id":"F1","media":[{"descriptionId":"M1"}]}]}`)
+	require.Equal(t, http.StatusNoContent, status, "attaching media to a real couple relationship: %s", body)
+
+	// Confirm it actually took, via GET, not just trusting the 204.
+	getResp, err := http.Get(testServer.URL + prefix + "F1")
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	getBody, err := io.ReadAll(getResp.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(getBody), `"descriptionId":"M1"`, "expected the newly attached media to show up on a subsequent GET")
+
+	// A parent-child relationship id must be rejected -- RootsMagic has
+	// no place to attach media to a specific parent-child pair.
+	status, body = post(t, testServer, prefix+"F1-FC2", `{"relationships":[{"id":"F1-FC2","media":[{"descriptionId":"M1"}]}]}`)
+	require.Equal(t, http.StatusBadRequest, status, "parent-child relationship id should be rejected: %s", body)
+
+	// F70 has MotherID=0 in royal92.rmtree -- a single-partner family,
+	// not a valid couple relationship target.
+	status, body = post(t, testServer, prefix+"F70", `{"relationships":[{"id":"F70","media":[{"descriptionId":"M1"}]}]}`)
+	require.Equal(t, http.StatusNotFound, status, "single-partner family should 404, not be treated as a valid couple: %s", body)
+
+	// A nonexistent family id.
+	status, body = post(t, testServer, prefix+"F999999", `{"relationships":[{"id":"F999999","media":[{"descriptionId":"M1"}]}]}`)
+	require.Equal(t, http.StatusNotFound, status, "nonexistent family should 404: %s", body)
+
+	// A nonexistent artifact reference.
+	status, body = post(t, testServer, prefix+"F2", `{"relationships":[{"id":"F2","media":[{"descriptionId":"M999"}]}]}`)
+	require.Equal(t, http.StatusBadRequest, status, "nonexistent artifact should 400: %s", body)
+
+	// facts present alongside media should succeed, not be rejected --
+	// only logged as unsupported (verified in the one-off manual pass
+	// this test formalizes; not re-asserted here since it's a log line,
+	// not response-visible behavior).
+	status, body = post(t, testServer, prefix+"F1", `{"relationships":[{"id":"F1","facts":[{"type":"http://gedcomx.org/Marriage"}],"media":[{"descriptionId":"M1"}]}]}`)
+	require.Equal(t, http.StatusNoContent, status, "facts present alongside media should succeed, not be rejected: %s", body)
+
+	// An actually-unknown field should still be rejected by
+	// decodeStrictJSON, same as every other write handler.
+	status, body = post(t, testServer, prefix+"F1", `{"relationships":[{"id":"F1","bogus":"field"}]}`)
+	require.Equal(t, http.StatusBadRequest, status, "unknown field should be rejected: %s", body)
+	require.Contains(t, body, "bogus", "error message should name the specific unrecognized field")
+}
+
 // fieldCheck names a single row and a set of columns on it whose expected
 // value this server determines deterministically -- independent of
 // whatever RootsMagic itself produced for the same fields when a golden
