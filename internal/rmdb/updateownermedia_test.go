@@ -209,3 +209,44 @@ func TestUpdateOwnerMediaWorksForEventOwners(t *testing.T) {
 		t.Fatal("expected event 5049's link to be gone after detaching")
 	}
 }
+
+// TestUpdateOwnerMediaWorksForFamilyOwners confirms the shared diffing
+// core works for OwnerTypeFamily too -- the same generic function
+// backing the Relationship write handler. Family 1 (Victoria and
+// Albert's real couple relationship in royal92.rmtree) has no direct
+// media link to begin with; attaching and detaching M1 here proves the
+// same core logic already proven for Person and Event owners isn't
+// accidentally specific to either of those two.
+func TestUpdateOwnerMediaWorksForFamilyOwners(t *testing.T) {
+	db := setupMediaLinkTestDB(t)
+
+	linked, err := ownerHasMediaLink(db, OwnerTypeFamily, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linked {
+		t.Fatal("expected M1 not to already be linked to family 1 in royal92.rmtree")
+	}
+
+	if err := db.UpdateOwnerMedia(OwnerTypeFamily, 1, []int64{1}); err != nil {
+		t.Fatalf("attaching M1 to family 1: %v", err)
+	}
+	linked, err = ownerHasMediaLink(db, OwnerTypeFamily, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !linked {
+		t.Fatal("expected M1 to be linked to family 1 after attaching")
+	}
+
+	if err := db.UpdateOwnerMedia(OwnerTypeFamily, 1, nil); err != nil {
+		t.Fatalf("detaching M1 from family 1: %v", err)
+	}
+	linked, err = ownerHasMediaLink(db, OwnerTypeFamily, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linked {
+		t.Fatal("expected M1 to be unlinked from family 1 after detaching")
+	}
+}
