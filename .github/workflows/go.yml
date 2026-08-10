@@ -26,6 +26,12 @@ jobs:
       - name: Download modules
         run: go mod download
 
+      - name: Install SQLite and sqldiff Tools
+        uses: nttld/setup-sqlite@v3
+
+      - name: Verify sqldiff installation
+        run: sqldiff --version
+
       - name: Run tests
         run: go test ./...
 
