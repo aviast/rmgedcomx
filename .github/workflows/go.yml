@@ -26,6 +26,15 @@ jobs:
       - name: Download modules
         run: go mod download
 
+      - name: Install SQLite and sqldiff Tools
+        uses: ccorsi/setup-sqlite@v1
+        with:
+          sqlite-version: '3.49.2'
+          sqlite-year: '2025'
+
+      - name: Verify sqldiff installation
+        run: sqlite3 --version
+
       - name: Run tests
         run: go test ./...
 
