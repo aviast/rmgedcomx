@@ -125,3 +125,15 @@ cross-referenceable with that discussion. 7 and 17 already have golden files and
 wired up (`TestWriteOperations` in `cmd/server/main_test.go`); everything else in the "Needs golden
 file" rows above needs the corresponding RootsMagic edit captured and a new test case added
 alongside the existing two, following the same pattern.
+
+## Testing across RootsMagic versions
+
+Every golden file and every test database in this project (`royal92.rmtree` included) is
+RM9-era. Nothing here has been tested against a real RM8, RM10, or RM11 database, or a real
+RM7 file (`internal/rmdb/rm8_required_test.go`'s RM7 rejection test uses a real RM9 database
+with columns dropped via `ALTER TABLE`, reconstructing what an RM7 schema looks like for the
+tables that matter -- a reasonable approximation, confirmed against the real data dictionary,
+but not the same as an RM7 file RootsMagic itself actually produced). Worth its own test suite
+at some point -- a version-support concern is a different kind of testing than the sqldiff-based
+write verification this document otherwise covers, and probably deserves its own document rather
+than being folded into this one.

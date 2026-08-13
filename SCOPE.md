@@ -1376,10 +1376,10 @@ present) earned a permanent regression test on its own merits.
 
 ## RootsMagic version handling
 
-RootsMagic 7 or later is required. The data dictionary shows that `PersonTable`,
+RootsMagic 8 or later is required. The data dictionary shows that `PersonTable`,
 `NameTable`, `FamilyTable`, `ChildTable`, `EventTable`, `FactTypeTable`,
 `PlaceTable`, `SourceTable`, `CitationTable`, `CitationLinkTable`, and `RoleTable`
-are unchanged between RootsMagic 7 and RootsMagic 10/11 for every column this
+are unchanged between RootsMagic 8 and RootsMagic 10/11 for every column this
 server reads. So rather than branching logic on a detected version number,
 `internal/rmdb` does two things:
 
@@ -1391,11 +1391,66 @@ server reads. So rather than branching logic on a detected version number,
    optional tables exist, e.g. `DNATable`, `FamilySearchTable`, `AncestryTable` are
    later additions) -- this is purely informational and doesn't gate functionality.
 
-If a required table or column is missing -- which in practice means a pre-RM7
-file, since pre-RM7 RootsMagic used a substantially different schema -- `Open`
-fails at startup with a clear error naming what's missing, rather than silently
-returning incomplete or wrong data. RootsMagic 6 and earlier are out of scope for
-this server and not a planned addition.
+If a required table or column is missing, `Open` fails at startup with a clear
+error naming what's missing, rather than silently returning incomplete or wrong
+data.
+
+### RootsMagic 7 was dropped, not just never added
+
+Originally "RootsMagic 7 or later," narrowed to 8 after a real, specific
+finding, not a general tightening of scope. A community blog post
+(https://sqlitetoolsforrootsmagic.com/date-last-edited/) documented that
+RM8 replaced `EditDate` with `UTCModDate` on `PersonTable`/`EventTable`/
+`NameTable` -- but those aren't the tables this server's write support
+(see "Write support" below) actually touches. Checked directly against
+the RM4-11 data dictionary's own version-specific sheets (a `4-7` sheet
+and an `8` sheet, covering exactly the tables that matter here) rather
+than assuming the blog's examples generalized: `PlaceTable`,
+`SourceTable`, `MultimediaTable`, `MediaLinkTable`, and `ConfigTable` --
+the five tables every write handler touches -- have no modification-
+timestamp column *at all* in RM7, under either name. It isn't a rename
+this server failed to keep up with; for these five tables, RM7 tracked
+no modification timestamp, period.
+
+Every write handler unconditionally sets `UTCModDate` on one or more of
+these tables. Against a real RM7 file, that's not a silently-missing
+nice-to-have -- it's `"no such column: UTCModDate"` on the very first
+write attempt, a raw SQL error a person would have had to decode
+themselves, discovered only when they actually tried to write, not at
+startup.
+
+The option actually taken wasn't the only one considered. Gating only
+`-write` mode to RM8+ (leaving RM7 usable read-only, since the read path
+never queries this column at all) was the initial proposal and would
+have worked. Decided against it for reasons broader than this one bug:
+legacy RootsMagic version support was never one of this project's actual
+goals, just something that came along with reading columns dynamically
+rather than hard-coding a schema version. `internal/rmdb`'s own package
+doc comment already says as much. And narrowing now avoids doing this
+twice -- future write support is planned for `PersonTable`, `NameTable`,
+`FamilyTable`, and `EventTable` (see "What's next" throughout this
+document), which will need their own correct-timestamp handling
+regardless of this decision.
+
+**Enforced structurally, not just documented**: `requiredTablesAndColumns`
+(`internal/rmdb/db.go`) now requires `UTCModDate` specifically on the five
+write-relevant tables, plus adds `ConfigTable` to the required-tables list
+for the first time (it was implicitly depended on for `UniqueID`/
+`RootPerson` reads and the `UTCModDate` bump on every write, but was
+never actually checked at startup before this). A pre-RM8 file now fails
+`Open` immediately, for both read-only and write access, with every
+missing column named in one error -- not just the first one encountered.
+Verified directly, not just reasoned about: took a real copy of
+`royal92.rmtree` and used `ALTER TABLE ... DROP COLUMN` to reconstruct
+what an RM7 file's schema actually looks like for these five tables,
+confirmed `Open` rejects it with the expected message naming all five
+columns, and confirmed the real, unmodified file is still accepted
+normally. `internal/rmdb/rm8_required_test.go` makes both permanent.
+
+Testing against a real RM7 database (rather than the reconstructed
+approximation used here) is worth doing at some point, as its own
+separate test concern -- not done as part of this change, since no real
+RM7 file was available to test against directly.
 
 ## Fact type mapping
 
