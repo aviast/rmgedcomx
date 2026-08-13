@@ -1579,14 +1579,106 @@ actually-unknown field (still caught by `decodeStrictJSON`, same as
 every other write handler), and read-only mode still correctly
 returning `405`.
 
+### `POST /relationships` -- Couple and ParentChild creation (done)
+
+Built on the same `nextID`/`resolveOrCreatePlace`/`bumpConfigTableModDate`
+pattern `CreatePerson` established -- confirmed to carry over directly,
+as anticipated.
+
+**`CreateCoupleRelationship`** (`internal/rmdb/createcouple.go`) creates
+a new `FamilyTable` row plus zero or more family-owned facts (e.g. a
+Marriage), and updates `SpouseID` on whichever of `FatherID`/`MotherID`
+were actually specified -- RootsMagic itself supports single-parent
+families (confirmed against real data: several families in
+`royal92.rmtree` have one of the two at `0`), so only one is required,
+not both. Matched field-by-field against the real captured golden file
+for Patrick and Maria's marriage -- exact match on every field this
+server controls, including `EventTable.FamilyID` staying `0` on the
+marriage fact itself (a family-owned fact identifies its owner via
+`OwnerType`/`OwnerID`, not this column -- the same finding already
+documented for `CreatePerson`'s own facts). One deliberate divergence
+from the real capture, consistent with `CreatePerson`'s own established
+policy: both spouses' `UTCModDate` get bumped here, not just one --
+RootsMagic's own real capture only bumped whichever spouse the operation
+was performed *from* (confirmed directly against raw, unredacted values,
+not just the golden file), which this project has already decided not
+to replicate, for both `Person` and `Relationship` writes, since there's
+no principled reason to prefer one spouse's timestamp over the other's.
+
+**`CreateParentChildRelationship`** (`internal/rmdb/createparentchild.go`)
+was the harder design problem in this whole stage, worth explaining
+precisely rather than just stating the result: RootsMagic's own schema
+has nowhere to attach a bare (parent, child) pair directly. A child
+belongs to a *family* (`ChildTable.FamilyID`), and that family
+separately has a `FatherID`/`MotherID` -- the father-child and
+mother-child relationships this server's read side already exposes as
+two distinct `Relationship` resources (see "Relationships" above) are
+really two views onto the same underlying family membership, not two
+facts RootsMagic stores independently. Creating one has to resolve which
+family is actually meant. The design landed on:
+
+1. If the parent (role determined by their own `PersonTable.Sex`)
+   already has exactly one existing family in the matching role, the
+   child is added there. This is the real, confirmed workflow (see the
+   reference capture): create the couple relationship first, giving both
+   parents an established family, then link each child with a *single*
+   `ParentChild` request naming either parent -- confirmed directly, via
+   a real HTTP round trip, that this correctly surfaces *both*
+   father-child and mother-child relationships on a subsequent `GET`
+   without needing a second request for the other parent, since both
+   are derived from the one `ChildTable` row the single request creates.
+2. If the parent has no existing family in that role at all, a new
+   single-parent family is created first (matching
+   `CreateCoupleRelationship`'s own support for one), then the child is
+   added there.
+3. If the parent already has more than one family in that role (a real,
+   if less common, case -- remarriage), which family the child belongs
+   to is genuinely ambiguous from a bare (parent, child) pair alone --
+   GEDCOM X's own `ParentChild` relationship type has no third field to
+   name a specific family. Rejected with a clear error rather than
+   guessed at.
+
+A child already linked to the resolved family is treated as a no-op
+(idempotent), not a duplicate `ChildTable` row or an error -- confirmed
+directly with a dedicated test, not just reasoned about. Sex "Unknown"
+on the parent is rejected outright, the same reasoning `CreateCoupleRelationship`
+already applies via `resolveCoupleRoles` (below) to a couple where
+either person's sex isn't Male/Female. A real gap was caught and fixed
+while building the HTTP layer on top of this: the first version never
+validated `ChildID` actually existed before creating a dangling
+`ChildTable` reference to it -- caught before shipping, not after.
+
+Matched field-by-field against the real six-children capture: exact
+match on `RecID`/`ChildID`/`FamilyID`/`ChildOrder` across all six
+children, in order.
+
+**`internal/api/createrelationship.go`**'s `handleCreateRelationships`
+resolves which of the two supported types a request is (`Couple` or
+`ParentChild`; anything else is rejected) and which person plays which
+role. For `Couple` specifically, `resolveCoupleRoles` determines
+Father/Mother from each person's own recorded `Sex` rather than trusting
+`person1`/`person2`'s order -- confirmed the RS spec's own `Couple`
+relationship type doesn't define which is which -- and rejects a pair
+that isn't exactly one Male and one Female, the same principle as
+`CreateParentChildRelationship`'s own unknown-sex rejection. Per RS spec
+Section 4.20.2 (mirroring `Persons`' own `POST`): `201` + `Location` for
+exactly one relationship created, `204` for several.
+
+Verified through the real HTTP stack end to end:
+`cmd/server/main_test.go`'s `TestCreateRelationshipsHTTP` covers the
+`Couple` happy path (in both person1/person2 orderings), the
+`ParentChild`-after-`Couple` case confirming both derived relationships
+appear on a subsequent `GET`, the `204` multi-relationship path, a
+same-sex couple rejection, a nonexistent person rejection (confirmed
+`400`, not a raw `500`), an unsupported relationship type, an empty
+request, and read-only mode.
+
 ### What's next
 
-`Relationship` creation -- both couple and parent-child, via
-`POST /relationships` (see the API design decision above) -- is not yet
-built. `CreatePerson`'s underlying pattern (resolve places, assign ids,
-insert, bump `ConfigTable`) should carry over directly; the new part is
-`FamilyTable`/`ChildTable` and the couple-vs-parent-child request shape
-itself.
+`Person`, `Couple`, and `ParentChild` creation are all done and tested.
+Nothing currently identified as the next piece -- this closes out the
+create-side work this stage set out to do (see "Stage 3" above for
+where this started).
 
 ## RootsMagic version handling
 

@@ -819,7 +819,7 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		t.Helper()
 		tempDir := t.TempDir()
 		tempDBPath := filepath.Join(tempDir, "empty.rmtree")
-		copyFile(t, "../../empty.rmtree", tempDBPath)
+		copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
 		router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", write, 4, 200)
 		t.Cleanup(cleanup)
 		return httptest.NewServer(router)
@@ -930,6 +930,162 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		testServer := newTestServer(t, false)
 		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}]}]}`
 		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusMethodNotAllowed, status, "body: %s", respBody)
+		require.Equal(t, "GET, HEAD", headers.Get("Allow"))
+	})
+}
+
+// TestCreateRelationshipsHTTP covers the full POST /relationships flow
+// through the real HTTP stack -- both relationship types this server's
+// read side already models (Couple and ParentChild), including the
+// specific behavior CreateParentChildRelationship's own comment
+// documents: creating a couple relationship first, then a single
+// ParentChild request naming either parent, correctly surfaces *both*
+// father-child and mother-child relationships on a subsequent GET (they
+// share one underlying ChildTable row -- see SCOPE.md's "Stage 3"
+// section for the full account of why this isn't two separate writes).
+func TestCreateRelationshipsHTTP(t *testing.T) {
+	post := func(t *testing.T, testServer *httptest.Server, path, body string) (int, string, http.Header) {
+		t.Helper()
+		req, err := http.NewRequest("POST", testServer.URL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(respBody), resp.Header
+	}
+	get := func(t *testing.T, testServer *httptest.Server, path string) (int, string) {
+		t.Helper()
+		resp, err := http.Get(testServer.URL + path)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body)
+	}
+	newTestServer := func(t *testing.T, write bool) *httptest.Server {
+		t.Helper()
+		tempDir := t.TempDir()
+		tempDBPath := filepath.Join(tempDir, "empty.rmtree")
+		copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
+		router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", write, 4, 200)
+		t.Cleanup(cleanup)
+		return httptest.NewServer(router)
+	}
+	createPerson := func(t *testing.T, testServer *httptest.Server, gender, given, surname string) {
+		t.Helper()
+		body := fmt.Sprintf(
+			`{"persons":[{"gender":{"type":%q},"names":[{"preferred":true,"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":%q},{"type":"http://gedcomx.org/Surname","value":%q}]}]}]}]}`,
+			gender, given, surname)
+		status, respBody, _ := post(t, testServer, "/collections/empty/persons", body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+	}
+
+	t.Run("couple relationship creates 201, GET confirms it", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Patrick", "Brontë")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Maria", "Branwell")
+
+		body := `{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships", body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.Contains(t, headers.Get("Location"), "/relationships/F1")
+
+		status, getBody := get(t, testServer, "/collections/empty/relationships/F1")
+		require.Equal(t, http.StatusOK, status, "body: %s", getBody)
+		require.Contains(t, getBody, `"type":"http://gedcomx.org/Couple"`)
+	})
+
+	t.Run("couple relationship works regardless of person1/person2 order", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Patrick", "Brontë")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Maria", "Branwell")
+
+		// Mother listed first -- roles should still resolve correctly by Sex.
+		body := `{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P2"},"person2":{"resourceId":"P1"}}]}`
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships", body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+	})
+
+	t.Run("parent-child after couple surfaces both father-child and mother-child on GET", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Patrick", "Brontë")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Maria", "Branwell")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Charlotte", "Brontë")
+
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.Contains(t, headers.Get("Location"), "/relationships/F1")
+
+		status, getBody := get(t, testServer, "/collections/empty/relationships")
+		require.Equal(t, http.StatusOK, status, "body: %s", getBody)
+		require.Contains(t, getBody, `"id":"F1-FC3"`)
+		require.Contains(t, getBody, `"id":"F1-MC3"`)
+	})
+
+	t.Run("multiple relationships in one request creates 204", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "One")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "B", "Two")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "C", "Three")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "D", "Four")
+
+		body := `{"relationships":[
+			{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}},
+			{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P3"},"person2":{"resourceId":"P4"}}
+		]}`
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships", body)
+		require.Equal(t, http.StatusNoContent, status, "body: %s", respBody)
+		require.Empty(t, headers.Get("Location"))
+	})
+
+	t.Run("couple relationship with two males is rejected", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "One")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "B", "Two")
+
+		body := `{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships", body)
+		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
+	})
+
+	t.Run("nonexistent person is rejected with 400, not 500", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "One")
+
+		body := `{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P999"}}]}`
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships", body)
+		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
+	})
+
+	t.Run("unsupported relationship type is rejected", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "One")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "B", "Two")
+
+		body := `{"relationships":[{"type":"http://gedcomx.org/EnslavedBy","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships", body)
+		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
+	})
+
+	t.Run("empty relationships array is rejected", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		status, body, _ := post(t, testServer, "/collections/empty/relationships", `{"relationships":[]}`)
+		require.Equal(t, http.StatusBadRequest, status, "body: %s", body)
+	})
+
+	t.Run("read-only mode rejects with 405", func(t *testing.T) {
+		testServer := newTestServer(t, false)
+		body := `{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships", body)
 		require.Equal(t, http.StatusMethodNotAllowed, status, "body: %s", respBody)
 		require.Equal(t, "GET, HEAD", headers.Get("Allow"))
 	})

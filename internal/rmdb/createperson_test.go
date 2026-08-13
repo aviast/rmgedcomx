@@ -8,9 +8,9 @@ import (
 func setupCreatePersonTestDB(t *testing.T) *DB {
 	t.Helper()
 	dbPath := t.TempDir() + "/test.rmtree"
-	data, err := os.ReadFile("../../empty.rmtree")
+	data, err := os.ReadFile("../../testdata/empty.rmtree")
 	if err != nil {
-		t.Fatalf("reading empty.rmtree: %v", err)
+		t.Fatalf("reading testdata/empty.rmtree: %v", err)
 	}
 	if err := os.WriteFile(dbPath, data, 0o644); err != nil {
 		t.Fatalf("writing test copy: %v", err)
