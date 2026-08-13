@@ -99,7 +99,7 @@ func TestWriteGuardLatchesOnceTripped(t *testing.T) {
 
 func TestWriteGuardFailsOpenWhenCheckItselfErrors(t *testing.T) {
 	g := newTestGuard(func() (bool, error) {
-		return false, errors.New("tasklist: command not found")
+		return false, errors.New("simulated process-check failure")
 	})
 
 	ok, _ := g.Allow()

@@ -543,7 +543,7 @@ func TestWriteOperations(t *testing.T) {
 				// spurious failure -- see configTableDataRecRegex's own
 				// comment for the full story behind why this field is
 				// excluded at all.
-				normalizedExpected := configTableDataRecRegex.ReplaceAllString(strings.TrimSpace(string(expectedBytes)), "")
+				normalizedExpected := normalizeSQL(string(expectedBytes))
 				// Normalize line endings and mask/strip dynamic fields in test output
 				normalizedActual := normalizeSQL(actualDiff)
 
