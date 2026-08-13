@@ -52,6 +52,88 @@ var qualitativeWords = map[byte]string{
 	'S': "Say",
 }
 
+// EncodeRMDate is ParseRMDate's inverse: given a GEDCOM X formal date
+// value (the "+YYYY[-MM[-DD]]" family from the GEDCOM X Date Format
+// specification, this project's own uniform way of asking a client for
+// a specific date), produces the RootsMagic-internal Date string
+// (EventTable.Date / NameTable.Date) plus the (year, month, day) needed
+// to separately compute the matching SortDate (rmdb.ComputeSortDate --
+// deliberately not called from here, since SortDate is a RootsMagic
+// storage detail with no GEDCOM X counterpart at all, unlike the Date
+// string itself, whose format this package already models the read
+// side of).
+//
+// Deliberately narrower than ParseRMDate's own read-side coverage, in
+// two ways:
+//
+//   - Only "About" (a leading "A" in the formal string) can be encoded
+//     as a qualifier at all -- confirmed directly against ParseRMDate's
+//     own mapping that GEDCOM X's formal date grammar only ever carries
+//     a Formal value for the plain and "About" cases; Calculated/
+//     Estimated/Circa/Say never produce one on the read side (see
+//     ParseRMDate's own switch), so there is no formal-string encoding
+//     for this function to reverse for those four even in principle.
+//   - Before/after/range dates and BC years aren't supported either --
+//     this project has empirical, captured-diff confirmation only for
+//     plain and "About" dates on the write side (see rmdate_test.go and
+//     SCOPE.md's "Write support" section).
+//
+// Anything outside this narrower scope returns an error rather than a
+// guess: getting a read-side display wrong is a cosmetic problem, but
+// getting a write wrong means creating a real, permanent, wrong record
+// in someone's family tree. A client sending one of these unsupported
+// forms gets a clear 400 at the API layer instead.
+func EncodeRMDate(formal string) (rmDateString string, year, month, day int, err error) {
+	if formal == "" {
+		return ".", 0, 0, 0, nil
+	}
+
+	qualifier := byte(0)
+	rest := formal
+	if formal[0] == 'A' {
+		qualifier = 'A'
+		rest = formal[1:]
+	}
+
+	y, m, d, err := parseFormalYMD(rest)
+	if err != nil {
+		return "", 0, 0, 0, fmt.Errorf("unsupported or malformed formal date %q: %w", formal, err)
+	}
+
+	qualByte := byte('.')
+	if qualifier != 0 {
+		qualByte = qualifier
+	}
+	return fmt.Sprintf("D.+%04d%02d%02d.%c+00000000..", y, m, d, qualByte), y, m, d, nil
+}
+
+// parseFormalYMD parses the "+YYYY", "+YYYY-MM", or "+YYYY-MM-DD" forms
+// -- the plain-date subset of the GEDCOM X Date Format specification
+// this project supports encoding (see EncodeRMDate's own comment for why
+// the rest is deliberately not supported yet).
+var formalYMDRe = regexp.MustCompile(`^\+(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$`)
+
+func parseFormalYMD(s string) (year, month, day int, err error) {
+	m := formalYMDRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, 0, 0, fmt.Errorf("expected +YYYY, +YYYY-MM, or +YYYY-MM-DD")
+	}
+	year, _ = strconv.Atoi(m[1])
+	if m[2] != "" {
+		month, _ = strconv.Atoi(m[2])
+	}
+	if m[3] != "" {
+		day, _ = strconv.Atoi(m[3])
+	}
+	if month < 0 || month > 12 {
+		return 0, 0, 0, fmt.Errorf("month %d out of range", month)
+	}
+	if day < 0 || day > 31 {
+		return 0, 0, 0, fmt.Errorf("day %d out of range", day)
+	}
+	return year, month, day, nil
+}
+
 func ParseRMDate(raw string) *Date {
 	if raw == "" || raw == "." {
 		// "." is RootsMagic's sentinel for "no date entered" (seen
