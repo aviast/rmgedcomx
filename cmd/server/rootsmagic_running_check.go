@@ -3,9 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os/exec"
-	"runtime"
-	"strings"
 )
 
 // isRootsMagicRunning is the shared detection primitive behind both
@@ -18,37 +15,11 @@ import (
 // those two situations.
 //
 // Only meaningful on Windows, where RootsMagic actually runs; a no-op
-// (found=false, err=nil) everywhere else. Uses `tasklist`, a standard
-// built-in Windows command, rather than a new dependency, to read the
-// running-process list.
-//
-// A note on how this was verified: everything else in this project has
-// been checked empirically, against real data, on the actual platform
-// involved -- this piece is the exception. It was developed and tested on
-// Linux, which cannot run `tasklist` or RootsMagic at all, so the
-// Windows-specific behavior below is implemented carefully against
-// `tasklist`'s well-documented output format, but has NOT been run against
-// a real Windows machine with RootsMagic actually open. Please verify it
-// does what you expect (start rmgedcomx -write with RootsMagic open, and
-// confirm it refuses; close RootsMagic, and confirm it proceeds) before
-// relying on it.
+// (found=false, err=nil) everywhere else. On Windows it uses the native
+// process snapshot API, rather than spawning `tasklist`: that continues to
+// work in restricted environments which prohibit child processes.
 func isRootsMagicRunning() (found bool, err error) {
-	if runtime.GOOS != "windows" {
-		return false, nil
-	}
-
-	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq RootsMagic.exe", "/NH").Output()
-	if err != nil {
-		// Couldn't run the check at all -- e.g. tasklist missing from
-		// PATH, which shouldn't happen on any real Windows install.
-		// Returned as an error so each caller can decide how to react
-		// (checkRootsMagicNotRunning warns and proceeds; see its own
-		// comment for why failing open here, rather than failing closed,
-		// is the deliberate choice for both callers).
-		return false, err
-	}
-
-	return strings.Contains(strings.ToLower(string(out)), "rootsmagic.exe"), nil
+	return rootsMagicRunning()
 }
 
 // checkRootsMagicNotRunning refuses to proceed if RootsMagic.exe appears to

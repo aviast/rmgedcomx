@@ -69,6 +69,24 @@ func GenderTypeURI(sex int) string {
 	}
 }
 
+// GenderCode is GenderTypeURI's inverse, for creating a new Person: maps
+// a GEDCOM X gender type URI to RootsMagic's own Sex encoding. ok is
+// false for anything other than the three URIs GenderTypeURI itself ever
+// produces -- a client sending something else gets a clear rejection at
+// the API layer rather than an arbitrary default.
+func GenderCode(uri string) (sex int, ok bool) {
+	switch uri {
+	case "http://gedcomx.org/Male":
+		return 0, true
+	case "http://gedcomx.org/Female":
+		return 1, true
+	case "http://gedcomx.org/Unknown":
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
 // NameTypeURI maps RootsMagic NameTable.NameType to a GEDCOM X name type URI.
 // RootsMagic: 0=Null(Primary) 1=AKA 2=Birth 3=Immigrant 4=Maiden 5=Married
 // 6=Nickname 7=Other Spelling.
@@ -89,6 +107,33 @@ func NameTypeURI(nameType int) string {
 	}
 }
 
+// NameTypeCode is NameTypeURI's inverse, for creating a new Person's
+// name: maps a GEDCOM X name type URI to RootsMagic's own NameType
+// encoding. An empty uri (the field simply omitted) maps to 0 (Primary/
+// Null), matching every real captured create in this project's own
+// reference data, none of which set a name type explicitly. ok is false
+// for anything not in NameTypeURI's own set -- a client sending
+// something else gets a clear rejection rather than an arbitrary
+// default.
+func NameTypeCode(uri string) (nameType int, ok bool) {
+	switch uri {
+	case "":
+		return 0, true
+	case "http://gedcomx.org/AlsoKnownAs":
+		return 1, true
+	case "http://gedcomx.org/BirthName":
+		return 2, true
+	case "http://gedcomx.org/MaidenName":
+		return 4, true
+	case "http://gedcomx.org/MarriedName":
+		return 5, true
+	case "http://gedcomx.org/Nickname":
+		return 6, true
+	default:
+		return 0, false
+	}
+}
+
 // FactType resolves a RootsMagic fact type (by its GEDCOM tag and, as a
 // fallback, its RootsMagic display name) to a GEDCOM X fact-type URI.
 func FactType(gedcomTag, rmFactTypeName string) string {
@@ -99,6 +144,34 @@ func FactType(gedcomTag, rmFactTypeName string) string {
 		}
 	}
 	return CustomFactType(rmFactTypeName)
+}
+
+// factTypeToGedcomTag is gedcomTagToFactType inverted -- built once, used
+// by GedcomTagForFactType below (this project's write side; the read
+// side above never needs this direction).
+var factTypeToGedcomTag = func() map[string]string {
+	m := make(map[string]string, len(gedcomTagToFactType))
+	for tag, uri := range gedcomTagToFactType {
+		m[uri] = tag
+	}
+	return m
+}()
+
+// GedcomTagForFactType is FactType's inverse for the built-in fact types:
+// given a GEDCOM X fact-type URI, returns the GEDCOM tag a caller can
+// look up against RootsMagic's own FactTypeTable.GedcomTag to find the
+// matching FactTypeID (see internal/api's create-person handler).
+//
+// Deliberately does not attempt the reverse of CustomFactType (a client
+// sending a "http://rootsmagic.local/fact-type/..." URI back) -- that
+// would mean either matching an existing custom fact type by name (fine)
+// or silently creating a new FactTypeTable row on the fly (a materially
+// bigger, riskier feature this project hasn't built or verified yet).
+// ok is false for both custom URIs and anything unrecognized; callers
+// should treat both the same way, a clear rejection rather than a guess.
+func GedcomTagForFactType(uri string) (tag string, ok bool) {
+	tag, ok = factTypeToGedcomTag[uri]
+	return tag, ok
 }
 
 // CustomFactType builds a stable, custom fact-type URI for a RootsMagic fact

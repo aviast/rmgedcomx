@@ -1374,6 +1374,312 @@ only ever verified manually and not left with a permanent test, this
 one's non-trivial branching (couple vs. parent-child, both-partners-
 present) earned a permanent regression test on its own merits.
 
+## Stage 3 -- creating People and Relationships (in progress)
+
+The natural next step after Stage 2's media-linking work, driven by a
+concrete need this time rather than the original generic "eventually
+cover CRUD" plan (see the "What's next" notes throughout Stage 2): GEDAM
+wants to be able to add new people and relationships, not just link
+media to existing ones.
+
+Built from a real, systematically captured reference: a whole family (the
+Brontës, from a public-domain GEDCOM file) entered into an initially
+empty RootsMagic 8+ database one step at a time, with `sqldiff` output
+captured and reviewed at every step -- the same methodology as every
+other write feature in this project, just at a larger scale (15 golden
+files covering person creation, alias addition, marriage/family creation,
+and child linking).
+
+### Three encoding schemes, all independently verified against real data before being trusted
+
+Creating a `Person` touches several fields RootsMagic computes or encodes
+in ways not otherwise documented -- each of the three below was checked
+against real captured values before being implemented, not implemented
+first and hoped to be correct:
+
+**`PersonTable.UniqueID`** -- a standard 128-bit version 4 UUID (32 hex
+characters, hyphens stripped) followed by a 4-character checksum. The
+checksum is a Fletcher-16-style running sum over the 16 raw UUID bytes
+(`sum1 += byte; sum2 += sum1`, both mod 256, formatted as `%02X%02X`)--
+not derived from the GEDCOM 7 UID algorithm's own published description
+(which has a confirmed transcription error in its algebraic description
+of the second byte), but transcribed directly from a community member's
+own SQL implementation
+(https://sqlitetoolsforrootsmagic.com/forum/topic/uniqueid-in-persontable/#postid-1800)
+and independently confirmed against 21 real `UniqueID` values pulled
+from real RootsMagic-generated data (7 from the first captured golden
+files, 14 more from a full `PersonTable` snapshot of the finished Brontë
+database) -- every one checksums correctly. See
+`internal/rmdb/generateuniqueid.go` and its tests.
+
+**`EventTable.SortDate` / `NameTable.SortDate`** -- a 64-bit integer
+encoding, bit-packed rather than a simple day-count, documented at
+https://sqlitetoolsforrootsmagic.com/dates-sortdate-algorithm/:
+`SortDate = 2^49*(Y+10000) + 2^45*M + 2^39*D + 17178820620`. Confirmed
+against 18 real (year, month, day, SortDate) values captured from the
+Brontë database, covering full dates, month-only dates, year-only
+dates, and a date carrying RootsMagic's "About" qualifier (confirmed
+separately that the qualifier does *not* change this value -- it only
+affects the separate `Date` string, below). `9223372036854775807`
+(max int64) is RootsMagic's own sentinel for "no date to sort by" --
+confirmed directly: every `NameTable` row for a name with no date
+entered uses exactly this value, with no exceptions. See
+`internal/rmdb/sortdate.go` and its tests.
+
+**`EventTable.Date` / `NameTable.Date`** (the encoded date *string*,
+distinct from `SortDate`) -- this project already had a fully confirmed,
+tested decoder for this format from earlier work
+(`internal/gedcomx/rmdate.go`'s `ParseRMDate`, confirmed against a
+purpose-built RootsMagic test database exercising every modifier; see
+its own comment and this file's "Dates" section elsewhere for the full
+grammar). `EncodeRMDate` is its inverse, added for this stage --
+deliberately narrower in scope than `ParseRMDate`'s own read-side
+coverage, for two confirmed reasons rather than caution alone:
+
+- Only a plain date and an "About"-qualified date can be *encoded* at
+  all, even though `ParseRMDate` can *decode* five different qualifiers
+  (`About`/`Calculated`/`Estimated`/`Circa`/`Say`). This isn't an
+  arbitrary limitation -- checked directly against `ParseRMDate`'s own
+  mapping that only the plain and "About" cases ever produce a GEDCOM X
+  `Formal` value in the first place; the other four qualifiers have no
+  formal-date representation to encode *from* in GEDCOM X's own Date
+  Format specification, so there's nothing for `EncodeRMDate` to invert
+  for them even in principle.
+- Before/after/range dates aren't supported for encoding, and this
+  surfaced a genuine, confirmed ambiguity worth recording: GEDCOM X's
+  formal date grammar represents both "Between X and Y" (RootsMagic's
+  `R` directional code) and "From X to Y" (`S`) with the *identical*
+  string shape, `+YYYY-MM-DD/+YYYY-MM-DD` -- confirmed directly via
+  `ParseRMDate`'s own test cases, which produce that same formal string
+  for both. A formal date in that shape genuinely cannot be mapped back
+  to one specific RootsMagic directional code without guessing which one
+  was meant, so `EncodeRMDate` declines rather than picks one arbitrarily.
+
+Every one of these limits returns a clear error (surfaced as a `400` at
+the API layer once the create handler is built) rather than a best
+guess -- deliberate, not merely cautious: a wrong *read* is a cosmetic
+display problem, but a wrong *write* creates a real, permanent,
+incorrect record in someone's family tree. `internal/gedcomx/
+rmdate_encode_test.go` round-trips every real `Date` string captured for
+this stage (`ParseRMDate` -> `Formal` -> `EncodeRMDate` -> compare
+against the original) rather than asserting hand-written expected
+output, and separately confirms the before/after/range/malformed cases
+are rejected.
+
+### Two RootsMagic quirks found in the reference capture, confirmed and deliberately not replicated
+
+- **`FamilyTable.ChildID`** turned out to be pure UI state, not data --
+  confirmed directly from the data dictionary: *"PersonID of Child last
+  active as the root person in Pedigree view."* A real capture showed it
+  retroactively set on a family unrelated to the operation that
+  triggered the capture, evidently because a person from that family had
+  been viewed in Pedigree view earlier in the same RootsMagic session.
+  The same category of finding as `MediaCollapsed_Citations` several
+  stages back: this server has no Pedigree view to have a root person
+  for, so there's nothing true to write here. Left at its default (`0`)
+  always.
+- **`UTCModDate` during marriage/child creation is inconsistent in a way
+  confirmed not worth replicating.** Adding a spouse bumps `UTCModDate`
+  on only one of the two `PersonTable` rows (whichever partner the
+  operation was performed *from*, confirmed directly against raw,
+  unredacted values in the actual snapshot databases -- not just the
+  golden files, which have this field redacted); adding a child bumps
+  neither parent's nor the child's own `UTCModDate` at all. The value
+  that *is* written during a marriage is also truncated to midnight
+  (confirmed directly: `46246.2471460764` before, exactly `46247.0`
+  after) rather than carrying the full-precision timestamp used
+  everywhere else, including by RootsMagic itself elsewhere in the very
+  same transaction. Decided (see conversation) not to replicate either
+  behavior: `UTCModDate` is set on exactly the row(s) each create/update
+  handler directly writes, always full-precision, never cascaded to
+  unrelated records -- consistent with how every UPDATE handler already
+  built in this project behaves, and how this project has already
+  chosen not to replicate other confirmed-but-unhelpful RootsMagic
+  quirks elsewhere (`fsID`/`anID`/`LatLongExact`, `IsPrivate`).
+
+### API design decisions, per the RS spec directly rather than invented
+
+- **`Person` creation**: `POST /persons`, per RS spec Section 4.9.2 --
+  `201` + `Location` header if exactly one person was created, `204` if
+  a request created several at once.
+- **Child-linking**: `POST /relationships` with `type=http://gedcomx.org/ParentChild`,
+  matching how this server's *read* side already models a parent-child
+  link as its own `Relationship` kind (see the "Relationships" section
+  above) -- not a new, separate mechanism.
+
+### `POST /persons` -- the create handler itself (done)
+
+Built on top of the encoding layer above. `internal/rmdb.CreatePerson`
+does the actual multi-table transaction (`PlaceTable` resolution/creation,
+`EventTable` per fact, one `NameTable` row per name, `PersonTable`,
+`ConfigTable`'s `UTCModDate` bump); `internal/api`'s
+`handleCreatePersons` and its `buildNewPerson`/`buildNewPersonName`/
+`buildNewPersonFact` helpers translate an incoming GEDCOM X request into
+that call, resolving type URIs via the new reverse lookups added for
+this (`gedcomx.GedcomTagForFactType`, `GenderCode`, `NameTypeCode` --
+each the inverse of an existing read-side mapping, not a fresh guess).
+
+**`SurnameMP`/`GivenMP`/`NicknameMP`** turned out not to need a new
+dependency: `golang.org/x/text` (the usual way to do this in Go) isn't
+reachable from this sandbox's network allowlist, so the mapping table
+was generated once, locally, using Python's `unicodedata` (real NFD
+decomposition, not a hand-picked subset) and embedded as static Go data
+(`internal/rmdb/accentfold_table.go`, 488 entries covering the Latin-1
+Supplement, Latin Extended-A/B, and Latin Extended Additional Unicode
+blocks). Checked against the one real confirmed example first
+(`Brontë` -> `Bronte`) before trusting the broader table. Deliberately
+excludes ligatures/special letters (`ø`, `æ`, `œ`, `ß`) -- NFD
+decomposition doesn't touch these at all, since they aren't a base
+letter plus a combining accent mark to begin with, and this project has
+no confirmed data point for what RootsMagic does with them.
+
+**ID assignment, place deduplication, and the primary-name-only
+`BirthYear`/`DeathYear` behavior** are all confirmed directly against
+the real capture, field-by-field: `CreatePerson`'s output for recreating
+Patrick Brontë from an empty database matches the real golden file
+exactly, on every field this server controls (the only two that
+necessarily differ are `UTCModDate`, a timestamp, and `UniqueID`,
+randomly generated per person). Place deduplication confirmed
+separately across two independent `CreatePerson` calls sharing a place
+name. See `internal/rmdb/createperson_test.go`.
+
+**Scoped narrower than the full GEDCOM X conceptual model, by design**:
+a name must have structured `nameForms[0].parts` (explicit Given/
+Surname/...) -- a bare `fullText` is rejected rather than split into
+parts by guesswork, the same reasoning `EncodeRMDate` already applies to
+ambiguous dates. Only built-in GEDCOM X fact types with a confirmed
+RootsMagic `FactTypeTable` mapping can be created; a custom fact-type
+URI is rejected rather than either matched fuzzily or used to silently
+create a new `FactTypeTable` row (a materially bigger, unverified
+feature). A `Fact.place` must carry `original` text; resolving a place
+from a bare `resource` reference isn't supported. Every rejection in
+this list returns a clear `400` naming what was wrong, not a best
+guess -- consistent with this whole stage's own principle (see above):
+a wrong write is a permanent, real mistake in someone's family tree, not
+a cosmetic display issue.
+
+**Per RS spec Section 4.9.2 exactly**: `201` + `Location` header when a
+request creates exactly one person, `204` when it creates several. A
+request creating multiple persons is explicitly *not* all-or-nothing
+across those persons -- each `CreatePerson` call is its own transaction,
+so a failure partway through a multi-person request can leave earlier
+persons in that same request already committed. The error response in
+that case says so explicitly, naming which persons already exist,
+rather than leaving the client to discover it. Making a whole
+multi-person request atomic would need one transaction spanning all of
+them; not built, since nothing in this project's reference data
+exercises multi-person creation as a single atomic unit in the first
+place.
+
+Verified through the real HTTP stack end to end, not just at the
+storage layer: `cmd/server/main_test.go`'s `TestCreatePersonsHTTP`
+covers the `201`/`Location`/follow-up-`GET` happy path, the `204`
+multi-person path, every rejection case above, malformed JSON, an
+actually-unknown field (still caught by `decodeStrictJSON`, same as
+every other write handler), and read-only mode still correctly
+returning `405`.
+
+### `POST /relationships` -- Couple and ParentChild creation (done)
+
+Built on the same `nextID`/`resolveOrCreatePlace`/`bumpConfigTableModDate`
+pattern `CreatePerson` established -- confirmed to carry over directly,
+as anticipated.
+
+**`CreateCoupleRelationship`** (`internal/rmdb/createcouple.go`) creates
+a new `FamilyTable` row plus zero or more family-owned facts (e.g. a
+Marriage), and updates `SpouseID` on whichever of `FatherID`/`MotherID`
+were actually specified -- RootsMagic itself supports single-parent
+families (confirmed against real data: several families in
+`royal92.rmtree` have one of the two at `0`), so only one is required,
+not both. Matched field-by-field against the real captured golden file
+for Patrick and Maria's marriage -- exact match on every field this
+server controls, including `EventTable.FamilyID` staying `0` on the
+marriage fact itself (a family-owned fact identifies its owner via
+`OwnerType`/`OwnerID`, not this column -- the same finding already
+documented for `CreatePerson`'s own facts). One deliberate divergence
+from the real capture, consistent with `CreatePerson`'s own established
+policy: both spouses' `UTCModDate` get bumped here, not just one --
+RootsMagic's own real capture only bumped whichever spouse the operation
+was performed *from* (confirmed directly against raw, unredacted values,
+not just the golden file), which this project has already decided not
+to replicate, for both `Person` and `Relationship` writes, since there's
+no principled reason to prefer one spouse's timestamp over the other's.
+
+**`CreateParentChildRelationship`** (`internal/rmdb/createparentchild.go`)
+was the harder design problem in this whole stage, worth explaining
+precisely rather than just stating the result: RootsMagic's own schema
+has nowhere to attach a bare (parent, child) pair directly. A child
+belongs to a *family* (`ChildTable.FamilyID`), and that family
+separately has a `FatherID`/`MotherID` -- the father-child and
+mother-child relationships this server's read side already exposes as
+two distinct `Relationship` resources (see "Relationships" above) are
+really two views onto the same underlying family membership, not two
+facts RootsMagic stores independently. Creating one has to resolve which
+family is actually meant. The design landed on:
+
+1. If the parent (role determined by their own `PersonTable.Sex`)
+   already has exactly one existing family in the matching role, the
+   child is added there. This is the real, confirmed workflow (see the
+   reference capture): create the couple relationship first, giving both
+   parents an established family, then link each child with a *single*
+   `ParentChild` request naming either parent -- confirmed directly, via
+   a real HTTP round trip, that this correctly surfaces *both*
+   father-child and mother-child relationships on a subsequent `GET`
+   without needing a second request for the other parent, since both
+   are derived from the one `ChildTable` row the single request creates.
+2. If the parent has no existing family in that role at all, a new
+   single-parent family is created first (matching
+   `CreateCoupleRelationship`'s own support for one), then the child is
+   added there.
+3. If the parent already has more than one family in that role (a real,
+   if less common, case -- remarriage), which family the child belongs
+   to is genuinely ambiguous from a bare (parent, child) pair alone --
+   GEDCOM X's own `ParentChild` relationship type has no third field to
+   name a specific family. Rejected with a clear error rather than
+   guessed at.
+
+A child already linked to the resolved family is treated as a no-op
+(idempotent), not a duplicate `ChildTable` row or an error -- confirmed
+directly with a dedicated test, not just reasoned about. Sex "Unknown"
+on the parent is rejected outright, the same reasoning `CreateCoupleRelationship`
+already applies via `resolveCoupleRoles` (below) to a couple where
+either person's sex isn't Male/Female. A real gap was caught and fixed
+while building the HTTP layer on top of this: the first version never
+validated `ChildID` actually existed before creating a dangling
+`ChildTable` reference to it -- caught before shipping, not after.
+
+Matched field-by-field against the real six-children capture: exact
+match on `RecID`/`ChildID`/`FamilyID`/`ChildOrder` across all six
+children, in order.
+
+**`internal/api/createrelationship.go`**'s `handleCreateRelationships`
+resolves which of the two supported types a request is (`Couple` or
+`ParentChild`; anything else is rejected) and which person plays which
+role. For `Couple` specifically, `resolveCoupleRoles` determines
+Father/Mother from each person's own recorded `Sex` rather than trusting
+`person1`/`person2`'s order -- confirmed the RS spec's own `Couple`
+relationship type doesn't define which is which -- and rejects a pair
+that isn't exactly one Male and one Female, the same principle as
+`CreateParentChildRelationship`'s own unknown-sex rejection. Per RS spec
+Section 4.20.2 (mirroring `Persons`' own `POST`): `201` + `Location` for
+exactly one relationship created, `204` for several.
+
+Verified through the real HTTP stack end to end:
+`cmd/server/main_test.go`'s `TestCreateRelationshipsHTTP` covers the
+`Couple` happy path (in both person1/person2 orderings), the
+`ParentChild`-after-`Couple` case confirming both derived relationships
+appear on a subsequent `GET`, the `204` multi-relationship path, a
+same-sex couple rejection, a nonexistent person rejection (confirmed
+`400`, not a raw `500`), an unsupported relationship type, an empty
+request, and read-only mode.
+
+### What's next
+
+`Person`, `Couple`, and `ParentChild` creation are all done and tested.
+Nothing currently identified as the next piece -- this closes out the
+create-side work this stage set out to do (see "Stage 3" above for
+where this started).
+
 ## RootsMagic version handling
 
 RootsMagic 8 or later is required. The data dictionary shows that `PersonTable`,
