@@ -3,8 +3,9 @@
 // support" section for the staged plan behind that). It discovers the
 // actual columns present in each table at startup (rather than
 // hard-coding a single schema version) so that it works unmodified across
-// RootsMagic 7-11 files; see SCOPE.md at the repository root for details.
-// RootsMagic 6 and earlier are out of scope and are rejected at startup.
+// RootsMagic 8-11 files; see SCOPE.md at the repository root for details.
+// RootsMagic 7 and earlier are out of scope and are rejected at startup --
+// see requiredTablesAndColumns's own comment for why.
 package rmdb
 
 import (
@@ -46,9 +47,36 @@ func registerCollation() {
 }
 
 // requiredTablesAndColumns lists, for each table this server reads, the
-// columns it actually depends on. RootsMagic 7 is the minimum supported
+// columns it actually depends on. RootsMagic 8 is the minimum supported
 // version (see SCOPE.md); if a required table or column is missing, Open
-// fails with a clear error rather than silently returning incomplete data.
+// fails with a clear error rather than silently returning incomplete data
+// or, worse, failing much later with a raw SQL error on a write attempt.
+//
+// RootsMagic 7 was dropped as a supported version specifically over
+// UTCModDate: confirmed directly against the RM4-11 data dictionary's own
+// version-specific sheets (not just inferred) that PlaceTable, SourceTable,
+// MultimediaTable, MediaLinkTable, and ConfigTable -- the five tables this
+// server's write support (see writes.go) actually modifies -- have no
+// modification-timestamp column at all in RootsMagic 7. It isn't that
+// RM7 used a different column name (EditDate, which RM8 replaced
+// wholesale on PersonTable/EventTable/NameTable, per
+// https://sqlitetoolsforrootsmagic.com/date-last-edited/) -- for these
+// five specific tables, RM7 tracked no modification timestamp under any
+// name. Every write handler unconditionally sets UTCModDate on one or more
+// of these tables, so an RM7 file would fail every write attempt with "no
+// such column: UTCModDate," discovered only when a client actually tries
+// to write, not at startup. Checking for it here means that failure
+// happens once, clearly, immediately -- not as a surprising runtime error
+// deep into a write a client had every reason to expect would succeed.
+//
+// Support for RM7 (or reading only, without the write-relevant tables)
+// was considered and deliberately set aside, not because it would be hard,
+// but because it isn't a goal of this project: legacy-version support is a
+// nice-to-have, not one of the reasons rmgedcomx exists. Notably, future
+// write support is planned for PersonTable, NameTable, FamilyTable, and
+// EventTable too (see SCOPE.md's "What's next"), which will need their own
+// correct-timestamp handling regardless -- narrowing to RM8 now avoids
+// building that twice.
 var requiredTablesAndColumns = map[string][]string{
 	"PersonTable":       {"PersonID", "Sex", "Living", "ParentID", "SpouseID"},
 	"NameTable":         {"NameID", "OwnerID", "Surname", "Given", "Prefix", "Suffix", "Nickname", "NameType", "IsPrimary", "SortDate", "BirthYear", "DeathYear", "Date"},
@@ -56,14 +84,15 @@ var requiredTablesAndColumns = map[string][]string{
 	"ChildTable":        {"RecID", "ChildID", "FamilyID", "RelFather", "RelMother", "ChildOrder"},
 	"EventTable":        {"EventID", "EventType", "OwnerType", "OwnerID", "FamilyID", "PlaceID", "Date", "IsPrimary", "Details", "Note"},
 	"FactTypeTable":     {"FactTypeID", "Name", "GedcomTag", "OwnerType"},
-	"PlaceTable":        {"PlaceID", "PlaceType", "Name", "Latitude", "Longitude", "Note"},
-	"SourceTable":       {"SourceID", "Name", "RefNumber", "ActualText", "Comments"},
+	"PlaceTable":        {"PlaceID", "PlaceType", "Name", "Latitude", "Longitude", "Note", "UTCModDate"},
+	"SourceTable":       {"SourceID", "Name", "RefNumber", "ActualText", "Comments", "UTCModDate"},
 	"CitationTable":     {"CitationID", "SourceID"},
 	"CitationLinkTable": {"LinkID", "CitationID", "OwnerType", "OwnerID"},
-	"MultimediaTable":   {"MediaID", "MediaType", "MediaPath", "MediaFile", "Caption", "RefNumber", "Date", "Description"},
-	"MediaLinkTable":    {"LinkID", "MediaID", "OwnerType", "OwnerID"},
+	"MultimediaTable":   {"MediaID", "MediaType", "MediaPath", "MediaFile", "Caption", "RefNumber", "Date", "Description", "UTCModDate"},
+	"MediaLinkTable":    {"LinkID", "MediaID", "OwnerType", "OwnerID", "UTCModDate"},
 	"WitnessTable":      {"WitnessID", "EventID", "PersonID", "Role", "Given", "Surname", "Note"},
 	"RoleTable":         {"RoleID", "RoleName", "EventType"},
+	"ConfigTable":       {"RecID", "RecType", "DataRec", "UTCModDate"},
 }
 
 // optionalMarkerTables are used only to produce a best-effort, informational
@@ -236,7 +265,7 @@ func (db *DB) checkCapabilities() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf(
-			"this file doesn't look like a RootsMagic 7 or later database: missing %s "+
+			"this file doesn't look like a RootsMagic 8 or later database: missing %s "+
 				"(see SCOPE.md)",
 			strings.Join(missing, ", "),
 		)
@@ -247,6 +276,11 @@ func (db *DB) checkCapabilities() error {
 // SchemaHint returns a short, best-effort, informational description of
 // which RootsMagic version range produced this file. It never affects query
 // behavior.
+//
+// The default case below reads "8-11," not "7-11": RM7 is now rejected
+// outright by checkCapabilities (see requiredTablesAndColumns's own
+// comment), so nothing below RM8 can reach this function at all -- there's
+// no longer a lower bound left to express here.
 func (db *DB) SchemaHint() string {
 	present := map[string]bool{}
 	for _, t := range optionalMarkerTables {
@@ -258,6 +292,6 @@ func (db *DB) SchemaHint() string {
 	case present["DNATable"]:
 		return "RootsMagic 8-11 (or compatible)"
 	default:
-		return "RootsMagic 7-11 (or compatible)"
+		return "RootsMagic 8-11 (or compatible)"
 	}
 }

@@ -28,13 +28,15 @@ later if you need any of this.
 
 ## RootsMagic schema
 
-RootsMagic 7 or later is required. The table and column layout is effectively unchanged
-from RootsMagic 7 through RootsMagic 10/11 for the tables this server reads
+RootsMagic 8 or later is required. The table and column layout is effectively unchanged
+from RootsMagic 8 through RootsMagic 10/11 for the tables this server reads
 (`PersonTable`, `NameTable`, `FamilyTable`, `ChildTable`, `EventTable`,
 `FactTypeTable`, `PlaceTable`, `SourceTable`, `CitationTable`, `CitationLinkTable`, `RoleTable`).
 The server queries columns by name (not position) and only requires the columns it actually
-uses, so it works unmodified against RootsMagic 7–11 files. See [SCOPE.md](./SCOPE.md) for
-what happens if you point it at an older file.
+uses, so it works unmodified against RootsMagic 8–11 files. RootsMagic 7 is rejected
+specifically because it has no modification-timestamp column at all on the tables this
+server's write support depends on -- see [SCOPE.md](./SCOPE.md) for the full account, and
+for what happens if you point it at an older file.
 
 ## Build
 
