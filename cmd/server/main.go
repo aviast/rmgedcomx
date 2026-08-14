@@ -7,7 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -67,6 +67,48 @@ func extractBypassOSCheckFlag() bool {
 	return found
 }
 
+// setupLogging configures the default slog logger used throughout this
+// server -- both this package and internal/api call slog's package-level
+// functions (slog.Info, slog.Debug, ...) directly, rather than threading
+// a logger instance through every function call, so this is the one
+// place that decides level and format for the whole process. Must run
+// before anything else logs.
+//
+// Deliberately writes to stderr, matching the standard `log` package's
+// own former default (and every fmt.Fprintln(os.Stderr, ...) call in
+// this file for startup errors) -- this keeps the log stream separate
+// from printCollectionTable's own stdout output below, so a person can
+// redirect each independently (e.g. `./rmgedcomx -db X > startup.txt 2>
+// server.log`) if that's useful to them.
+func setupLogging(levelFlag, formatFlag string) error {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(levelFlag)); err != nil {
+		return fmt.Errorf("invalid -log-level %q: %w", levelFlag, err)
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	switch formatFlag {
+	case "text":
+		handler = slog.NewTextHandler(os.Stderr, opts)
+	case "json":
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	default:
+		return fmt.Errorf("invalid -log-format %q: must be \"text\" or \"json\"", formatFlag)
+	}
+	slog.SetDefault(slog.New(handler))
+	return nil
+}
+
+// fatalf logs msg and args at Error level, then exits -- slog has no
+// built-in Fatal level (Debug/Info/Warn/Error only), so this is the
+// direct replacement for log.Fatalf's own "log then exit(1)" behavior,
+// kept as one helper so every startup-fatal call site does both
+// consistently rather than some remembering the exit and some not.
+func fatalf(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
+}
+
 func main() {
 	bypassOSCheck := extractBypassOSCheckFlag()
 
@@ -79,8 +121,15 @@ func main() {
 		write              = flag.Bool("write", false, "enable write support (POST/PUT/PATCH/DELETE); default is read-only. See SCOPE.md's \"Write support\" section for what's actually implemented at any given stage")
 		defaultGenerations = flag.Int("default-generations", 4, "default number of generations for ancestry/descendancy queries")
 		maxPageSize        = flag.Int("max-page-size", 200, "maximum number of entries returned by a single paged request")
+		logLevel           = flag.String("log-level", "info", "log level: debug, info, warn, or error. debug additionally logs the response body of every failed (4xx/5xx) request, which is normally the fastest way to see why one happened")
+		logFormat          = flag.String("log-format", "text", "log output format: text or json")
 	)
 	flag.Parse()
+
+	if err := setupLogging(*logLevel, *logFormat); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
 
 	if len(dbPaths) == 0 {
 		fmt.Fprintln(os.Stderr, "error: at least one -db is required")
@@ -118,15 +167,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(2)
 		}
-		log.Printf("using Media Folder %q (from RootsMagic's own configuration)", discovered)
+		slog.Info("using Media Folder (from RootsMagic's own configuration)", "mediaFolder", discovered)
 		effectiveMediaFolder = discovered
 	}
 
 	router, cleanup := SetupRouter(dbPaths, *baseURL, effectiveMediaFolder, *write, *defaultGenerations, *maxPageSize)
 	defer cleanup()
-	log.Printf("listening on %s", *addr)
+	slog.Info("listening", "addr", *addr)
 	if err := http.ListenAndServe(*addr, router); err != nil {
-		log.Fatalf("server error: %v", err)
+		fatalf("server error", "error", err)
 	}
 }
 
@@ -134,7 +183,7 @@ func main() {
 func SetupRouter(dbPaths []string, baseURL string, mediaFolder string, write bool, defaultGenerations int, maxPageSize int) (http.Handler, func()) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		log.Printf("warning: couldn't determine home directory (%v); multimedia paths using '~' won't resolve", err)
+		slog.Warn("couldn't determine home directory; multimedia paths using '~' won't resolve", "error", err)
 	}
 
 	entries := make([]openedDB, 0, len(dbPaths))
@@ -142,25 +191,25 @@ func SetupRouter(dbPaths []string, baseURL string, mediaFolder string, write boo
 	for _, path := range dbPaths {
 		db, err := rmdb.Open(path, !write)
 		if err != nil {
-			log.Fatalf("opening RootsMagic database %q: %v", path, err)
+			fatalf("opening RootsMagic database", "path", path, "error", err)
 		}
-		log.Printf("opened %s (%s)", path, db.SchemaHint())
+		slog.Info("opened database", "path", path, "schema", db.SchemaHint())
 
 		dir, err := filepath.Abs(filepath.Dir(path))
 		if err != nil {
-			log.Fatalf("resolving directory of %q: %v", path, err)
+			fatalf("resolving directory", "path", path, "error", err)
 		}
 
 		rootName, err := db.RootPersonDisplayName()
 		if err != nil {
-			log.Printf("warning: couldn't determine the Home Person for %s (%v); its Collection id/title will fall back to the filename", path, err)
+			slog.Warn("couldn't determine the Home Person; Collection id/title will fall back to the filename", "path", path, "error", err)
 			rootName = ""
 		}
 		id, title := collectionid.Derive(rootName, path)
 
 		uniqueID, err := db.UniqueID()
 		if err != nil {
-			log.Printf("warning: couldn't determine the RootsMagic UniqueID for %s (%v)", path, err)
+			slog.Warn("couldn't determine the RootsMagic UniqueID", "path", path, "error", err)
 			uniqueID = ""
 		}
 
@@ -223,7 +272,7 @@ func SetupRouter(dbPaths []string, baseURL string, mediaFolder string, write boo
 		}
 		srv, err := api.NewServer(e.db, cfg)
 		if err != nil {
-			log.Fatalf("initializing server for %q: %v", e.path, err)
+			fatalf("initializing server", "path", e.path, "error", err)
 		}
 		collectionEntries = append(collectionEntries, api.CollectionEntry{ID: e.id, Server: srv})
 	}
@@ -248,6 +297,15 @@ func SetupRouter(dbPaths []string, baseURL string, mediaFolder string, write boo
 // writeMode is called out prominently and separately from the table,
 // since it applies to the whole server, not any one collection -- see
 // SCOPE.md's "Write support" section.
+//
+// Deliberately still plain fmt.Fprint*, not converted to slog along with
+// the rest of this codebase's output: this is a human-readable startup
+// report someone reads once at a terminal, not a diagnostic log line --
+// an aligned table (via tabwriter, below) doesn't have a sensible
+// representation as structured log attributes, and forcing it through
+// one would lose the alignment for no real benefit. It goes to stdout
+// specifically (setupLogging sends the actual log stream to stderr), so
+// the two stay independently redirectable if that's ever useful.
 func printCollectionTable(entries []openedDB, writeMode bool) {
 	if writeMode {
 		fmt.Fprintln(os.Stdout, "\n*** WRITE MODE ENABLED -- changes made through this API will be written directly to the database files. ***")
