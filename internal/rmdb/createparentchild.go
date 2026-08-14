@@ -78,7 +78,7 @@ func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (f
 	case 1:
 		roleColumn = "MotherID"
 	default:
-		return 0, fmt.Errorf("parent %d has unknown sex -- can't determine whether this is a father-child or mother-child relationship", input.ParentID)
+		return 0, fmt.Errorf("%w: parent %d has unknown sex -- can't determine whether this is a father-child or mother-child relationship", ErrAmbiguous, input.ParentID)
 	}
 
 	tx, err := db.sql.Begin()
@@ -139,8 +139,8 @@ func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (f
 		familyID = candidates[0]
 	default:
 		return 0, fmt.Errorf(
-			"parent %d already belongs to %d different families as %s -- which one this child belongs to can't be determined from a parent-child relationship alone; create or identify the specific couple relationship first",
-			input.ParentID, len(candidates), roleColumn)
+			"%w: parent %d already belongs to %d different families as %s -- which one this child belongs to can't be determined from a parent-child relationship alone; create or identify the specific couple relationship first",
+			ErrAmbiguous, input.ParentID, len(candidates), roleColumn)
 	}
 
 	var alreadyLinked int

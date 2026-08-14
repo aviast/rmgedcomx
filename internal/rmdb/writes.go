@@ -11,6 +11,20 @@ import (
 // exist -- callers map it to a 404.
 var ErrNotFound = errors.New("not found")
 
+// ErrAmbiguous is returned when a request is well-formed and everything
+// it references genuinely exists, but combined with the database's
+// current state there's more than one valid way to act on it -- e.g.
+// creating a parent-child relationship when the named parent already
+// belongs to more than one family in the matching role (see
+// CreateParentChildRelationship's own comment). Distinct from
+// ErrNotFound: nothing referenced is missing, there's simply more than
+// one correct interpretation and this server has no basis to pick one.
+// Callers should map this to a 400 the same way they map ErrNotFound --
+// both mean "the request itself needs to change, not a server failure"
+// -- see internal/api's handleCreateRelationships for where that mapping
+// actually happens.
+var ErrAmbiguous = errors.New("ambiguous")
+
 // utcModDateExpr computes RootsMagic's own UTCModDate encoding directly in
 // SQL, rather than computing a timestamp in Go and converting it -- this
 // guarantees exact agreement with RootsMagic's own convention without

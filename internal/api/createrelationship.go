@@ -99,7 +99,7 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 		}
 		if err != nil {
 			status := http.StatusInternalServerError
-			if errors.Is(err, rmdb.ErrNotFound) {
+			if errors.Is(err, rmdb.ErrNotFound) || errors.Is(err, rmdb.ErrAmbiguous) {
 				status = http.StatusBadRequest
 			}
 			if len(createdFamilyIDs) > 0 {
@@ -151,7 +151,7 @@ func (s *Server) resolveCoupleRoles(p1, p2 int64) (fatherID, motherID int64, err
 	case person1.Sex == 1 && person2.Sex == 0:
 		return p2, p1, nil
 	default:
-		return 0, 0, fmt.Errorf("can't determine father/mother roles for persons with Sex %d and %d -- exactly one must be Male and one Female", person1.Sex, person2.Sex)
+		return 0, 0, fmt.Errorf("%w: can't determine father/mother roles for persons with Sex %d and %d -- exactly one must be Male and one Female", rmdb.ErrAmbiguous, person1.Sex, person2.Sex)
 	}
 }
 

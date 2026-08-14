@@ -1,6 +1,9 @@
 package rmdb
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestCreateParentChildRelationshipMatchesRealCapturedData recreates the
 // exact real capture for this operation: all six Brontë children linked
@@ -154,6 +157,9 @@ func TestCreateParentChildRelationshipRejectsAmbiguousMultipleFamilies(t *testin
 	if err == nil {
 		t.Fatal("expected an error when the parent belongs to more than one family in the matching role")
 	}
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Errorf("expected the error to wrap ErrAmbiguous (so the API layer maps it to 400, not 500), got: %v", err)
+	}
 }
 
 func TestCreateParentChildRelationshipRejectsUnknownSexParent(t *testing.T) {
@@ -170,5 +176,8 @@ func TestCreateParentChildRelationshipRejectsUnknownSexParent(t *testing.T) {
 	_, err = db.CreateParentChildRelationship(NewParentChildRelationship{ParentID: parent, ChildID: child})
 	if err == nil {
 		t.Fatal("expected an error when the parent's sex is unknown")
+	}
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Errorf("expected the error to wrap ErrAmbiguous (so the API layer maps it to 400, not 500), got: %v", err)
 	}
 }

@@ -6,6 +6,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -259,38 +260,59 @@ func acceptsGedcomXJSON(accept string) bool {
 // status, duration) -- the direct replacement for what used to be a bare
 // log.Printf("%s %s -> %d (%s)", ...) line. When the response status
 // indicates an error (>= 400), a second, separate slog.Debug line
-// follows, carrying the actual response body -- for this API, that body
-// is always the RFC 7807 problem-details JSON naming exactly why the
+// follows, carrying both the request body that produced this response
+// and the response body itself -- for this API, the response body is
+// always the RFC 7807 problem-details JSON naming exactly why the
 // request failed (or, for a request that never reached this server's own
 // handler code at all -- e.g. a write route that doesn't exist because
 // -write wasn't passed -- Go's own plain-text 404/405 body, which is
 // itself the diagnostic: seeing that instead of this server's usual JSON
 // error shape is a direct sign the request never reached application
-// code in the first place).
+// code in the first place). Seeing the request alongside it answers the
+// natural next question once the response explains *that* something was
+// rejected: *what* did the client actually send that triggered it.
 //
 // Deliberately two separate log lines at two separate levels, not one
-// line with the body as an always-present attribute: slog's level
+// line with the bodies as always-present attributes: slog's level
 // filtering is per-call, not per-attribute, so a body attribute on the
 // Info line would always render regardless of the configured level. A
 // separate Debug call is the only way to make the extra detail actually
 // optional.
+//
+// Reading and re-wrapping r.Body to capture it has a real, if small,
+// cost -- not worth paying on every single request when nothing will
+// ever look at the result. Gated on whether Debug is actually enabled,
+// checked once up front, rather than unconditionally: this way a server
+// run at the default -log-level=info pays nothing extra for a capability
+// nobody asked it to use this session.
 func withLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		debugEnabled := slog.Default().Enabled(r.Context(), slog.LevelDebug)
+		var reqBody []byte
+		if debugEnabled && r.Body != nil {
+			reqBody, _ = io.ReadAll(r.Body)
+			r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(reqBody))
+		}
+
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK, captureBody: debugEnabled}
 		next.ServeHTTP(rec, r)
 		duration := time.Since(start)
 		slog.Info("request", "method", r.Method, "path", r.URL.RequestURI(), "status", rec.status, "duration", duration)
-		if rec.status >= 400 {
-			slog.Debug("request failed", "method", r.Method, "path", r.URL.RequestURI(), "status", rec.status, "body", rec.body.String())
+		if debugEnabled && rec.status >= 400 {
+			slog.Debug("request failed", "method", r.Method, "path", r.URL.RequestURI(), "status", rec.status,
+				"requestBody", string(reqBody), "responseBody", rec.body.String())
 		}
 	})
 }
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
-	body   bytes.Buffer
+	status      int
+	captureBody bool
+	body        bytes.Buffer
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -299,11 +321,12 @@ func (r *statusRecorder) WriteHeader(code int) {
 }
 
 // Write captures a copy of the response body when the status is an
-// error, for withLogging's own debug-level line above -- cheap for this
-// API's small JSON responses, and the copy is only ever actually
-// rendered if -log-level=debug and this specific response was an error.
+// error and debug logging is actually enabled, for withLogging's own
+// debug-level line above -- cheap for this API's small JSON responses,
+// and the copy is only ever actually rendered if -log-level=debug and
+// this specific response was an error.
 func (r *statusRecorder) Write(b []byte) (int, error) {
-	if r.status >= 400 {
+	if r.captureBody && r.status >= 400 {
 		r.body.Write(b)
 	}
 	return r.ResponseWriter.Write(b)
