@@ -2061,34 +2061,112 @@ now emits two things per request, not one:
   the direct replacement for what used to be a bare
   `log.Printf("%s %s -> %d (%s)", ...)` line.
 - A separate `Debug` line, *only* when the response status is `>= 400`,
-  carrying the actual response body. For this API, that body is always
-  one of two things, and telling them apart is itself the diagnosis: this
-  server's own detailed RFC 7807 reason (e.g. `"RootsMagic.exe was
-  detected running..."`), or -- if the request never reached this
-  server's own handler code at all, e.g. `POST /persons` when `-write`
-  wasn't passed and that route was never registered -- Go's own bare
-  `"Method Not Allowed"` text. Seeing the second kind is itself the
-  answer: the problem isn't in a specific handler's logic, it's that the
-  route doesn't exist under the server's current configuration.
+  carrying both the request body that produced it and the actual
+  response body. For this API, the response body is always one of two
+  things, and telling them apart is itself the diagnosis: this server's
+  own detailed RFC 7807 reason (e.g. `"RootsMagic.exe was detected
+  running..."`), or -- if the request never reached this server's own
+  handler code at all, e.g. `POST /persons` when `-write` wasn't passed
+  and that route was never registered -- Go's own bare `"Method Not
+  Allowed"` text. Seeing the second kind is itself the answer: the
+  problem isn't in a specific handler's logic, it's that the route
+  doesn't exist under the server's current configuration. The request
+  body was added second, prompted directly by a real report: the
+  response alone explains *that* something was rejected, but the natural
+  next question -- *what* did the client actually send -- needed the
+  request alongside it.
 
 Deliberately two separate log lines at two separate levels, not one line
-with the body as an always-present attribute: slog's level filtering is
+with the bodies as always-present attributes: slog's level filtering is
 per-call, not per-attribute, so a body attribute on the `Info` line would
 always render regardless of the configured level -- a separate `Debug`
 call is the only way to make the extra detail actually optional.
 
 Mechanically, `statusRecorder` (already capturing the status code for
-the existing log line) now also captures a copy of the response body via
-its own `Write`, but only when the status is already known to be an
-error -- cheap for this API's small JSON responses. Confirmed the
-capture actually works, not just compiles, against three real request
-scenarios run through the real HTTP stack: a route genuinely unregistered
-in read-only mode (`405`, body `"Method Not Allowed\n"`, Go's own text);
-a real handler-level `404` (body this server's own RFC 7807 JSON,
-`"person P999 not found"`); a write-guard rejection with a fake tripped
-guard (`405`, body this server's own JSON, `"RootsMagic.exe was detected
-running..."`); and, to confirm the *absence* case too, a genuine `204`
-success produces only the `Info` line, no `Debug` line at all.
+the existing log line) also captures a copy of the response body via its
+own `Write`; `withLogging` itself reads and re-wraps `r.Body` to capture
+the request body the same way, since an `io.ReadCloser` can otherwise
+only be read once and the downstream handler still needs to read it
+normally. Both captures are gated on whether `Debug` is actually enabled
+(`slog.Default().Enabled(...)`, checked once up front) -- reading and
+re-wrapping `r.Body` has a real, if small, cost, and there's no reason to
+pay it, on every single request, on a server run at the default
+`-log-level=info` where nothing will ever look at the result.
+
+Confirmed the capture actually works, not just compiles, against real
+request scenarios run through the real HTTP stack, in two separate
+passes: a route genuinely unregistered in read-only mode (`405`, body
+`"Method Not Allowed\n"`, Go's own text); a real handler-level `404`
+(body this server's own RFC 7807 JSON, `"person P999 not found"`); a
+write-guard rejection with a fake tripped guard (`405`, body this
+server's own JSON, `"RootsMagic.exe was detected running..."`); a
+genuine `204` success producing only the `Info` line, no `Debug` line at
+all; and, for the request-body addition specifically, a request carrying
+a distinctive marker value confirmed to appear in the captured debug
+line alongside the response's own distinct rejection detail --
+`cmd/server/main_test.go`'s `TestDebugLoggingCapturesRequestAndResponseBody`
+makes this last one permanent, installing a real `slog` handler writing
+to a buffer rather than asserting anything about the middleware's source
+directly.
+
+### A real bug this surfaced: `POST /relationships` returning 500 for a client-resolvable ambiguity
+
+While adding the request-body capture above, a real user report showed
+this exact response:
+
+```
+status=500 detail="parent 24 already belongs to 2 different families as
+FatherID -- which one this child belongs to can't be determined from a
+parent-child relationship alone; create or identify the specific couple
+relationship first"
+```
+
+`500` is wrong here, and worth being precise about why: it signals "this
+server has a bug, something went wrong on our end" -- but this is a
+perfectly well-formed request, referencing persons that genuinely exist,
+that this server correctly declined to guess about (see
+`CreateParentChildRelationship`'s own comment, case 3, in the "Stage 3"
+section above). That's a client-resolvable situation (the error message
+itself says how: create or identify the specific couple relationship
+first), which is what `400` means, not `500`.
+
+The root cause: `handleCreateRelationships`'s status-code logic only
+checked `errors.Is(err, rmdb.ErrNotFound)` to decide between `400` and
+`500`, defaulting to `500` for everything else -- and neither of
+`CreateParentChildRelationship`'s two "this server won't guess" errors
+(an unknown-sex parent, or a parent already in more than one matching-role
+family) were wrapped in anything that check could recognize. Unlike
+`Person` creation's own "at least one name" validation (caught earlier,
+during request-building, well before any database call -- see
+`buildNewPerson`, already correctly `400`), this specific ambiguity can
+only be discovered by actually querying the database during the create
+call itself, so there was no earlier validation step it could have been
+caught by instead.
+
+Fixed by adding a second sentinel, `rmdb.ErrAmbiguous` (`internal/rmdb/writes.go`,
+alongside `ErrNotFound`), wrapping both of `CreateParentChildRelationship`'s
+"won't guess" errors and `resolveCoupleRoles`'s equivalent (a couple
+request where the two persons' sexes don't resolve to one Father and one
+Mother -- already correctly `400` before this fix, since it's caught
+during request-building the same way `Person`'s name check is, but
+wrapped for consistency regardless), and checking for it alongside
+`ErrNotFound` in `handleCreateRelationships`'s actual status-code
+decision. Checked whether this same gap exists anywhere else in the
+`~55` other `StatusInternalServerError` call sites across `internal/api`
+before concluding it doesn't: every one of them is either a genuine
+database/encoding failure (correctly `500`) or a validation check that
+already happens before any database call, the same way `Person`'s does
+-- `Relationship` creation is the only place in this server where an
+error can only be discovered *during* the write itself and still mean
+"the request needs to change," not "something broke."
+
+Verified both with a real HTTP round trip reproducing the original
+report exactly (confirmed `400`, not `500`, with the same detail message)
+and with permanent tests: `internal/rmdb/createparentchild_test.go`'s
+existing ambiguity tests were strengthened to assert `errors.Is(err,
+ErrAmbiguous)` specifically, not just that *some* error occurred, and
+`cmd/server/main_test.go`'s `TestCreateRelationshipsHTTP` gained a
+dedicated regression test recreating this exact scenario end to end.
 
 ### Other messages, converted in place
 

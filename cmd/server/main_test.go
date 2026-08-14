@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1057,6 +1058,34 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
 	})
 
+	// Regression test for a real bug found via a real user report: this
+	// exact scenario originally returned 500, not 400. The parent-child
+	// request itself is entirely well-formed and everything it
+	// references genuinely exists -- the ambiguity (which of the
+	// father's two families does this child belong to?) can only be
+	// discovered by actually querying the database during the create
+	// call, which is why it wasn't caught by earlier request-validation
+	// the way "two males" above is. See rmdb.ErrAmbiguous's own comment.
+	t.Run("parent already in two families is rejected with 400, not 500", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "Father")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "B", "Mother1")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "C", "Mother2")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "D", "Child")
+
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P4"}}]}`)
+		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
+		require.Contains(t, respBody, "already belongs to 2 different families")
+	})
+
 	t.Run("nonexistent person is rejected with 400, not 500", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "One")
@@ -1102,4 +1131,50 @@ func copyFile(t *testing.T, src, dst string) {
 
 	_, err = io.Copy(destination, source)
 	require.NoError(t, err)
+}
+
+// TestDebugLoggingCapturesRequestAndResponseBody confirms withLogging's
+// own debug-level line (internal/api/server.go) actually captures and
+// emits both bodies when -log-level=debug is active -- prompted by a
+// real request: seeing the response body alone explains *that*
+// something was rejected, but not *what* was actually sent that
+// triggered it. Verified by installing a real slog handler writing to a
+// buffer (not by reading the middleware's source and reasoning about
+// it), making a request guaranteed to fail with a distinctive, easy to
+// search for value in both directions, and confirming both actually
+// appear in the captured log text.
+func TestDebugLoggingCapturesRequestAndResponseBody(t *testing.T) {
+	originalLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(originalLogger) })
+
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	tempDir := t.TempDir()
+	tempDBPath := filepath.Join(tempDir, "empty.rmtree")
+	copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
+	router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", true, 4, 200)
+	defer cleanup()
+	testServer := httptest.NewServer(router)
+	defer testServer.Close()
+
+	// A distinctive, unlikely-to-appear-by-coincidence value in the
+	// request, and an unsupported fact type guaranteed to produce a 400
+	// with its own distinctive detail in the response.
+	const requestMarker = "XYZZY-REQUEST-MARKER"
+	body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"` + requestMarker + `"}]}]}],
+		"facts":[{"type":"http://gedcomx.org/NotARealFactType"}]}]}`
+
+	req, err := http.NewRequest("POST", testServer.URL+"/collections/empty/persons", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	logged := logBuf.String()
+	require.Contains(t, logged, "level=DEBUG")
+	require.Contains(t, logged, requestMarker, "the captured debug log should contain the actual request body sent")
+	require.Contains(t, logged, "unrecognized or unsupported fact type", "the captured debug log should also still contain the response's own detail")
 }
