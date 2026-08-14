@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 )
 
 // isRootsMagicRunning is the shared detection primitive behind both
@@ -39,7 +39,7 @@ func checkRootsMagicNotRunning() error {
 		// itself can't run. Warn loudly and proceed, rather than refuse
 		// to start over a failure unrelated to the actual risk being
 		// checked for.
-		log.Printf("warning: couldn't check whether RootsMagic is running (%v) -- proceeding, but please make sure RootsMagic is closed before using -write", err)
+		slog.Warn("couldn't check whether RootsMagic is running -- proceeding, but please make sure RootsMagic is closed before using -write", "error", err)
 		return nil
 	}
 	if found {

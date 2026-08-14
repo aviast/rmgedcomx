@@ -3,7 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -129,7 +129,7 @@ func (s *Server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 		ignoredFields = append(ignoredFields, "sources")
 	}
 	if len(ignoredFields) > 0 {
-		log.Printf("POST /persons/%s: ignoring unsupported field(s) %v -- only media is currently writable for Person, see SCOPE.md's \"Write support\" section", id, ignoredFields)
+		logIgnoredFields("person", "/persons", id, ignoredFields)
 	}
 
 	mediaIDs := make([]int64, 0, len(person.Media))
@@ -160,6 +160,22 @@ func (s *Server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 // sent in a write request -- prefers descriptionId (e.g. "M1") since it's
 // simplest and most direct; falls back to parsing the id off the end of
 // description (e.g. ".../artifacts/M1") for a client that only sent that.
+// logIgnoredFields records, at Info level, that a write request included
+// one or more recognized-but-unsupported fields -- see each call site's
+// own surrounding comment for why these are silently accepted rather
+// than rejected (the ordinary GET-then-modify-then-POST client pattern),
+// but still worth a visible trail: this is the signal that would tell a
+// future maintainer there's real demand for expanding what's writable.
+// Shared by the Person/Relationship/Event write handlers so the message
+// shape stays consistent across all three rather than drifting.
+func logIgnoredFields(resourceType, path, id string, fields []string) {
+	if len(fields) == 0 {
+		return
+	}
+	slog.Info("ignoring unsupported field(s) on write -- see SCOPE.md's \"Write support\" section",
+		"resource", resourceType, "path", path, "id", id, "fields", fields)
+}
+
 func mediaIDFromReference(ref gedcomx.SourceReference) (int64, error) {
 	if ref.DescriptionID != "" {
 		return parseMediaID(ref.DescriptionID)
@@ -683,7 +699,7 @@ func (s *Server) handleUpdateRelationship(w http.ResponseWriter, r *http.Request
 		ignoredFields = append(ignoredFields, "sources")
 	}
 	if len(ignoredFields) > 0 {
-		log.Printf("POST /relationships/%s: ignoring unsupported field(s) %v -- only media is currently writable for Relationship, see SCOPE.md's \"Write support\" section", id, ignoredFields)
+		logIgnoredFields("relationship", "/relationships", id, ignoredFields)
 	}
 
 	mediaIDs := make([]int64, 0, len(rel.Media))
@@ -1228,7 +1244,7 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 		ignoredFields = append(ignoredFields, "notes")
 	}
 	if len(ignoredFields) > 0 {
-		log.Printf("POST /events/%s: ignoring unsupported field(s) %v -- only media is currently writable for Event, see SCOPE.md's \"Write support\" section", id, ignoredFields)
+		logIgnoredFields("event", "/events", id, ignoredFields)
 	}
 
 	mediaIDs := make([]int64, 0, len(event.Media))

@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/xml"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -133,7 +133,7 @@ func discoverMediaFolderIn(rootsMagicDir string) (string, error) {
 	for _, f := range found {
 		media, err := readMediaFolderFromXML(f.path)
 		if err != nil {
-			log.Printf("warning: couldn't read %s (%v), skipping it", f.path, err)
+			slog.Warn("couldn't read Media Folder config file, skipping it", "path", f.path, "error", err)
 			continue
 		}
 		values = append(values, versionedMedia{version: f.version, media: media})
@@ -145,8 +145,9 @@ func discoverMediaFolderIn(rootsMagicDir string) (string, error) {
 	chosen := values[0] // already sorted descending by version
 	for _, v := range values[1:] {
 		if v.media != chosen.media {
-			log.Printf("warning: RootsMagic Version %d and Version %d have different configured Media Folders (%q vs %q) -- using Version %d's value",
-				chosen.version, v.version, chosen.media, v.media, chosen.version)
+			slog.Warn("RootsMagic versions have different configured Media Folders -- using the newer version's value",
+				"newerVersion", chosen.version, "newerMediaFolder", chosen.media,
+				"olderVersion", v.version, "olderMediaFolder", v.media)
 		}
 	}
 

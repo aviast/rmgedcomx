@@ -1374,7 +1374,7 @@ only ever verified manually and not left with a permanent test, this
 one's non-trivial branching (couple vs. parent-child, both-partners-
 present) earned a permanent regression test on its own merits.
 
-## Stage 3 -- creating People and Relationships (in progress)
+## Stage 3 -- creating People and Relationships (done)
 
 The natural next step after Stage 2's media-linking work, driven by a
 concrete need this time rather than the original generic "eventually
@@ -2017,3 +2017,89 @@ This is still a simpler mechanism than the spec's full paging-as-links
 model overall (`?limit=`/`?offset=` query parameters, not opaque
 server-chosen page tokens), just now complete against what Section 7
 itself defines.
+
+## Logging
+
+Converted from a mix of the bare `log` package and direct `fmt.Fprintln`
+calls to `log/slog`, prompted by a real, concrete need: a `405` with no
+visible explanation for why. Both packages that log anything
+(`internal/api`, `cmd/server`) call `slog`'s package-level functions
+(`slog.Info`, `slog.Warn`, ...) directly against the default logger,
+rather than threading a `*slog.Logger` instance through every function
+call -- there's exactly one process, one log stream, and one place
+(`cmd/server/main.go`'s `setupLogging`, run first thing in `main`) that
+decides its level and format; a per-call-site logger parameter would add
+plumbing this server has no actual use for.
+
+**Two new flags** (`cmd/server/main.go`): `-log-level` (`debug`/`info`/
+`warn`/`error`, default `info`) and `-log-format` (`text`/`json`, default
+`text`). Logs go to stderr, matching the `log` package's own former
+default and every existing `fmt.Fprintln(os.Stderr, ...)` startup-error
+call -- kept separate from the collection table below specifically so
+the two remain independently redirectable.
+
+**`log.Fatalf` has no direct slog equivalent** -- slog's levels are
+`Debug`/`Info`/`Warn`/`Error` only, no `Fatal`. Replaced with a small
+`fatalf` helper (`slog.Error` then `os.Exit(1)`) so every startup-fatal
+call site does both consistently, rather than some remembering the exit
+and some not.
+
+**The startup collection table (`printCollectionTable`) deliberately
+was *not* converted**, and stays direct `fmt.Fprint*` to stdout -- see
+its own doc comment for the reasoning in full, briefly: it's a
+human-readable report a person reads once at a terminal, not a
+diagnostic log line, and an aligned table (via `tabwriter`) has no
+sensible representation as structured log attributes without losing the
+alignment for no real benefit.
+
+### Debug-level logging for 4xx/5xx responses -- the actual point of this work
+
+`internal/api/server.go`'s request-logging middleware (`withLogging`)
+now emits two things per request, not one:
+
+- An `Info` line for every request: method, path, status, duration --
+  the direct replacement for what used to be a bare
+  `log.Printf("%s %s -> %d (%s)", ...)` line.
+- A separate `Debug` line, *only* when the response status is `>= 400`,
+  carrying the actual response body. For this API, that body is always
+  one of two things, and telling them apart is itself the diagnosis: this
+  server's own detailed RFC 7807 reason (e.g. `"RootsMagic.exe was
+  detected running..."`), or -- if the request never reached this
+  server's own handler code at all, e.g. `POST /persons` when `-write`
+  wasn't passed and that route was never registered -- Go's own bare
+  `"Method Not Allowed"` text. Seeing the second kind is itself the
+  answer: the problem isn't in a specific handler's logic, it's that the
+  route doesn't exist under the server's current configuration.
+
+Deliberately two separate log lines at two separate levels, not one line
+with the body as an always-present attribute: slog's level filtering is
+per-call, not per-attribute, so a body attribute on the `Info` line would
+always render regardless of the configured level -- a separate `Debug`
+call is the only way to make the extra detail actually optional.
+
+Mechanically, `statusRecorder` (already capturing the status code for
+the existing log line) now also captures a copy of the response body via
+its own `Write`, but only when the status is already known to be an
+error -- cheap for this API's small JSON responses. Confirmed the
+capture actually works, not just compiles, against three real request
+scenarios run through the real HTTP stack: a route genuinely unregistered
+in read-only mode (`405`, body `"Method Not Allowed\n"`, Go's own text);
+a real handler-level `404` (body this server's own RFC 7807 JSON,
+`"person P999 not found"`); a write-guard rejection with a fake tripped
+guard (`405`, body this server's own JSON, `"RootsMagic.exe was detected
+running..."`); and, to confirm the *absence* case too, a genuine `204`
+success produces only the `Info` line, no `Debug` line at all.
+
+### Other messages, converted in place
+
+`log.Printf("warning: ...")` calls throughout `cmd/server`
+(`mediafolder_discovery.go`, `writeguard.go`,
+`rootsmagic_running_check.go`) became `slog.Warn` with the specifics
+(path, error, version numbers, ...) as structured attributes rather than
+interpolated into the message string. The three
+"ignoring unsupported field(s)" notices in `internal/api/handlers.go`
+(`Person`/`Relationship`/`Event` write handlers -- see "Write support"
+above) were consolidated into one shared `logIgnoredFields` helper,
+`slog.Info`, so the message shape stays consistent across all three
+rather than drifting independently.
+

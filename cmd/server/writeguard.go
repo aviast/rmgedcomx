@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -84,13 +84,13 @@ func (g *writeGuard) Allow() (ok bool, reason string) {
 		// this: not this server's problem to be blocked by if the check
 		// itself can't run. Log it, but don't trip the guard over a
 		// failure unrelated to the actual risk being checked for.
-		log.Printf("warning: couldn't check whether RootsMagic is running (%v)", err)
+		slog.Warn("couldn't check whether RootsMagic is running", "error", err)
 		return true, ""
 	}
 	if found {
 		g.tripped = true
 		g.trippedReason = "RootsMagic.exe was detected running, so this server has switched to read-only for the rest of this session -- close RootsMagic and restart rmgedcomx to resume write support"
-		log.Printf("write disabled: %s", g.trippedReason)
+		slog.Warn("write disabled", "reason", g.trippedReason)
 		return false, g.trippedReason
 	}
 	return true, ""
