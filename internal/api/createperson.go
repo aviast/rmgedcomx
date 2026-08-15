@@ -91,9 +91,20 @@ func (s *Server) buildNewPerson(p gedcomx.Person) (rmdb.NewPerson, error) {
 		sex = code
 	}
 
-	if len(p.Names) == 0 {
-		return rmdb.NewPerson{}, fmt.Errorf("a new person must have at least one name")
-	}
+	// Person.names is OPTIONAL in the GEDCOM X conceptual model (Section
+	// 2.1) -- checked directly against the spec text, not assumed, after
+	// a real report showed this server rejecting a person who
+	// genuinely has none in the source data at all (a real royal92.ged
+	// individual entered with only a title, sex, and death year -- no
+	// name line with any usable content). RootsMagic's own real
+	// behavior for exactly this case (confirmed directly against
+	// royal92.rmtree, not assumed) is not "no NameTable row at all" --
+	// it's one NameTable row with Given="" and Surname="", same as this
+	// server's own fallback below for a NameForm with nothing useful in
+	// it. Matched here rather than diverging from it: creating zero
+	// NameTable rows for a person is unconfirmed behavior this server
+	// has no evidence for, and RootsMagic's own UI/data model likely
+	// expects every person to have at least one.
 	names := make([]rmdb.NewPersonName, 0, len(p.Names))
 	for i, n := range p.Names {
 		nn, err := s.buildNewPersonName(n)
@@ -101,6 +112,34 @@ func (s *Server) buildNewPerson(p gedcomx.Person) (rmdb.NewPerson, error) {
 			return rmdb.NewPerson{}, fmt.Errorf("names[%d]: %w", i, err)
 		}
 		names = append(names, nn)
+	}
+	if len(names) == 0 {
+		names = append(names, rmdb.NewPersonName{IsPrimary: true})
+	} else {
+		// Found while testing the exact request that motivated the
+		// comment above: a client that never sets preferred explicitly
+		// (as GEDCOM X's own spec permits -- "names are assumed to be
+		// given in order of preference, with the most preferred name in
+		// the first position in the list") got every name created with
+		// IsPrimary=0, including the person's only name. Every real
+		// royal92.rmtree row checked throughout this project has
+		// IsPrimary=1 on the first/only name, with no exceptions --
+		// this defaults the first name to primary unless something
+		// later in the list was already explicitly marked preferred,
+		// matching both the spec's own ordering convention and
+		// RootsMagic's own consistently observed behavior, rather than
+		// silently leaving every name non-primary just because the
+		// client relied on ordering instead of the explicit flag.
+		hasPrimary := false
+		for _, nn := range names {
+			if nn.IsPrimary {
+				hasPrimary = true
+				break
+			}
+		}
+		if !hasPrimary {
+			names[0].IsPrimary = true
+		}
 	}
 
 	facts := make([]rmdb.NewPersonFact, 0, len(p.Facts))
@@ -115,33 +154,77 @@ func (s *Server) buildNewPerson(p gedcomx.Person) (rmdb.NewPerson, error) {
 	return rmdb.NewPerson{Sex: sex, Names: names, Facts: facts}, nil
 }
 
-// buildNewPersonName extracts Surname/Given/Prefix/Suffix/Nickname from
-// a Name's structured NamePart list -- deliberately requires Parts to be
-// present and does not attempt to split a bare FullText into parts
-// itself: splitting a free-text name into surname/given is inherently
-// ambiguous (which word is the surname?), and this project's standing
-// principle is to reject an ambiguous write rather than guess at one
-// (see e.g. EncodeRMDate's own comment for the same reasoning applied to
-// dates).
+// buildNewPersonName extracts Surname/Given/Prefix/Suffix from a Name's
+// structured NamePart list when present; when the list is empty (or
+// absent), falls back to storing the whole nameForms[0].fullText in
+// Given, leaving Surname empty -- confirmed to be RootsMagic's own real
+// behavior, not a guess this server is making up: RootsMagic itself
+// parses the GEDCOM 5.x "Given /Surname/" convention, and when the
+// slash-delimited surname portion is empty (e.g. a real line from this
+// project's own royal92.ged test file, "1 NAME Albert Augustus
+// Charles//"), it stores the whole preceding text in NameTable.Given and
+// leaves NameTable.Surname empty -- checked directly against the actual
+// royal92.rmtree database (NameID 2: Given="Albert Augustus Charles",
+// Surname=""), not just reasoned about, and confirmed consistently
+// across several more of the same pattern in the same file (Victoria
+// Adelaide Mary, Alice Maud Mary, ...).
+//
+// Both fullText and parts are independently OPTIONAL in the GEDCOM X
+// conceptual model's own NameForm data type (Section 3.19) -- checked
+// directly against the spec text, not assumed -- so a fullText-only
+// NameForm (no parts at all) is a fully spec-compliant request this
+// server previously rejected outright. That was a real, if reasonable at
+// the time, overreach: splitting an arbitrary fullText into surname/given
+// is still genuinely ambiguous in general (this server isn't attempting
+// that), but RootsMagic's own confirmed "whole name in Given, empty
+// Surname" convention for exactly this situation gives a deterministic,
+// evidence-backed answer that doesn't require guessing at a split at
+// all.
+//
+// A NameForm with neither parts nor fullText -- a person with no usable
+// name at all -- is *also* accepted now, not rejected: another real
+// royal92.ged individual (a title, sex, and death year, nothing else)
+// produces exactly this shape, and RootsMagic's own confirmed handling
+// (checked directly against the real royal92.rmtree row this individual
+// produces: Given="", Surname="", still exactly one NameTable row, not
+// zero) is the same fallback as the fullText-only case above -- Given
+// ends up "" simply because form.FullText already is. Rejecting this
+// was the same kind of overreach as the fullText-only case: correctly
+// avoiding a guess, but for a shape the spec (and RootsMagic itself)
+// already has a real, deterministic answer for.
 func (s *Server) buildNewPersonName(n gedcomx.Name) (rmdb.NewPersonName, error) {
-	if len(n.NameForms) == 0 || len(n.NameForms[0].Parts) == 0 {
-		return rmdb.NewPersonName{}, fmt.Errorf("a name must have nameForms[0].parts (structured Given/Surname/...) -- this server doesn't split a bare fullText into parts itself, since that's inherently ambiguous")
+	if len(n.NameForms) == 0 {
+		return rmdb.NewPersonName{}, fmt.Errorf("a name must have at least one nameForm (GEDCOM X conceptual model Section 3.13: nameForms is REQUIRED)")
 	}
+	form := n.NameForms[0]
 	nn := rmdb.NewPersonName{IsPrimary: n.Preferred != nil && *n.Preferred}
-	for _, part := range n.NameForms[0].Parts {
-		switch part.Type {
-		case "http://gedcomx.org/Prefix":
-			nn.Prefix = part.Value
-		case "http://gedcomx.org/Given":
-			nn.Given = part.Value
-		case "http://gedcomx.org/Surname":
-			nn.Surname = part.Value
-		case "http://gedcomx.org/Suffix":
-			nn.Suffix = part.Value
-		default:
-			return rmdb.NewPersonName{}, fmt.Errorf("unrecognized name part type %q", part.Type)
+
+	if len(form.Parts) == 0 {
+		// No structured parts. form.FullText might still be a real
+		// value ("Albert Augustus Charles") or might itself be empty --
+		// both are handled by this one assignment, since RootsMagic's
+		// own confirmed behavior is the same in both cases: whatever
+		// text is available (including none) goes in Given, Surname
+		// stays empty. See this function's own doc comment for why a
+		// completely empty NameForm is no longer rejected either.
+		nn.Given = form.FullText
+	} else {
+		for _, part := range form.Parts {
+			switch part.Type {
+			case "http://gedcomx.org/Prefix":
+				nn.Prefix = part.Value
+			case "http://gedcomx.org/Given":
+				nn.Given = part.Value
+			case "http://gedcomx.org/Surname":
+				nn.Surname = part.Value
+			case "http://gedcomx.org/Suffix":
+				nn.Suffix = part.Value
+			default:
+				return rmdb.NewPersonName{}, fmt.Errorf("unrecognized name part type %q", part.Type)
+			}
 		}
 	}
+
 	nameType, ok := gedcomx.NameTypeCode(n.Type)
 	if !ok {
 		return rmdb.NewPersonName{}, fmt.Errorf("unrecognized name type %q", n.Type)
