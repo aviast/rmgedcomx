@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aviast/rmgedcomx/internal/gedcomx"
+	"github.com/aviast/rmgedcomx/internal/loglevel"
 	"github.com/aviast/rmgedcomx/internal/rmdb"
 )
 
@@ -261,7 +262,8 @@ func acceptsGedcomXJSON(accept string) bool {
 // log.Printf("%s %s -> %d (%s)", ...) line. When the response status
 // indicates an error (>= 400), a second, separate slog.Debug line
 // follows, carrying both the request body that produced this response
-// and the response body itself -- for this API, the response body is
+// and the response body itself. At trace level this second line is emitted
+// for every request. For this API, the response body is
 // always the RFC 7807 problem-details JSON naming exactly why the
 // request failed (or, for a request that never reached this server's own
 // handler code at all -- e.g. a write route that doesn't exist because
@@ -290,6 +292,7 @@ func withLogging(next http.Handler) http.Handler {
 		start := time.Now()
 
 		debugEnabled := slog.Default().Enabled(r.Context(), slog.LevelDebug)
+		traceEnabled := slog.Default().Enabled(r.Context(), loglevel.Trace)
 		var reqBody []byte
 		if debugEnabled && r.Body != nil {
 			reqBody, _ = io.ReadAll(r.Body)
@@ -301,8 +304,8 @@ func withLogging(next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 		duration := time.Since(start)
 		slog.Info("request", "method", r.Method, "path", r.URL.RequestURI(), "status", rec.status, "duration", duration)
-		if debugEnabled && rec.status >= 400 {
-			slog.Debug("request failed", "method", r.Method, "path", r.URL.RequestURI(), "status", rec.status,
+		if debugEnabled && (traceEnabled || rec.status >= 400) {
+			slog.Debug("request details", "method", r.Method, "path", r.URL.RequestURI(), "status", rec.status,
 				"requestBody", string(reqBody), "responseBody", rec.body.String())
 		}
 	})
@@ -320,13 +323,11 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// Write captures a copy of the response body when the status is an
-// error and debug logging is actually enabled, for withLogging's own
-// debug-level line above -- cheap for this API's small JSON responses,
-// and the copy is only ever actually rendered if -log-level=debug and
-// this specific response was an error.
+// Write captures a copy of the response body when debug logging is enabled,
+// for withLogging's own debug-level line above. It is rendered for failed
+// requests at debug level and every request at trace level.
 func (r *statusRecorder) Write(b []byte) (int, error) {
-	if r.captureBody && r.status >= 400 {
+	if r.captureBody {
 		r.body.Write(b)
 	}
 	return r.ResponseWriter.Write(b)

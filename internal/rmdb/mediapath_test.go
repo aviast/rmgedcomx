@@ -1,6 +1,9 @@
 package rmdb
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestResolveMediaPath(t *testing.T) {
 	cfg := MediaFolderConfig{
@@ -13,15 +16,15 @@ func TestResolveMediaPath(t *testing.T) {
 		name      string
 		mediaPath string
 		mediaFile string
-		want      string
+		want      []string
 	}{
-		{"media folder symbol", "?Photos", "portrait.jpg", "/mnt/rm-media/Photos/portrait.jpg"},
-		{"home dir symbol", "~/Genealogy/Scans", "will.pdf", "/home/alice/Genealogy/Scans/will.pdf"},
-		{"db dir symbol", "*Media", "cert.jpg", "/data/trees/Media/cert.jpg"},
-		{"no symbol, relative", "Media/Photos", "cert.jpg", "/data/trees/Media/Photos/cert.jpg"},
-		{"unix absolute passthrough", "/srv/archive/photos", "old.png", "/srv/archive/photos/old.png"},
-		{"windows-style backslashes under db dir symbol", `*Media\Photos`, "img.jpg", "/data/trees/Media/Photos/img.jpg"},
-		{"bare symbol, no subfolder", "*", "cert.jpg", "/data/trees/cert.jpg"},
+		{"media folder symbol", "?Photos", "portrait.jpg", []string{cfg.MediaFolder, "Photos", "portrait.jpg"}},
+		{"home dir symbol", "~/Genealogy/Scans", "will.pdf", []string{cfg.HomeDir, "Genealogy", "Scans", "will.pdf"}},
+		{"db dir symbol", "*Media", "cert.jpg", []string{cfg.DatabaseDir, "Media", "cert.jpg"}},
+		{"no symbol, relative", "Media/Photos", "cert.jpg", []string{cfg.DatabaseDir, "Media", "Photos", "cert.jpg"}},
+		{"unix absolute passthrough", "/srv/archive/photos", "old.png", []string{"/srv/archive/photos", "old.png"}},
+		{"windows-style backslashes under db dir symbol", `*Media\Photos`, "img.jpg", []string{cfg.DatabaseDir, "Media", "Photos", "img.jpg"}},
+		{"bare symbol, no subfolder", "*", "cert.jpg", []string{cfg.DatabaseDir, "cert.jpg"}},
 	}
 
 	for _, c := range cases {
@@ -30,8 +33,9 @@ func TestResolveMediaPath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got != c.want {
-				t.Errorf("ResolveMediaPath(%q, %q) = %q, want %q", c.mediaPath, c.mediaFile, got, c.want)
+			want := filepath.Join(c.want...)
+			if got != want {
+				t.Errorf("ResolveMediaPath(%q, %q) = %q, want %q", c.mediaPath, c.mediaFile, got, want)
 			}
 		})
 	}

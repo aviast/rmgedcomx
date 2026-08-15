@@ -16,6 +16,7 @@ import (
 
 	"github.com/aviast/rmgedcomx/internal/api"
 	"github.com/aviast/rmgedcomx/internal/collectionid"
+	"github.com/aviast/rmgedcomx/internal/loglevel"
 	"github.com/aviast/rmgedcomx/internal/rmdb"
 )
 
@@ -81,8 +82,8 @@ func extractBypassOSCheckFlag() bool {
 // redirect each independently (e.g. `./rmgedcomx -db X > startup.txt 2>
 // server.log`) if that's useful to them.
 func setupLogging(levelFlag, formatFlag string) error {
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(levelFlag)); err != nil {
+	level, err := loglevel.Parse(levelFlag)
+	if err != nil {
 		return fmt.Errorf("invalid -log-level %q: %w", levelFlag, err)
 	}
 	opts := &slog.HandlerOptions{Level: level}
@@ -121,7 +122,7 @@ func main() {
 		write              = flag.Bool("write", false, "enable write support (POST/PUT/PATCH/DELETE); default is read-only. See SCOPE.md's \"Write support\" section for what's actually implemented at any given stage")
 		defaultGenerations = flag.Int("default-generations", 4, "default number of generations for ancestry/descendancy queries")
 		maxPageSize        = flag.Int("max-page-size", 200, "maximum number of entries returned by a single paged request")
-		logLevel           = flag.String("log-level", "info", "log level: debug, info, warn, or error. debug additionally logs the response body of every failed (4xx/5xx) request, which is normally the fastest way to see why one happened")
+		logLevel           = flag.String("log-level", "info", "log level: trace, debug, info, warn, or error. debug logs request and response bodies for failed (4xx/5xx) requests; trace logs them for every request")
 		logFormat          = flag.String("log-format", "text", "log output format: text or json")
 	)
 	flag.Parse()

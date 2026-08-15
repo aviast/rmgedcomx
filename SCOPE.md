@@ -2145,7 +2145,7 @@ call -- there's exactly one process, one log stream, and one place
 decides its level and format; a per-call-site logger parameter would add
 plumbing this server has no actual use for.
 
-**Two new flags** (`cmd/server/main.go`): `-log-level` (`debug`/`info`/
+**Two new flags** (`cmd/server/main.go`): `-log-level` (`trace`/`debug`/`info`/
 `warn`/`error`, default `info`) and `-log-format` (`text`/`json`, default
 `text`). Logs go to stderr, matching the `log` package's own former
 default and every existing `fmt.Fprintln(os.Stderr, ...)` startup-error
@@ -2189,6 +2189,9 @@ now emits two things per request, not one:
   response alone explains *that* something was rejected, but the natural
   next question -- *what* did the client actually send -- needed the
   request alongside it.
+
+At `trace`, that same `Debug` detail line is emitted for every request,
+including successful responses.
 
 Deliberately two separate log lines at two separate levels, not one line
 with the bodies as always-present attributes: slog's level filtering is
@@ -2294,4 +2297,3 @@ interpolated into the message string. The three
 above) were consolidated into one shared `logIgnoredFields` helper,
 `slog.Info`, so the message shape stays consistent across all three
 rather than drifting independently.
-

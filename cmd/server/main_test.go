@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aviast/rmgedcomx/internal/loglevel"
 	"github.com/go-openapi/testify/v2/require"
 	_ "modernc.org/sqlite"
 )
@@ -1254,4 +1255,34 @@ func TestDebugLoggingCapturesRequestAndResponseBody(t *testing.T) {
 	require.Contains(t, logged, "level=DEBUG")
 	require.Contains(t, logged, requestMarker, "the captured debug log should contain the actual request body sent")
 	require.Contains(t, logged, "unrecognized or unsupported fact type", "the captured debug log should also still contain the response's own detail")
+}
+
+// TestTraceLoggingCapturesRequestAndResponseBodyForSuccessfulRequest confirms
+// that trace extends debug's detail logging to successful requests too.
+func TestTraceLoggingCapturesRequestAndResponseBodyForSuccessfulRequest(t *testing.T) {
+	originalLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(originalLogger) })
+
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: loglevel.Trace})))
+
+	tempDir := t.TempDir()
+	tempDBPath := filepath.Join(tempDir, "empty.rmtree")
+	copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
+	router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", false, 4, 200)
+	defer cleanup()
+	testServer := httptest.NewServer(router)
+	defer testServer.Close()
+
+	resp, err := http.Get(testServer.URL + "/collections/empty")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	logged := logBuf.String()
+	require.Contains(t, logged, "msg=\"request details\"")
+	require.Contains(t, logged, "status=200")
+	require.Contains(t, logged, "requestBody=\"\"")
+	require.Contains(t, logged, "responseBody=")
+	require.Contains(t, logged, "empty", "the trace log should contain the successful response body")
 }
