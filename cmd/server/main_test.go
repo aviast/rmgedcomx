@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aviast/rmgedcomx/internal/loglevel"
 	"github.com/go-openapi/testify/v2/require"
 	_ "modernc.org/sqlite"
 )
@@ -816,6 +817,17 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		return resp.StatusCode, string(respBody), resp.Header
 	}
 
+	get := func(t *testing.T, testServer *httptest.Server, location string) (int, string) {
+		t.Helper()
+		url := strings.Replace(location, "http://localhost:8080", testServer.URL, 1)
+		resp, err := http.Get(url)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body)
+	}
+
 	newTestServer := func(t *testing.T, write bool) *httptest.Server {
 		t.Helper()
 		tempDir := t.TempDir()
@@ -872,16 +884,82 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		require.Empty(t, headers.Get("Location"), "no single Location header when multiple persons were created")
 	})
 
-	t.Run("missing name is rejected", func(t *testing.T) {
+	// Note: a Person with no names field at all used to be rejected here
+	// ("missing name is rejected"). That test is gone, not fixed in
+	// place -- Person.names turned out to be OPTIONAL all along (see
+	// buildNewPerson's own comment below), so the premise the test was
+	// named for no longer holds. See "person with no names field at all
+	// is accepted..." below for what replaced it.
+
+	// A real bug found via a real user report: a NameForm with only
+	// fullText (no parts) is fully spec-compliant -- GEDCOM X's own
+	// conceptual model (Section 3.19) marks both fullText and parts
+	// independently OPTIONAL, checked directly against the spec text --
+	// and this server previously rejected it outright. Fixed to fall
+	// back to storing the whole fullText in Given, Surname empty,
+	// confirmed to be RootsMagic's own real, deterministic behavior for
+	// exactly this situation (a GEDCOM 5.x name with no marked surname,
+	// e.g. this project's own royal92.ged test file's real line "1 NAME
+	// Albert Augustus Charles//") rather than a guessed split. See
+	// buildNewPersonName's own comment in internal/api/createperson.go
+	// for the full account, including the real royal92.rmtree row this
+	// was checked against directly.
+	t.Run("name with only fullText, no parts, falls back to Given=fullText, Surname empty", func(t *testing.T) {
 		testServer := newTestServer(t, true)
-		status, body, _ := post(t, testServer, `{"persons":[{}]}`)
-		require.Equal(t, http.StatusBadRequest, status, "body: %s", body)
+		status, body, headers := post(t, testServer, `{"persons":[{"names":[{"nameForms":[{"fullText":"Albert Augustus Charles"}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", body)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"value":"Albert Augustus Charles"`)
 	})
 
-	t.Run("name with only fullText, no parts, is rejected rather than guessed at", func(t *testing.T) {
+	// A second real bug, found via a second real report: a NameForm with
+	// neither parts nor fullText -- a person with no usable name in the
+	// source data at all (a real royal92.ged individual entered with
+	// only a title, sex, and death year) -- was also being rejected,
+	// for the same overreach as the fullText-only case above. RootsMagic's
+	// own confirmed behavior for exactly this case is not "no NameTable
+	// row" -- it's one NameTable row with Given="" and Surname="" (see
+	// buildNewPersonName's own comment for the real royal92.rmtree row
+	// this was checked against). This person also has no explicit
+	// "preferred" name marker, which surfaced a third, related bug while
+	// testing this exact request: IsPrimary came out 0 on the person's
+	// only name, when every real royal92.rmtree row checked throughout
+	// this project has IsPrimary=1 on the first/only name. Fixed
+	// alongside this one -- see buildNewPerson's own comment.
+	t.Run("name with neither parts nor fullText is accepted, empty Given/Surname, IsPrimary defaults to true", func(t *testing.T) {
 		testServer := newTestServer(t, true)
-		status, body, _ := post(t, testServer, `{"persons":[{"names":[{"nameForms":[{"fullText":"Patrick Brontë"}]}]}]}`)
-		require.Equal(t, http.StatusBadRequest, status, "body: %s", body)
+		status, body, headers := post(t, testServer, `{"persons":[{"names":[{"nameForms":[{}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", body)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"preferred":true`)
+	})
+
+	t.Run("person with no names field at all is accepted, one empty primary name created", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		status, body, headers := post(t, testServer, `{"persons":[{"gender":{"type":"http://gedcomx.org/Male"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", body)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"preferred":true`)
+	})
+
+	t.Run("second name explicitly marked preferred overrides the first-name default", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[
+			{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Not"},{"type":"http://gedcomx.org/Surname","value":"Preferred"}]}]},
+			{"preferred":true,"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Is"},{"type":"http://gedcomx.org/Surname","value":"Preferred"}]}]}
+		]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"value":"Is"`)
 	})
 
 	t.Run("unrecognized fact type is rejected", func(t *testing.T) {
@@ -1177,4 +1255,34 @@ func TestDebugLoggingCapturesRequestAndResponseBody(t *testing.T) {
 	require.Contains(t, logged, "level=DEBUG")
 	require.Contains(t, logged, requestMarker, "the captured debug log should contain the actual request body sent")
 	require.Contains(t, logged, "unrecognized or unsupported fact type", "the captured debug log should also still contain the response's own detail")
+}
+
+// TestTraceLoggingCapturesRequestAndResponseBodyForSuccessfulRequest confirms
+// that trace extends debug's detail logging to successful requests too.
+func TestTraceLoggingCapturesRequestAndResponseBodyForSuccessfulRequest(t *testing.T) {
+	originalLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(originalLogger) })
+
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: loglevel.Trace})))
+
+	tempDir := t.TempDir()
+	tempDBPath := filepath.Join(tempDir, "empty.rmtree")
+	copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
+	router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", false, 4, 200)
+	defer cleanup()
+	testServer := httptest.NewServer(router)
+	defer testServer.Close()
+
+	resp, err := http.Get(testServer.URL + "/collections/empty")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	logged := logBuf.String()
+	require.Contains(t, logged, "msg=\"request details\"")
+	require.Contains(t, logged, "status=200")
+	require.Contains(t, logged, "requestBody=\"\"")
+	require.Contains(t, logged, "responseBody=")
+	require.Contains(t, logged, "empty", "the trace log should contain the successful response body")
 }

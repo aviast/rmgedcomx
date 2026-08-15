@@ -1,8 +1,9 @@
 import sys
+import re
 import requests
 
 def parse_gedcom(filename):
-    """Parses a GEDCOM file into a dictionary of individuals and families, including name parts."""
+    """Parses a GEDCOM file into a dictionary of individuals and families."""
     records = {'INDI': {}, 'FAM': {}}
     current_id, current_type, current_tag = None, None, None
 
@@ -45,30 +46,95 @@ def parse_gedcom(filename):
 
     return records
 
+def normalize_gedcom_date(date_str):
+    """Converts a typical GEDCOM date string into a GEDCOM X formal date string."""
+    if not date_str:
+        return None
+
+    months = {
+        'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
+        'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
+        'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
+    }
+
+    parts = date_str.strip().upper().split()
+    if not parts:
+        return None
+
+    prefix = ""
+    suffix = ""
+    is_approximate = False
+
+    # Handle GEDCOM approximation and bounds modifiers
+    if parts[0] in ['ABT', 'CAL', 'EST']:
+        is_approximate = True
+        parts = parts[1:]
+    elif parts[0] == 'BEF':
+        prefix = "/"
+        parts = parts[1:]
+    elif parts[0] == 'AFT':
+        suffix = "/"
+        parts = parts[1:]
+
+    year, month, day = None, None, None
+    for part in reversed(parts):
+        if part.isdigit():
+            if len(part) == 4:
+                year = part
+            elif len(part) in (1, 2):
+                day = part.zfill(2)
+        elif part in months:
+            month = months[part]
+
+    if not year:
+        return None
+
+    # Construct standard simple date format +YYYY[-MM[-DD]]
+    formal_date = f"+{year}"
+    if month:
+        formal_date += f"-{month}"
+        if day:
+            formal_date += f"-{day}"
+
+    # Apply GEDCOM X formal spec modifiers
+    if is_approximate:
+        formal_date = f"A{formal_date}"
+
+    return f"{prefix}{formal_date}{suffix}"
+
 def build_person_doc(ind_id, ind_data):
-    """Builds a GEDCOM X document for a single person, including Name parts."""
+    """Builds a GEDCOM X document for a single person, including fallback NAME solidus parsing and formal dates."""
     person = {"names": [], "facts": []}
 
     if 'NAME' in ind_data:
-        name_str = ind_data['NAME'].replace('/', '').strip()
+        raw_name = ind_data['NAME']
+        name_str = raw_name.replace('/', '').strip()
         name_form = {"fullText": name_str}
 
-        # Build Name Parts if GIVN or SURN were found
-        if 'name_parts' in ind_data and ind_data['name_parts']:
-            parts = []
-            if 'GIVN' in ind_data['name_parts']:
-                parts.append({
-                    "type": "http://gedcomx.org/Given",
-                    "value": ind_data['name_parts']['GIVN']
-                })
-            if 'SURN' in ind_data['name_parts']:
-                parts.append({
-                    "type": "http://gedcomx.org/Surname",
-                    "value": ind_data['name_parts']['SURN']
-                })
+        parts = []
 
-            if parts:
-                name_form["parts"] = parts
+        # 1. Prefer explicitly parsed Level 2 GIVN and SURN elements
+        if 'name_parts' in ind_data and ind_data['name_parts']:
+            if 'GIVN' in ind_data['name_parts']:
+                parts.append({"type": "http://gedcomx.org/Given", "value": ind_data['name_parts']['GIVN']})
+            if 'SURN' in ind_data['name_parts']:
+                parts.append({"type": "http://gedcomx.org/Surname", "value": ind_data['name_parts']['SURN']})
+
+        # 2. Fallback: Parse the solidus characters in the raw NAME string
+        elif '/' in raw_name:
+            match = re.search(r'^(.*?)/(.*?)/(.*?)$', raw_name)
+            if match:
+                given1, surname, given2 = match.groups()
+                given = (given1.strip() + " " + given2.strip()).strip()
+                surname = surname.strip()
+
+                if given:
+                    parts.append({"type": "http://gedcomx.org/Given", "value": given})
+                if surname:
+                    parts.append({"type": "http://gedcomx.org/Surname", "value": surname})
+
+        if parts:
+            name_form["parts"] = parts
 
         person['names'].append({"nameForms": [name_form]})
 
@@ -84,8 +150,13 @@ def build_person_doc(ind_id, ind_data):
     for event_tag, event_data in ind_data.get('events', {}).items():
         if event_tag in event_mapping:
             fact = {"type": event_mapping[event_tag]}
-            if 'DATE' in event_data: fact["date"] = {"original": event_data['DATE']}
-            if 'PLAC' in event_data: fact["place"] = {"original": event_data['PLAC']}
+            if 'DATE' in event_data:
+                fact["date"] = {"original": event_data['DATE']}
+                formal_date = normalize_gedcom_date(event_data['DATE'])
+                if formal_date:
+                    fact["date"]["formal"] = formal_date
+            if 'PLAC' in event_data:
+                fact["place"] = {"original": event_data['PLAC']}
             person['facts'].append(fact)
 
     return {"persons": [person]}
@@ -102,28 +173,23 @@ def build_relationship_doc(rel_type, person1_uri, person2_uri, facts=None):
     return {"relationships": [rel]}
 
 def discover_endpoints(server_url, headers):
-    """GETs the root URL to discover hypermedia links within a collection."""
-    print(f"Discovering endpoints at {server_url} ...")
+    """GETs the root collection to discover hypermedia links."""
     r = requests.get(server_url, headers=headers)
     r.raise_for_status()
 
     data = r.json()
-
-    # GEDCOM X RS groups endpoints inside collections
     collections = data.get('collections', [])
     if not collections:
         raise ValueError("No collections found at the root URL. Cannot proceed.")
 
-    # We will target the first collection returned by the server
     first_collection = collections[0]
     links = first_collection.get('links', {})
 
-    # Extract HATEOAS links for persons and relationships
     persons_url = links.get('persons', {}).get('href')
     rels_url = links.get('relationships', {}).get('href')
 
     if not persons_url or not rels_url:
-        raise ValueError("Could not discover 'persons' or 'relationships' endpoints within the collection.")
+        raise ValueError("Could not discover 'persons' or 'relationships' endpoints.")
 
     return persons_url, rels_url
 
@@ -135,32 +201,28 @@ def upload_data(server_url, gedcom_data):
     }
 
     try:
-        # 1. Discover endpoints
+        print(f"Discovering endpoints at {server_url} ...")
         persons_url, rels_url = discover_endpoints(server_url, headers)
 
-        id_map = {} # Maps local GEDCOM ID (e.g., @I0001@) to Server URI
+        id_map = {}
 
-        # 2. Upload Persons and map IDs
         print(f"Uploading individuals to {persons_url} ...")
         for ind_id, ind_data in gedcom_data['INDI'].items():
             doc = build_person_doc(ind_id, ind_data)
             r = requests.post(persons_url, json=doc, headers=headers)
             r.raise_for_status()
 
-            # The server must return the URI of the newly created person in the Location header
             server_uri = r.headers.get('Location')
             if not server_uri:
                 raise ValueError(f"Server did not return a Location header for person {ind_id}")
             id_map[ind_id] = server_uri
 
-        # 3. Upload Relationships
         print(f"Uploading relationships to {rels_url} ...")
         for fam_id, fam_data in gedcom_data['FAM'].items():
             husbands = fam_data.get('HUSB', [])
             wives = fam_data.get('WIFE', [])
             children = fam_data.get('CHIL', [])
 
-            # Couples
             for husb in husbands:
                 for wife in wives:
                     if husb in id_map and wife in id_map:
@@ -168,15 +230,19 @@ def upload_data(server_url, gedcom_data):
                         if 'MARR' in fam_data.get('events', {}):
                             marr = fam_data['events']['MARR']
                             fact = {"type": "http://gedcomx.org/Marriage"}
-                            if 'DATE' in marr: fact["date"] = {"original": marr['DATE']}
-                            if 'PLAC' in marr: fact["place"] = {"original": marr['PLAC']}
+                            if 'DATE' in marr:
+                                fact["date"] = {"original": marr['DATE']}
+                                formal_date = normalize_gedcom_date(marr['DATE'])
+                                if formal_date:
+                                    fact["date"]["formal"] = formal_date
+                            if 'PLAC' in marr:
+                                fact["place"] = {"original": marr['PLAC']}
                             facts.append(fact)
 
                         doc = build_relationship_doc("http://gedcomx.org/Couple", id_map[husb], id_map[wife], facts)
                         r = requests.post(rels_url, json=doc, headers=headers)
                         r.raise_for_status()
 
-            # Parents to Children
             parents = husbands + wives
             for parent in parents:
                 for child in children:

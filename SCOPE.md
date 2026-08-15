@@ -1544,19 +1544,133 @@ separately across two independent `CreatePerson` calls sharing a place
 name. See `internal/rmdb/createperson_test.go`.
 
 **Scoped narrower than the full GEDCOM X conceptual model, by design**:
-a name must have structured `nameForms[0].parts` (explicit Given/
-Surname/...) -- a bare `fullText` is rejected rather than split into
-parts by guesswork, the same reasoning `EncodeRMDate` already applies to
-ambiguous dates. Only built-in GEDCOM X fact types with a confirmed
-RootsMagic `FactTypeTable` mapping can be created; a custom fact-type
-URI is rejected rather than either matched fuzzily or used to silently
-create a new `FactTypeTable` row (a materially bigger, unverified
-feature). A `Fact.place` must carry `original` text; resolving a place
-from a bare `resource` reference isn't supported. Every rejection in
-this list returns a clear `400` naming what was wrong, not a best
-guess -- consistent with this whole stage's own principle (see above):
-a wrong write is a permanent, real mistake in someone's family tree, not
-a cosmetic display issue.
+only built-in GEDCOM X fact types with a confirmed RootsMagic
+`FactTypeTable` mapping can be created; a custom fact-type URI is
+rejected rather than either matched fuzzily or used to silently create a
+new `FactTypeTable` row (a materially bigger, unverified feature). A
+`Fact.place` must carry `original` text; resolving a place from a bare
+`resource` reference isn't supported. A `NameForm` with neither `parts`
+nor `fullText` (see below for the case where `fullText` alone is
+present) is rejected -- there's no real-world case motivating support
+for a name that says nothing at all about the person's name. Every
+rejection in this list returns a clear `400` naming what was wrong, not
+a best guess -- consistent with this whole stage's own principle (see
+above): a wrong write is a permanent, real mistake in someone's family
+tree, not a cosmetic display issue.
+
+### A real spec-compliance gap, found via a real user report: `fullText`-only names
+
+Originally, a `NameForm` was required to carry structured `parts`
+(explicit `Given`/`Surname`/...) -- a bare `fullText` was rejected
+outright, reasoning that splitting free text into surname/given is
+inherently ambiguous, the same reasoning `EncodeRMDate` applies to
+ambiguous dates. That reasoning wasn't wrong on its own terms, but it
+produced a real bug: a user reported a `400` for a request built from
+real GEDCOM data (their own `royal92.ged` test file, imported by
+RootsMagic itself) that turned out to be fully spec-compliant. Checked
+directly against the GEDCOM X conceptual model spec (Section 3.19, not
+assumed or half-remembered) before accepting that: `fullText` and
+`parts` are *independently* `OPTIONAL` on `NameForm` -- a `fullText`-only
+name is a completely valid representation the spec explicitly
+anticipates, not an edge case this server had any business rejecting.
+
+The fix isn't "attempt the ambiguous split after all." It's a
+deterministic fallback with real evidence behind it, not a guess:
+when `parts` is absent, the whole `fullText` is stored in
+`NameTable.Given`, with `NameTable.Surname` left empty -- confirmed to
+be RootsMagic's own actual behavior, not invented for this server.
+GEDCOM 5.x's own convention encloses a surname in slashes
+(`"Given /Surname/"`); when that slash-delimited portion is empty (a
+real line from the user's own `royal92.ged`: `"1 NAME Albert Augustus
+Charles//"`), RootsMagic stores the whole preceding text in `Given` and
+leaves `Surname` empty -- checked directly against the real
+`royal92.rmtree` database this file produces (`NameID 2:
+Given="Albert Augustus Charles", Surname=""`), and confirmed
+consistently across several more of the same pattern in the same file
+(`Victoria Adelaide Mary`, `Alice Maud Mary`, ...), not just the one
+example. This server doesn't parse GEDCOM 5.x or its slash convention at
+all -- it's GEDCOM X JSON in, RootsMagic schema out -- but the
+*resulting* rule (`fullText`-only -> whole thing in `Given`, empty
+`Surname`) is the same rule RootsMagic itself already applies to exactly
+this situation, adopted here specifically because it's evidence-backed
+rather than because it happens to be convenient.
+
+This is a genuinely different kind of decision than the
+before/after/range date rejection nearby, worth being precise about why
+both stand: those were a real coin flip between two specific, equally
+plausible interpretations, with real risk of silently storing the wrong
+one and no way for anyone to notice. This has a single, deterministic,
+externally-verified answer -- there was never a choice to guess wrong.
+
+Verified with a real HTTP round trip reproducing both the user's exact
+original request (`"Victoria  Hanover"`, double space preserved exactly
+as sent) and the `royal92.ged` `Albert Augustus Charles` case, confirming
+the stored `NameTable` values directly, not just the response status.
+`cmd/server/main_test.go`'s `TestCreatePersonsHTTP` gained a permanent
+test for the fallback -- replacing an existing test that had specifically
+asserted the old, now-incorrect rejection behavior, not left alongside
+it. (The "neither `parts` nor `fullText`" case mentioned in that test's
+original description turned out to need the same treatment -- see below,
+this wasn't the end of this particular story.)
+
+### The same gap, one layer further in: a name with genuinely nothing in it at all
+
+A third real report, from the same `royal92.ged` file, on the very next
+individual tested: `I785`, entered with only a title, sex, and death
+year -- no name content of any kind. The request this produces has a
+`NameForm` with neither `parts` nor `fullText` (an empty string, not
+absent -- JSON can't distinguish the two for a plain `string` field
+either way), which the fix above still rejected. Checked directly against
+the real `royal92.rmtree` row this individual produces before accepting
+that the rejection was wrong: `Given=""`, `Surname=""`, `IsPrimary=1` --
+still one real `NameTable` row, not zero. Confirmed consistently against
+a second individual with the identical GEDCOM shape (`I788`, `"1 NAME
+//"`) before treating it as a general rule rather than a one-off.
+
+Fixed the same way as the `fullText`-only case: no split is attempted (
+there's nothing to split), `Given` ends up `""` simply because
+`form.FullText` already is empty in this case -- the existing assignment
+handles both outcomes without a separate branch.
+
+This also meant reconsidering `Person.names` itself, checked directly
+against the conceptual model spec (Section 2.1) rather than assumed:
+`OPTIONAL`, same as `fullText`/`parts` on `NameForm`. This server was
+also rejecting a `Person` with no `names` field at all, or an empty
+`names` array -- both now accepted, falling back to exactly one empty,
+primary `NewPersonName`, matching RootsMagic's own confirmed "always at
+least one `NameTable` row" behavior from the case above rather than
+diverging from it by creating zero.
+
+**A fourth issue, found while testing the third, not reported
+separately**: the real request for `I785` doesn't mark its (only) name
+`preferred` -- GEDCOM X's own spec permits this, treating list order as
+the preference signal instead ("names are assumed to be given in order
+of preference, with the most preferred name in the first position").
+This server wasn't honoring that convention at all: every name got
+created with `IsPrimary=0` unless a client explicitly set `preferred:
+true`, which produced `IsPrimary=0` on `I785`'s only name -- diverging
+from every real `royal92.rmtree` row checked throughout this entire
+project, all of which have `IsPrimary=1` on the first or only name, with
+no exceptions found. Fixed in `buildNewPerson`: if nothing in the list
+was explicitly marked preferred, the first name defaults to primary
+instead. Verified specifically that an explicit `preferred: true` later
+in the list still overrides the default, not just that the default
+itself works.
+
+**A fifth issue, found but deliberately not fixed here**: `I785`'s death
+year (`1870`) doesn't appear in the created record either. Checked why
+directly: the request carries only `Date.Original` (`"       1870"`,
+whitespace-padded), never `Date.Formal`, and `buildNewPersonFact` only
+ever consults `Formal` -- `Original` is silently ignored entirely,
+regardless of its content. Unlike the four fixes above, this isn't a
+narrow, deterministic gap with a single evidence-backed answer sitting
+right there -- `Original` is explicitly free text with no defined
+grammar at all, and while this particular example happens to be a bare,
+parseable year, `Original` can just as easily hold `"abt 1870"`, `"MAY
+1870"`, or something with no extractable date at all. Solving this
+properly is a real, open-ended parsing problem in its own right, not a
+quick addition to this fix -- flagged for its own dedicated pass rather
+than rushed in alongside four narrower, already-verified fixes.
 
 **Per RS spec Section 4.9.2 exactly**: `201` + `Location` header when a
 request creates exactly one person, `204` when it creates several. A
@@ -2031,7 +2145,7 @@ call -- there's exactly one process, one log stream, and one place
 decides its level and format; a per-call-site logger parameter would add
 plumbing this server has no actual use for.
 
-**Two new flags** (`cmd/server/main.go`): `-log-level` (`debug`/`info`/
+**Two new flags** (`cmd/server/main.go`): `-log-level` (`trace`/`debug`/`info`/
 `warn`/`error`, default `info`) and `-log-format` (`text`/`json`, default
 `text`). Logs go to stderr, matching the `log` package's own former
 default and every existing `fmt.Fprintln(os.Stderr, ...)` startup-error
@@ -2075,6 +2189,9 @@ now emits two things per request, not one:
   response alone explains *that* something was rejected, but the natural
   next question -- *what* did the client actually send -- needed the
   request alongside it.
+
+At `trace`, that same `Debug` detail line is emitted for every request,
+including successful responses.
 
 Deliberately two separate log lines at two separate levels, not one line
 with the bodies as always-present attributes: slog's level filtering is
@@ -2180,4 +2297,3 @@ interpolated into the message string. The three
 above) were consolidated into one shared `logIgnoredFields` helper,
 `slog.Info`, so the message shape stays consistent across all three
 rather than drifting independently.
-
