@@ -70,8 +70,8 @@ func (db *DB) CreateCoupleRelationship(input NewCoupleRelationship) (familyID in
 			`INSERT INTO EventTable
 			 (EventID, EventType, OwnerType, OwnerID, FamilyID, PlaceID, SiteID, Date, SortDate,
 			  IsPrimary, IsPrivate, Proof, Status, Sentence, Details, Note, UTCModDate)
-			 VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?, 0, 0, 0, 0, '', '', '', `+utcModDateExpr+`)`,
-			eventID, f.FactTypeID, OwnerTypeFamily, familyID, placeIDs[i], f.DateString, sortDate,
+			 VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?, 0, 0, 0, 0, '', '', ?, `+utcModDateExpr+`)`,
+			eventID, f.FactTypeID, OwnerTypeFamily, familyID, placeIDs[i], f.DateString, sortDate, f.Note,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("creating fact: %w", err)

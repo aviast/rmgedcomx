@@ -275,18 +275,23 @@ func (s *Server) buildNewPersonFact(f gedcomx.Fact) (rmdb.NewPersonFact, error) 
 			// no Formal at all) -- see ParseGedcom5Date's own comment
 			// for the full account of what it does and doesn't cover.
 			// A date that doesn't match is not a client mistake worth
-			// rejecting the whole fact over -- it's logged (so there's
-			// a visible trail of real dates this server still can't
-			// interpret) and the fact is still created, just without a
-			// machine-readable date, matching this server's own
-			// existing "log, don't reject" precedent for other
-			// recognized-but-unsupported request content (see
-			// logIgnoredFields).
+			// rejecting the whole fact over -- the fact is still
+			// created, just without a machine-readable date, matching
+			// this server's own existing "don't reject, still record
+			// what you can" precedent for other recognized-but-
+			// unsupported request content (see logIgnoredFields).
+			// Unlike that precedent, the unrecognized text itself isn't
+			// just logged and then lost -- it's preserved directly in
+			// EventTable.Note (prefixed so it's clearly this server's
+			// own annotation, not data RootsMagic itself wrote), so a
+			// person reviewing the database later, not just watching
+			// logs in real time, can still see and act on it.
 			if dateString, y, m, d, ok := gedcomx.ParseGedcom5Date(f.Date.Original); ok {
 				nf.DateString = dateString
 				nf.SortYear, nf.SortMonth, nf.SortDay = y, m, d
 			} else {
-				slog.Info("couldn't interpret date.original as a GEDCOM 5.x date -- fact created without a date", "original", f.Date.Original)
+				slog.Info("couldn't interpret date.original as a GEDCOM 5.x date -- fact created without a date, original text preserved in EventTable.Note", "original", f.Date.Original)
+				nf.Note = "rmgedcomx was unable to parse this text as a date: " + f.Date.Original
 			}
 		}
 	}

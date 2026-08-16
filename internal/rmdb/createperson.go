@@ -25,6 +25,7 @@ type NewPersonFact struct {
 	DateString                   string // "." if no date at all
 	SortYear, SortMonth, SortDay int    // ignored when DateString == "."
 	PlaceText                    string // original place text; "" if no place
+	Note                         string // "" if none -- see EventTable.Note's own use for an unparseable Date.original
 }
 
 // NewPerson is the input to CreatePerson.
@@ -105,8 +106,8 @@ func (db *DB) CreatePerson(input NewPerson) (personID int64, err error) {
 			`INSERT INTO EventTable
 			 (EventID, EventType, OwnerType, OwnerID, FamilyID, PlaceID, SiteID, Date, SortDate,
 			  IsPrimary, IsPrivate, Proof, Status, Sentence, Details, Note, UTCModDate)
-			 VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?, 0, 0, 0, 0, '', '', '', `+utcModDateExpr+`)`,
-			eventID, f.FactTypeID, OwnerTypePerson, personID, placeIDs[i], f.DateString, sortDate,
+			 VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?, 0, 0, 0, 0, '', '', ?, `+utcModDateExpr+`)`,
+			eventID, f.FactTypeID, OwnerTypePerson, personID, placeIDs[i], f.DateString, sortDate, f.Note,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("creating event: %w", err)

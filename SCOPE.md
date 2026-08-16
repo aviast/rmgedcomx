@@ -1680,61 +1680,70 @@ same `I785` report, but as its own, explicit request this time: this
 server should accept `Date.original` for populating `EventTable.Date`,
 not assume every client computes `Formal`.
 
-**Checked what real `Date.original` values actually look like before
-building anything**, rather than guessing at the shape of "free text":
-every `DATE` value in this project's own real `royal92.ged` reference
-file (4018 of them), and separately, the actual conversion script that
-produces these requests (`gedcom_to_gedcomx.py`, in this repository's
-own root). Two things followed directly from that:
+**Grounded in the actual GEDCOM 5.5.1 specification directly**
+(`gedcom.io/specifications/ged551.pdf`, fetched and read in full, not
+recalled or assumed), not in any client-side conversion tooling this
+project's own test data happened to come from -- tooling like that is
+expected to keep changing as it's developed further, so it isn't a
+sound basis for what this server itself needs to support; the
+specification is the actual, stable contract. `Date.original` values
+aren't arbitrary human-typed text in general, but they also aren't
+required to follow any particular grammar at all -- what grounds this
+feature's scope is GEDCOM 5.5.1's own `DATE_VALUE` grammar (page
+45-47), since a `DATE` tag's line value in a real GEDCOM file is
+exactly this grammar, and a client passing that value through into
+`Date.original` verbatim (a reasonable, common thing to do) means this
+server can reasonably expect to see it.
 
-- `Date.original` values from this pipeline aren't arbitrary
-  human-typed text -- they're the raw GEDCOM 5.x `DATE` value, passed
-  through close to verbatim. GEDCOM 5.x has its own real, if not
-  unlimited, date grammar -- much more tractable than "parse anything a
-  human might type."
-- The script already computes `Date.formal` itself in the common case
-  (`normalize_gedcom_date`, in the same file) -- `I785`'s specific
-  request predates that function, or predates a fix to it; re-running
-  the current script against it now correctly produces
-  `"formal": "+1870"`. **A real, separate bug was found in that
-  function while confirming this**, worth flagging back rather than
-  silently working around: its own year-matching only accepts exactly
-  four digits (`len(part) == 4`), so any date with a 1-3 digit year --
-  genuinely common in a file with genealogy going back to the 6th
-  century -- silently fails to produce a `Formal` value at all, even
-  though the function is otherwise perfectly capable of it. Confirmed
-  directly: of the 4018 real dates in `royal92.ged`, the script as
-  written computes `Formal` for 96.2% (3867); a large share of the
-  remaining 3.8% is exactly this bug, not a fundamentally harder case
-  (`"996"`, `"ABT 968"`, `"811"`, ... all fail this check alone). Not
-  fixed here, since it's the client script, not this server, but worth
-  fixing on that side regardless of anything built below -- every date
-  it can already normalize doesn't need to fall back to `Original`
-  parsing at all.
+The full `DATE_VALUE` grammar, read directly from the specification:
 
-**`internal/gedcomx/gedcom5date.go`'s new `ParseGedcom5Date`** is the
-actual fallback, reusing `EncodeRMDate`'s own RM-date-string
-construction (extracted into a small shared `buildRMDateString` helper
-rather than duplicated) but built from a different source grammar.
-Checked directly against every one of the 4018 real dates before
-settling on its scope, not guessed at: covers 99.5% of them (3998).
-Supported: a plain date at day/month/year, month/year, or year-only
-precision (any year length, not just four digits -- unlike the
-Python script's own bug above), optionally prefixed with `ABT`/`CAL`/
-`EST` (qualitative) or `BEF`/`AFT` (directional) -- both confirmed,
-already-supported modifier categories on the read side
-(`rmdate.go`), just not previously reachable from this write path.
-Not supported, deliberately: date ranges (`BET...AND...`,
-`FROM...TO...`) and interpreted dates (`INT...`) -- zero real
-occurrences in the reference file, no evidence to build or verify
-against; double-dating (`"1743/44"`, 18 real occurrences) and a
-day+month with no year (2 occurrences) -- both confirmed genuinely
-rare rather than assumed to be, and both would need a real design
-decision of their own (which year does double-dating sort by with no
-separate `Formal` to disambiguate? what does a year-less day/month even
-mean for `SortDate`?) rather than a quick addition alongside the common
-cases. One data point cross-checks two completely separate parts of
-this project: `ParseGedcom5Date("abt 1808")` produces
+```
+DATE_VALUE:= [ <DATE> | <DATE_PERIOD> | <DATE_RANGE> |
+               <DATE_APPROXIMATED> | INT <DATE> (<DATE_PHRASE>) |
+               (<DATE_PHRASE>) ]
+DATE_APPROXIMATED:= [ ABT <DATE> | CAL <DATE> | EST <DATE> ]
+DATE_RANGE:= [ BEF <DATE> | AFT <DATE> | BET <DATE> AND <DATE> ]
+DATE_PERIOD:= [ FROM <DATE> | TO <DATE> | FROM <DATE> TO <DATE> ]
+DATE_GREG:= [ <YEAR_GREG>[B.C.] | <MONTH> <YEAR_GREG> |
+              <DAY> <MONTH> <YEAR_GREG> ]
+YEAR_GREG:= [ <NUMBER> | <NUMBER>/<DIGIT><DIGIT> ]
+```
+
+**`internal/gedcomx/gedcom5date.go`'s new `ParseGedcom5Date`** covers
+`<DATE_GREG>` (day/month/year, month/year, or year-only precision) and
+`<DATE_APPROXIMATED>`/the two single-date halves of `<DATE_RANGE>`
+(`ABT`/`CAL`/`EST` qualitative, `BEF`/`AFT` directional -- both
+confirmed, already-supported modifier categories on the read side,
+`rmdate.go`, just not previously reachable from this write path).
+Reuses `EncodeRMDate`'s own RM-date-string construction (extracted into
+a small shared `buildRMDateString` helper rather than duplicated) but
+built from this different source grammar. `royal92.ged`'s own 4018 real
+`DATE` values (now a permanent project fixture, `testdata/royal92.ged`)
+were used to confirm this scope actually holds up against a real file,
+not to define the scope in the first place: 99.5% (3998) parse
+successfully.
+
+**Not yet supported, named here precisely because the specification
+defines them, not because a test file happened to lack examples**:
+`BET <DATE> AND <DATE>` and the `<DATE_PERIOD>` forms (`FROM`/`TO`) --
+both involve two dates, and `BET...AND...` in particular reproduces the
+same ambiguity already documented for `EncodeRMDate`'s own formal-date
+direction (GEDCOM X's formal grammar can't distinguish "between" from
+"from...to" even though GEDCOM 5.5.1's own grammar can); `INT <DATE>
+(<DATE_PHRASE>)` and the bare `(<DATE_PHRASE>)` form -- a free-text
+phrase in parentheses, which the specification itself describes as "any
+statement offered as a date when the year is not recognizable to a date
+parser," i.e. deliberately unstructured by design, not something a
+grammar-based parser should be reaching for; the `B.C.` suffix on
+`YEAR_GREG`; and `YEAR_GREG`'s own double-dating form
+(`<NUMBER>/<DIGIT><DIGIT>`, e.g. `"1743/44"`, for the pre-1752
+Julian/Gregorian new-year-date discrepancy). Each of these needs its own
+real design decision -- what does `SortDate` mean for a date that's
+fundamentally a range, not a point? does double-dating sort by the old-
+style or new-style year? -- not a quick addition alongside the cases
+above just because the grammar exists. One data point cross-checks two
+completely separate parts of this project regardless:
+`ParseGedcom5Date("abt 1808")` produces
 `"D.+18080000.A+00000000.."`, the exact value independently confirmed
 against real captured RootsMagic data during a much earlier
 investigation into a different individual entirely.
@@ -1742,27 +1751,28 @@ investigation into a different individual entirely.
 **Returns `ok bool`, not an error** -- a deliberate difference from
 `EncodeRMDate`. A client sending `Formal` should be able to expect this
 server either honors it or clearly rejects it; `Original` is inherently
-free text with no defined grammar of its own, so not matching a known
-pattern is a normal outcome here, not a client mistake to report back
-as a `400`. `buildNewPersonFact` falls back to no date (matching the
-existing behavior for a fact with no date information at all) and logs
-the unparsed value at `Info` level -- the same "log, don't reject"
-precedent this project already uses for other recognized-but-
-unsupported request content (`logIgnoredFields`) -- rather than losing
-the information with no visible trail at all. The unparsed text itself
-isn't preserved anywhere in the database -- `EventTable.Note` is
-already unused by every write this project makes and could hold it as a
-real, separate future improvement, not attempted here.
+free text with no single defined grammar it's required to follow
+(GEDCOM 5.5.1's own `DATE_VALUE` grammar is the common case, not a
+universal guarantee), so not matching it is a normal outcome here, not
+a client mistake to report back as a `400`. `buildNewPersonFact` falls
+back to no date (matching the existing behavior for a fact with no date
+information at all), logs the unparsed value at `Info` level, and --
+added on direct request, see below -- preserves the original text
+itself in `EventTable.Note`, prefixed with `"rmgedcomx was unable to
+parse this text as a date: "` so it's clearly this server's own
+annotation and not data RootsMagic itself wrote. `NewPersonFact` gained
+a `Note` field for this (`internal/rmdb/createperson.go`), and the
+previously-hardcoded empty `Note` in both `CreatePerson`'s and
+`CreateCoupleRelationship`'s own `EventTable` inserts now binds it
+properly -- the latter isn't currently reachable through the HTTP API
+(`handleCreateRelationships` doesn't build `Facts` for a `Couple`
+relationship at all yet, a separate, pre-existing gap noted here rather
+than fixed in the same change), but keeping both write paths consistent
+was worth doing regardless of which one a request can currently reach.
 
-`testdata/royal92.ged` was added as a project fixture for this (the
-`.ged` source `royal92.rmtree` was itself already generated from, but
-which wasn't previously checked in on its own) -- proportionate in size
-to `royal92.rmtree` already being one, and by this point a repeatedly
-valuable source of real edge cases in its own right, worth keeping
-permanently rather than re-uploading each time.
 `internal/gedcomx/gedcom5date_test.go`'s
 `TestParseGedcom5DateAgainstRealRoyal92GedFile` runs every single one of
-the file's 4018 real dates through `ParseGedcom5Date`, asserting both
+`royal92.ged`'s 4018 real dates through `ParseGedcom5Date`, asserting both
 the overall 99.5% coverage rate and the *exact* set of 20 values that
 don't match -- a future change narrowing or widening real-world coverage
 gets caught here specifically, not just discovered later against a real
@@ -1770,8 +1780,11 @@ request. Verified end to end through the real HTTP stack too, not just
 the parser in isolation: `cmd/server/main_test.go` reproduces the exact
 `I785` request this bug was reported with, confirming the created
 record's `Date`/`SortDate`/`DeathYear` match the real `royal92.rmtree`
-values for this same individual, plus a separate case confirming an
-unparseable `Original` doesn't reject the request.
+values for this same individual, plus separate cases confirming an
+unparseable `Original` -- both arbitrary free text and a real,
+specification-defined form this server doesn't parse yet (`BET...AND...`)
+-- is preserved in `Note` with the exact prefix, rather than rejected or
+silently dropped.
 
 **Per RS spec Section 4.9.2 exactly**: `201` + `Location` header when a
 request creates exactly one person, `204` when it creates several. A

@@ -1012,7 +1012,19 @@ func TestCreatePersonsHTTP(t *testing.T) {
 	// SCOPE.md's own note on this as a real, separate possible
 	// improvement: EventTable.Note is already unused by every write this
 	// project makes and could hold it instead, not attempted here).
-	t.Run("unparseable Date.original does not reject the request, fact is created without a date", func(t *testing.T) {
+	// Added, per an explicit follow-up request: the unparseable text is
+	// no longer just logged and lost -- it's preserved in
+	// EventTable.Note, prefixed so it's clearly this server's own
+	// annotation rather than data RootsMagic itself wrote. Two cases
+	// here rather than one: arbitrary free text a client might send,
+	// and separately, a form that's real, defined GEDCOM 5.5.1 grammar
+	// (checked directly against the actual specification -- gedcom.io/
+	// specifications/ged551.pdf, DATE_RANGE, page 47) but not one this
+	// server's own ParseGedcom5Date supports yet (see its own comment
+	// for why ranges specifically were left out). Both should behave
+	// identically from this server's point of view -- neither is a
+	// client mistake, both get preserved rather than silently dropped.
+	t.Run("unparseable Date.original does not reject the request, original text preserved in Note", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
 			"facts":[{"type":"http://gedcomx.org/Birth","date":{"original":"sometime in the 1870s, maybe"}}]}]}`
@@ -1023,6 +1035,19 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
 		require.Contains(t, getBody, `"type":"http://gedcomx.org/Birth"`, "the fact itself should still exist")
 		require.NotContains(t, getBody, `"date"`, "RootsMagic's own Date field has no room for unparseable free text -- confirmed no \"date\" key appears at all, not a guessed or partial one")
+		require.Contains(t, getBody, `rmgedcomx was unable to parse this text as a date: sometime in the 1870s, maybe`, "the original text should be preserved in Notes, with the specified prefix")
+	})
+
+	t.Run("a real GEDCOM 5.5.1 form this server doesn't support yet (a date range) is also preserved in Note, not rejected", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
+			"facts":[{"type":"http://gedcomx.org/Birth","date":{"original":"BET 1900 AND 1910"}}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `rmgedcomx was unable to parse this text as a date: BET 1900 AND 1910`)
 	})
 
 	t.Run("unrecognized gender type is rejected", func(t *testing.T) {
