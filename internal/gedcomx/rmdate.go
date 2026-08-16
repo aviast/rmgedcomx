@@ -104,7 +104,19 @@ func EncodeRMDate(formal string) (rmDateString string, year, month, day int, err
 	if qualifier != 0 {
 		qualByte = qualifier
 	}
-	return fmt.Sprintf("D.+%04d%02d%02d.%c+00000000..", y, m, d, qualByte), y, m, d, nil
+	return buildRMDateString('.', y, m, d, qualByte), y, m, d, nil
+}
+
+// buildRMDateString constructs RootsMagic's own encoded Date string
+// (EventTable.Date / NameTable.Date) from a directional modifier byte
+// ('.'/'B'/'A' -- see this file's own top-of-file comment for the full
+// grammar), a (year, month, day), and a qualitative modifier byte.
+// Shared by EncodeRMDate above and ParseGedcom5Date (gedcom5date.go) --
+// the second date-half is always left unused (+00000000, qualitative
+// '.') by both callers, since neither produces a two-date range (see
+// each one's own comment for why ranges aren't supported).
+func buildRMDateString(directional byte, year, month, day int, qualitative byte) string {
+	return fmt.Sprintf("D%c+%04d%02d%02d.%c+00000000..", directional, year, month, day, qualitative)
 }
 
 // parseFormalYMD parses the "+YYYY", "+YYYY-MM", or "+YYYY-MM-DD" forms

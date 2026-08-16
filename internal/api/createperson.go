@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/aviast/rmgedcomx/internal/gedcomx"
@@ -258,13 +259,36 @@ func (s *Server) buildNewPersonFact(f gedcomx.Fact) (rmdb.NewPersonFact, error) 
 	}
 
 	nf := rmdb.NewPersonFact{FactTypeID: factTypeID, DateString: "."}
-	if f.Date != nil && f.Date.Formal != "" {
-		dateString, y, m, d, err := gedcomx.EncodeRMDate(f.Date.Formal)
-		if err != nil {
-			return rmdb.NewPersonFact{}, fmt.Errorf("date: %w", err)
+	if f.Date != nil {
+		switch {
+		case f.Date.Formal != "":
+			dateString, y, m, d, err := gedcomx.EncodeRMDate(f.Date.Formal)
+			if err != nil {
+				return rmdb.NewPersonFact{}, fmt.Errorf("date: %w", err)
+			}
+			nf.DateString = dateString
+			nf.SortYear, nf.SortMonth, nf.SortDay = y, m, d
+		case f.Date.Original != "":
+			// No Formal, but Original might still be usable: a real
+			// client, converting a real GEDCOM file, was found sending
+			// exactly this shape (a GEDCOM 5.x date string in Original,
+			// no Formal at all) -- see ParseGedcom5Date's own comment
+			// for the full account of what it does and doesn't cover.
+			// A date that doesn't match is not a client mistake worth
+			// rejecting the whole fact over -- it's logged (so there's
+			// a visible trail of real dates this server still can't
+			// interpret) and the fact is still created, just without a
+			// machine-readable date, matching this server's own
+			// existing "log, don't reject" precedent for other
+			// recognized-but-unsupported request content (see
+			// logIgnoredFields).
+			if dateString, y, m, d, ok := gedcomx.ParseGedcom5Date(f.Date.Original); ok {
+				nf.DateString = dateString
+				nf.SortYear, nf.SortMonth, nf.SortDay = y, m, d
+			} else {
+				slog.Info("couldn't interpret date.original as a GEDCOM 5.x date -- fact created without a date", "original", f.Date.Original)
+			}
 		}
-		nf.DateString = dateString
-		nf.SortYear, nf.SortMonth, nf.SortDay = y, m, d
 	}
 	if f.Place != nil {
 		if f.Place.Original == "" {

@@ -978,6 +978,53 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
 	})
 
+	// A real bug, found via a real user report: this server only ever
+	// consulted Date.formal, silently recording no date at all when a
+	// real client -- converting a real GEDCOM file -- sent only
+	// Date.original (a real royal92.ged individual, entered with a
+	// title, sex, and this exact death date, nothing else). Fixed to
+	// fall back to gedcomx.ParseGedcom5Date when formal is absent -- see
+	// its own comment in internal/gedcomx/gedcom5date.go for the full
+	// account, including why this scope (not the full GEDCOM 5.5.1
+	// grammar) was chosen. Verified here against the exact real request
+	// this bug was reported with, checking the stored Date/SortDate/
+	// DeathYear directly against the real royal92.rmtree values for
+	// this same individual, not just that the request succeeds.
+	t.Run("Date.original is used as a fallback when Date.formal is absent", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons": [{"names": [{"nameForms": [{"fullText": ""}]}], "facts": [{"type": "http://gedcomx.org/Death", "date": {"original": "       1870"}}], "gender": {"type": "http://gedcomx.org/Male"}}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"formal":"+1870"`, "the GET response should now show a Formal value derived from the stored date")
+	})
+
+	// The other side of the same fix: Original present but not in a
+	// supported form should not reject the whole request -- the fact
+	// (and person) still get created, just without a machine-readable
+	// date, the same way a fact with no date at all works today. The
+	// unparseable text itself isn't preserved anywhere (RootsMagic's own
+	// EventTable.Date has no room for arbitrary free text once
+	// ParseGedcom5Date can't interpret it as structured Y/M/D -- see
+	// this test's own absence-of-a-date-field assertion below, and
+	// SCOPE.md's own note on this as a real, separate possible
+	// improvement: EventTable.Note is already unused by every write this
+	// project makes and could hold it instead, not attempted here).
+	t.Run("unparseable Date.original does not reject the request, fact is created without a date", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
+			"facts":[{"type":"http://gedcomx.org/Birth","date":{"original":"sometime in the 1870s, maybe"}}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"type":"http://gedcomx.org/Birth"`, "the fact itself should still exist")
+		require.NotContains(t, getBody, `"date"`, "RootsMagic's own Date field has no room for unparseable free text -- confirmed no \"date\" key appears at all, not a guessed or partial one")
+	})
+
 	t.Run("unrecognized gender type is rejected", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		body := `{"persons":[{"gender":{"type":"http://gedcomx.org/Alien"},
