@@ -978,6 +978,56 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
 	})
 
+	// A real bug, found via a real user report: Date.formal is REQUIRED
+	// by the actual GEDCOM X Date Format specification (Section 5.2.2.1)
+	// to have a four-digit, zero-padded year -- checked directly against
+	// the spec text before concluding the request, not this server, was
+	// the one out of line. "+742-04-02" (Charlemagne's real birth year,
+	// 742 AD) is missing that padding and is genuinely invalid Formal.
+	// But this server was hard-rejecting the whole request over it, even
+	// though the same fact's Date.original (" 2 APR  742") was right
+	// there and perfectly parseable. Fixed: an invalid Formal now falls
+	// back to Original the same way an absent Formal already did,
+	// rather than being treated as a harder failure than having no
+	// Formal at all. EncodeRMDate's own strict validation is unchanged --
+	// this is entirely about what happens after it correctly rejects
+	// something.
+	t.Run("invalid Date.formal falls back to Date.original instead of rejecting the request (Charlemagne)", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons": [{"names": [{"nameForms": [{"fullText": "Charlemagne", "parts": [{"type": "http://gedcomx.org/Given", "value": "Charlemagne"}]}]}], "facts": [{"type": "http://gedcomx.org/Birth", "date": {"original": " 2 APR  742", "formal": "+742-04-02"}, "place": {"original": "Aachen,West Germany"}}, {"type": "http://gedcomx.org/Death", "date": {"original": "        814", "formal": "+814"}}], "gender": {"type": "http://gedcomx.org/Male"}}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"formal":"+0742-04-02"`, "birth date should have been parsed from Original and re-encoded with a correctly zero-padded year")
+		require.Contains(t, getBody, `"formal":"+0814"`, "death date likewise")
+	})
+
+	t.Run("invalid Date.formal AND unparseable Date.original both fall back to no date, with Note, not a rejection", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
+			"facts":[{"type":"http://gedcomx.org/Birth","date":{"formal":"/+1910","original":"sometime, who knows"}}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `rmgedcomx was unable to parse this text as a date: sometime, who knows`)
+	})
+
+	t.Run("valid Date.formal still takes priority over Date.original when both are present", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
+			"facts":[{"type":"http://gedcomx.org/Birth","date":{"formal":"+1819-05-24","original":"this text is irrelevant and should be ignored"}}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"formal":"+1819-05-24"`)
+	})
+
 	// A real bug, found via a real user report: this server only ever
 	// consulted Date.formal, silently recording no date at all when a
 	// real client -- converting a real GEDCOM file -- sent only

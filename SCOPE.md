@@ -1749,26 +1749,72 @@ against real captured RootsMagic data during a much earlier
 investigation into a different individual entirely.
 
 **Returns `ok bool`, not an error** -- a deliberate difference from
-`EncodeRMDate`. A client sending `Formal` should be able to expect this
-server either honors it or clearly rejects it; `Original` is inherently
-free text with no single defined grammar it's required to follow
-(GEDCOM 5.5.1's own `DATE_VALUE` grammar is the common case, not a
-universal guarantee), so not matching it is a normal outcome here, not
-a client mistake to report back as a `400`. `buildNewPersonFact` falls
-back to no date (matching the existing behavior for a fact with no date
-information at all), logs the unparsed value at `Info` level, and --
-added on direct request, see below -- preserves the original text
-itself in `EventTable.Note`, prefixed with `"rmgedcomx was unable to
-parse this text as a date: "` so it's clearly this server's own
-annotation and not data RootsMagic itself wrote. `NewPersonFact` gained
-a `Note` field for this (`internal/rmdb/createperson.go`), and the
-previously-hardcoded empty `Note` in both `CreatePerson`'s and
-`CreateCoupleRelationship`'s own `EventTable` inserts now binds it
-properly -- the latter isn't currently reachable through the HTTP API
-(`handleCreateRelationships` doesn't build `Facts` for a `Couple`
-relationship at all yet, a separate, pre-existing gap noted here rather
-than fixed in the same change), but keeping both write paths consistent
-was worth doing regardless of which one a request can currently reach.
+`EncodeRMDate`. `Original` is inherently free text with no single
+defined grammar it's required to follow (GEDCOM 5.5.1's own
+`DATE_VALUE` grammar is the common case, not a universal guarantee), so
+not matching it is a normal outcome here, not a client mistake to
+report back as a `400`. `buildNewPersonFact` falls back to no date
+(matching the existing behavior for a fact with no date information at
+all), logs the unparsed value at `Info` level, and -- added on direct
+request, see below -- preserves the original text itself in
+`EventTable.Note`, prefixed with `"rmgedcomx was unable to parse this
+text as a date: "` so it's clearly this server's own annotation and not
+data RootsMagic itself wrote. `NewPersonFact` gained a `Note` field for
+this (`internal/rmdb/createperson.go`), and the previously-hardcoded
+empty `Note` in both `CreatePerson`'s and `CreateCoupleRelationship`'s
+own `EventTable` inserts now binds it properly -- the latter isn't
+currently reachable through the HTTP API (`handleCreateRelationships`
+doesn't build `Facts` for a `Couple` relationship at all yet, a
+separate, pre-existing gap noted here rather than fixed in the same
+change), but keeping both write paths consistent was worth doing
+regardless of which one a request can currently reach.
+
+### A real bug this uncovered: an invalid `Date.formal` rejected the whole request even with a perfectly good `Date.original` right there
+
+A real request to create Charlemagne failed outright:
+`Date.formal="+742-04-02"` (his real birth year, 742 AD) alongside
+`Date.original=" 2 APR  742"`. Checked directly against the actual
+GEDCOM X Date Format specification
+(`github.com/FamilySearch/gedcomx/blob/master/specifications/date-format-specification.md`,
+Section 5.2.2.1) before concluding which side was actually wrong: *"The
+year component is defined as a REQUIRED [+] or [-] and four digits,
+left-padded with zeros as needed."* `"742"` needed to be `"0742"` --
+the request's own `Formal` value is genuinely not spec-compliant, and
+`EncodeRMDate`'s rejection of it was, strictly, correct. That's not
+where this actually stopped, though: the previous version of
+`buildNewPersonFact` treated *any* `Formal` parse failure as an
+immediate, hard rejection of the whole request -- even though the very
+same fact's `Original` value was sitting right there, unambiguous, and
+perfectly parseable by `ParseGedcom5Date`. A `Formal` that's present but
+invalid was, in effect, being treated as a *harder* failure than
+`Formal` being absent entirely, which makes little sense: both cases
+end up needing the same fallback.
+
+Fixed by extending the fallback `buildNewPersonFact` already had for a
+missing `Formal` to also cover an *invalid* one: if `EncodeRMDate`
+fails and `Original` is present, fall back to `ParseGedcom5Date` on
+`Original` before giving up, the same as the missing-`Formal` case
+already did. `EncodeRMDate`'s own validation is untouched -- still
+exactly as strict, still correctly rejecting `"+742-04-02"` on its own
+terms; what changed is only what `buildNewPersonFact` does in response.
+A genuinely unrecoverable case (`Formal` invalid, and no `Original` to
+fall back to at all) still returns a `400` -- the client explicitly
+opted into `Formal`'s strict, machine-readable contract in that case
+and failed it with nothing else offered, which is different from
+`Formal` simply being invalid but recoverable via `Original`.
+
+Verified against the real request directly: both of Charlemagne's facts
+(birth `+742-04-02`, death `+814`, neither zero-padded) now create
+successfully, and a subsequent `GET` shows each correctly re-encoded
+with a properly zero-padded `Formal` (`+0742-04-02`, `+0814`) --
+confirming the value round-trips correctly through `ParseGedcom5Date`
+and back out through the read side's own `ParseRMDate`, not just that
+the request no longer fails.
+`cmd/server/main_test.go`'s `TestCreatePersonsHTTP` gained this exact
+scenario as a permanent regression test, alongside two more: `Formal`
+invalid with `Original` *also* unparseable (falls back to no date plus
+`Note`, still not a rejection) and `Formal` valid with `Original` also
+present (confirms `Formal` still takes priority, unchanged).
 
 `internal/gedcomx/gedcom5date_test.go`'s
 `TestParseGedcom5DateAgainstRealRoyal92GedFile` runs every single one of

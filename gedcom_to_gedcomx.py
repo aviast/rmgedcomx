@@ -79,9 +79,11 @@ def normalize_gedcom_date(date_str):
     year, month, day = None, None, None
     for part in reversed(parts):
         if part.isdigit():
-            if len(part) in (3, 4):
-                year = part
-            elif len(part) in (1, 2):
+            if not year:
+                # First numeric part from right is the year. Pad to 4 digits.
+                year = part.zfill(4)
+            else:
+                # Second numeric part from right is the day. Pad to 2 digits.
                 day = part.zfill(2)
         elif part in months:
             month = months[part]
