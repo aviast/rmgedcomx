@@ -1880,51 +1880,152 @@ to replicate, for both `Person` and `Relationship` writes, since there's
 no principled reason to prefer one spouse's timestamp over the other's.
 
 **`CreateParentChildRelationship`** (`internal/rmdb/createparentchild.go`)
-was the harder design problem in this whole stage, worth explaining
-precisely rather than just stating the result: RootsMagic's own schema
-has nowhere to attach a bare (parent, child) pair directly. A child
-belongs to a *family* (`ChildTable.FamilyID`), and that family
-separately has a `FatherID`/`MotherID` -- the father-child and
-mother-child relationships this server's read side already exposes as
-two distinct `Relationship` resources (see "Relationships" above) are
-really two views onto the same underlying family membership, not two
-facts RootsMagic stores independently. Creating one has to resolve which
-family is actually meant. The design landed on:
+was the harder design problem in this whole stage, and went through a
+real, corrected design mistake before landing where it is now -- see
+"A real design mistake, corrected" below for the full account. The
+short version of where it landed: RootsMagic's own schema has nowhere
+to attach a bare (parent, child) pair directly. A child belongs to a
+*family* (`ChildTable.FamilyID`), and that family separately has a
+`FatherID`/`MotherID` -- the father-child and mother-child relationships
+this server's read side already exposes as two distinct `Relationship`
+resources (see "Relationships" above) are really two views onto the
+same underlying family membership, not two facts RootsMagic stores
+independently. Creating one has to resolve which family is actually
+meant, and the resolution only ever does so based on something already
+established about the *child* specifically -- never based on what the
+named parent alone happens to already have on file:
 
-1. If the parent (role determined by their own `PersonTable.Sex`)
-   already has exactly one existing family in the matching role, the
-   child is added there. This is the real, confirmed workflow (see the
-   reference capture): create the couple relationship first, giving both
-   parents an established family, then link each child with a *single*
-   `ParentChild` request naming either parent -- confirmed directly, via
-   a real HTTP round trip, that this correctly surfaces *both*
-   father-child and mother-child relationships on a subsequent `GET`
-   without needing a second request for the other parent, since both
-   are derived from the one `ChildTable` row the single request creates.
-2. If the parent has no existing family in that role at all, a new
-   single-parent family is created first (matching
-   `CreateCoupleRelationship`'s own support for one), then the child is
-   added there.
-3. If the parent already has more than one family in that role (a real,
-   if less common, case -- remarriage), which family the child belongs
-   to is genuinely ambiguous from a bare (parent, child) pair alone --
-   GEDCOM X's own `ParentChild` relationship type has no third field to
-   name a specific family. Rejected with a clear error rather than
-   guessed at.
+1. If the child already belongs to a matching-kind family (see RelType
+   below) that already has this exact parent in the matching role, this
+   is a no-op (idempotent) -- confirmed directly with a dedicated test,
+   not just reasoned about.
+2. If the child already belongs to a matching-kind family with that role
+   empty, it's completed with this parent. If completing it would create
+   a second family record for parents already paired elsewhere (a real
+   case: the other parent's own `ParentChild` request, or a `Couple`
+   relationship, may have already established that exact pairing under
+   a different `FamilyID`), the child's link is *moved* to the
+   pre-existing family instead, and the now-redundant one is removed.
+3. If the child has no matching family at all, a new one is created for
+   this parent alone (matching `CreateCoupleRelationship`'s own support
+   for single-parent families) -- regardless of how many *other*
+   families the named parent already has on file for other children.
+4. If more than one of the child's existing families could match, this
+   is genuinely ambiguous (a real, schema-supported case -- a child can
+   belong to more than one family at once, e.g. biological and adoptive
+   -- see "RelType" below) and rejected rather than guessed at.
 
-A child already linked to the resolved family is treated as a no-op
-(idempotent), not a duplicate `ChildTable` row or an error -- confirmed
-directly with a dedicated test, not just reasoned about. Sex "Unknown"
-on the parent is rejected outright, the same reasoning `CreateCoupleRelationship`
-already applies via `resolveCoupleRoles` (below) to a couple where
-either person's sex isn't Male/Female. A real gap was caught and fixed
-while building the HTTP layer on top of this: the first version never
-validated `ChildID` actually existed before creating a dangling
-`ChildTable` reference to it -- caught before shipping, not after.
+Sex "Unknown" on the parent is rejected outright, the same reasoning
+`CreateCoupleRelationship` already applies via `resolveCoupleRoles`
+(below) to a couple where either person's sex isn't Male/Female. A real
+gap was caught and fixed while building the HTTP layer on top of this:
+the first version never validated `ChildID` actually existed before
+creating a dangling `ChildTable` reference to it -- caught before
+shipping, not after.
 
 Matched field-by-field against the real six-children capture: exact
 match on `RecID`/`ChildID`/`FamilyID`/`ChildOrder` across all six
-children, in order.
+children, in order -- now requiring two `ParentChild` requests per
+child (one per parent) rather than one, per the corrected design above;
+the test itself was updated to send both rather than relying on the
+old, incorrect single-request shortcut.
+
+### A real design mistake, corrected
+
+An earlier version of this function resolved a bare (parent, child)
+pair by checking whether the named parent already had exactly one
+family on file, and used it directly if so. This was a real, if
+understandable, mistake, caught during design discussion rather than
+after shipping: "the parent happens to have one family recorded" is a
+fact about this database's *current contents*, not a fact about the
+parent's real life. If Mary's only recorded family happens to be with
+Patrick, a bare `ParentChild(Mary, Child)` request says nothing at all
+about whether Patrick is Child's other parent -- it could just as
+easily be Robert, someone not yet in the database at all. Linking the
+child into Patrick's family anyway would silently assert a co-parent
+that was never actually named.
+
+Corrected to the design above, which never reuses a family based on
+the parent's own existing state -- only ever based on the child's.
+Verified directly, not just reasoned about: a person with two real,
+distinct partners (Mary, with children by both Patrick and Robert) was
+constructed and confirmed each child lands in the correct, distinct
+family, never confused with the other, even though Mary already had
+one family on file by the time the second child's link arrived.
+
+Two further, real bugs were found and fixed while updating the existing
+real-data test to send both `ParentChild` requests per child (matching
+the corrected design) rather than just discovering them by accident
+later:
+
+- **`ChildOrder` wasn't recomputed on merge.** Each child, created in
+  its own temporary single-parent family before being merged into the
+  shared one (case 2 above), always started at `ChildOrder = 1` in that
+  temporary family -- and the merge only moved the `ChildTable` row's
+  `FamilyID`, never recomputed `ChildOrder` against the *target*
+  family's own existing children. All six children would have silently
+  collided at `ChildOrder = 1` instead of getting 1 through 6 in order.
+- **`PersonTable.ParentID` wasn't updated on merge either** -- left
+  pointing at the now-deleted temporary family instead of the
+  pre-existing one actually kept.
+
+Both are now fixed as part of the merge step itself, and both are
+covered by the same real-data test, which would fail again if either
+regressed.
+
+### RelType: distinguishing biological, adoptive, step, foster, and guardian relationships
+
+Prompted by the ambiguity case above having a real, named counterpart:
+`ChildTable.RelFather`/`RelMother` (confirmed against the RM4-11 data
+dictionary) aren't flags -- they're an eight-value relationship-kind
+code (0=Birth, 1=Adopted, 2=Step, 3=Foster, 4=Related, 5=Guardian,
+6=Sealed, 7=Unknown), meaning a person genuinely can belong to more
+than one family as a child at once (biological parents and adoptive
+parents both on file is a real, supported case, though not one
+`royal92.rmtree` happens to contain an example of).
+
+**Checked the actual GEDCOM X specification for a matching mechanism
+before building anything, and initially checked the wrong document**:
+the conceptual model spec's own "Known Fact Types" table does list
+`http://gedcomx.org/Adoption`, but that table's own "scope" column marks
+it `person`, not `relationship` -- and there is a *separate, dedicated*
+specification (`fact-types-specification.md`, not
+`conceptual-model-specification.md`) with its own "2.3 Parent-Child
+Relationship Fact Types" section, found only after this project's own
+first attempt used the wrong one and was corrected. That section defines
+ten fact types explicitly scoped to a parent-child relationship, five of
+which have a direct, one-to-one RootsMagic counterpart: `BiologicalParent`
+(RelType 0), `AdoptiveParent` (1), `StepParent` (2), `FosterParent` (3),
+`GuardianParent` (5). `Related` (4), `Sealed` (6, an LDS-temple-ordinance
+concept specific to RootsMagic with no GEDCOM X counterpart at all), and
+`Unknown` (7) are left unmapped -- nothing in GEDCOM X's own vocabulary
+corresponds to them cleanly, and the remaining five GEDCOM X fact types
+in that section (`ChildOrder`, `EnteringHeir`, `ExitingHeir`,
+`SociologicalParent`, `SurrogateParent`) don't correspond to any
+RootsMagic `RelFather`/`RelMother` value at all. `relTypeFromFacts`
+(`internal/api/createrelationship.go`) does the actual mapping, checked
+in the request's own `Facts` order (first match wins), defaulting to
+`RelTypeBirth` when none are present -- matching RootsMagic's own
+default for an unspecified GEDCOM 5.x `PEDIGREE_LINKAGE_TYPE`, and
+`BiologicalParent` exists so a client *can* say so explicitly, not so
+every client *must*.
+
+This isn't just metadata -- it's load-bearing for case 4's own
+ambiguity resolution above: a candidate family is only a match if the
+target role is empty *and* the other role (if already filled) is either
+also empty or the same `RelType`. This is what lets a child who already
+has an incomplete biological family and a separate incomplete adoptive
+family still resolve correctly: a new birth-type link only considers
+birth-type candidates, an adopted-type link only considers adopted-type
+ones -- confirmed directly, end to end through the real HTTP request
+shape a client actually sends, not just at the `rmdb` layer.
+
+**Not yet verified against a real captured adoption case** -- unlike
+almost everything else in this stage, which was checked against real
+RootsMagic data before being trusted. Flagged clearly rather than
+implied: this is real, spec-grounded, internally-tested design, but the
+next real GEDCOM file with an actual adoption in it should be treated as
+a genuine verification step, not just another test run.
 
 **`internal/api/createrelationship.go`**'s `handleCreateRelationships`
 resolves which of the two supported types a request is (`Couple` or
@@ -1937,6 +2038,24 @@ that isn't exactly one Male and one Female, the same principle as
 `CreateParentChildRelationship`'s own unknown-sex rejection. Per RS spec
 Section 4.20.2 (mirroring `Persons`' own `POST`): `201` + `Location` for
 exactly one relationship created, `204` for several.
+
+`CreateCoupleRelationship` (`internal/rmdb/createcouple.go`) also gained
+an eager existing-family check as part of this same redesign -- unlike
+`CreateParentChildRelationship`, this is safe to do eagerly, since a
+`Couple` relationship explicitly names both people; there's no unstated
+"who's the other parent" that reusing an existing family might silently
+assume incorrectly. If a family already exists with exactly this
+Father/Mother pairing, it's reused (idempotent) rather than duplicated;
+if either person already has an existing family with the other role
+empty, it's completed rather than a new one created -- the real case
+this covers being a `Couple` relationship arriving *after* both parents
+were already independently established via separate `ParentChild`
+requests, making it fully redundant except for whatever `Facts` it
+carries (e.g. a `Marriage` date), which still get attached to whichever
+family id ends up in play either way -- verified directly, not assumed,
+since an early draft of this returned before reaching the fact-attaching
+code at all when reusing an existing family, silently dropping any
+`Facts` the request carried.
 
 Verified through the real HTTP stack end to end:
 `cmd/server/main_test.go`'s `TestCreateRelationshipsHTTP` covers the
@@ -2401,9 +2520,10 @@ relationship first"
 `500` is wrong here, and worth being precise about why: it signals "this
 server has a bug, something went wrong on our end" -- but this is a
 perfectly well-formed request, referencing persons that genuinely exist,
-that this server correctly declined to guess about (see
-`CreateParentChildRelationship`'s own comment, case 3, in the "Stage 3"
-section above). That's a client-resolvable situation (the error message
+that this server correctly declined to guess about at the time (the
+original design's own case 3 -- since superseded; see "A real design
+mistake, corrected" in the "Stage 3" section above for why, and for what
+replaced it). That's a client-resolvable situation (the error message
 itself says how: create or identify the specific couple relationship
 first), which is what `400` means, not `500`.
 
@@ -2444,6 +2564,17 @@ existing ambiguity tests were strengthened to assert `errors.Is(err,
 ErrAmbiguous)` specifically, not just that *some* error occurred, and
 `cmd/server/main_test.go`'s `TestCreateRelationshipsHTTP` gained a
 dedicated regression test recreating this exact scenario end to end.
+
+The `ErrAmbiguous`/`400` mapping fixed here remains correct and
+unchanged. The specific scenario quoted above -- a parent already in two
+families, linked to a *new* child with no other information -- no
+longer produces this error at all, though: it was the direct symptom of
+the design mistake corrected later in this same section (see "A real
+design mistake, corrected," above) and now correctly creates a new
+family instead of guessing or rejecting. `ErrAmbiguous`/`400` still
+applies, just to the narrower, still-genuinely-ambiguous case that
+replaced it -- a child already belonging to more than one existing
+family.
 
 ### Other messages, converted in place
 

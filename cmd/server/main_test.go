@@ -1221,8 +1221,19 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 			`{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
 
-		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+		// Both links are required under the corrected design (see
+		// CreateParentChildRelationship's own comment) -- a bare,
+		// single-parent link no longer assumes the child belongs to
+		// that parent's existing family. The first creates a new
+		// single-parent family for Charlotte; the second recognizes
+		// that would duplicate the pre-existing Patrick+Maria family
+		// and merges into it, landing on F1.
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P3"}}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
 		require.Contains(t, headers.Get("Location"), "/relationships/F1")
 
@@ -1266,7 +1277,18 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 	// discovered by actually querying the database during the create
 	// call, which is why it wasn't caught by earlier request-validation
 	// the way "two males" above is. See rmdb.ErrAmbiguous's own comment.
-	t.Run("parent already in two families is rejected with 400, not 500", func(t *testing.T) {
+	// Replaces an earlier version of this test that asserted the
+	// opposite: a father with two real families (remarriage) and a
+	// bare, single-parent ParentChild request for a new child. That
+	// used to be rejected as ambiguous -- now it correctly creates a
+	// new, third family instead of guessing which existing one (or
+	// rejecting outright), since a bare (parent, child) pair carries no
+	// information about which partner the child's other parent actually
+	// was. See CreateParentChildRelationship's own comment (and this
+	// project's SCOPE.md, "Stage 3" section) for the full account of
+	// why this changed, including a real, corrected design mistake this
+	// project made and caught before shipping.
+	t.Run("parent with two existing families creates a new one for an unlinked child, not a guess", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "Father")
 		createPerson(t, testServer, "http://gedcomx.org/Female", "B", "Mother1")
@@ -1280,10 +1302,76 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 			`{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
 
-		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P4"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.NotContains(t, headers.Get("Location"), "/relationships/F1", "should not have assumed the child belongs to the father's first existing family")
+		require.NotContains(t, headers.Get("Location"), "/relationships/F2", "should not have assumed the child belongs to the father's second existing family either")
+	})
+
+	// The case that's still genuinely ambiguous under the corrected
+	// design: a child already belonging to more than one family (a
+	// real, schema-supported case -- see
+	// TestCreateParentChildRelationshipRejectsChildAlreadyInMultipleFamilies
+	// in internal/rmdb for the full account of why this can happen).
+	t.Run("child already in multiple same-kind families is rejected with 400, not 500", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "Father1")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "B", "Father2")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "C", "Child")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "D", "Mother")
+
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P4"},"person2":{"resourceId":"P3"}}]}`)
 		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
-		require.Contains(t, respBody, "already belongs to 2 different families")
+	})
+
+	// A child with a known biological parent and, separately, an
+	// adoptive parent -- each family still missing its other role.
+	// Without the RelType-aware disambiguation (relTypeFromFacts,
+	// driven by GEDCOM X's own dedicated Parent-Child Relationship Fact
+	// Types -- fact-types-specification.md, Section 2.3, a different
+	// document from the person-scoped fact types this project checked
+	// first, before finding the correct one), a new mother-role request
+	// naming either family's remaining role would be genuinely
+	// ambiguous between the two, since both have the target role empty
+	// at the same time. Verified end to end through the real HTTP
+	// request shape a client actually sends, not just the rmdb layer.
+	t.Run("AdoptiveParent/BiologicalParent facts disambiguate a child's biological vs adoptive family", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Robert", "Bio")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Patrick", "Adoptive")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Mary", "Bio")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Jane", "Adoptive")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Kid", "Smith")
+
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/BiologicalParent"}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		bioFamily := headers.Get("Location")
+
+		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/AdoptiveParent"}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		adoptiveFamily := headers.Get("Location")
+		require.NotEqual(t, bioFamily, adoptiveFamily, "biological and adoptive fathers must land in different families")
+
+		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P3"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/BiologicalParent"}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.Equal(t, bioFamily, headers.Get("Location"), "biological mother should complete the biological family, not be rejected as ambiguous")
+
+		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P4"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/AdoptiveParent"}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.Equal(t, adoptiveFamily, headers.Get("Location"), "adoptive mother should complete the adoptive family, not be rejected as ambiguous")
 	})
 
 	t.Run("nonexistent person is rejected with 400, not 500", func(t *testing.T) {
