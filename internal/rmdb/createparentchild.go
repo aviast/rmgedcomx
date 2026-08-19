@@ -111,6 +111,25 @@ type NewParentChildRelationship struct {
 // Sex "Unknown" (PersonTable.Sex = 2) can't be resolved to Father or
 // Mother at all and is rejected -- this server has no basis to guess
 // which role was meant.
+//
+// Deliberately does not touch PersonTable.SpouseID at all. Checked
+// directly against the RM4-11 data dictionary's own description before
+// concluding this: SpouseID holds the FamilyID of whichever family was
+// last VIEWED for this person in RootsMagic's own UI (0 if none ever
+// was) -- a UI navigation state, not a genealogical fact, and not
+// something a record created via this API (which was never viewed in
+// that UI at all) has a principled value for. An earlier version of
+// this function did set it, and in doing so exposed a real, separate
+// bug: when a temporary single-parent family gets merged away (see case
+// 2 above) and deleted, nothing updated the *other* parent's own
+// SpouseID if it had been pointing at that now-deleted family -- a
+// concrete, reported symptom of exactly this (a person left with
+// SpouseID referencing a FamilyID that no longer existed) is what
+// prompted reconsidering the field at all, not a hypothetical. Removing
+// the field entirely removes the bug along with it, rather than adding
+// more bookkeeping to keep a UI-state field correct across merges for a
+// value this server never had any real information for in the first
+// place.
 func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (familyID int64, err error) {
 	var parentSex int
 	err = db.sql.QueryRow("SELECT Sex FROM PersonTable WHERE PersonID = ?", input.ParentID).Scan(&parentSex)
@@ -243,13 +262,13 @@ func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (f
 			// its ChildOrder needs recomputing against THAT family's
 			// own existing children, not preserved from the temporary
 			// family it's leaving (which, being newly created for this
-			// child alone, always had ChildOrder=1 -- every merged
-			// child would otherwise silently collide at 1).
+			// child alone, always had ChildOrder=0 -- every merged
+			// child would otherwise silently collide at 0).
 			var maxOrder sql.NullInt64
 			if err := tx.QueryRow("SELECT MAX(ChildOrder) FROM ChildTable WHERE FamilyID = ?", dupFamilyID).Scan(&maxOrder); err != nil {
 				return 0, fmt.Errorf("finding next child order in the pre-existing family: %w", err)
 			}
-			newOrder := 1
+			newOrder := 0
 			if maxOrder.Valid {
 				newOrder = int(maxOrder.Int64) + 1
 			}
@@ -295,12 +314,6 @@ func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (f
 		); err != nil {
 			return 0, fmt.Errorf("recording relationship kind: %w", err)
 		}
-		if _, err := tx.Exec(
-			"UPDATE PersonTable SET SpouseID = ?, UTCModDate = "+utcModDateExpr+" WHERE PersonID = ?",
-			fid, input.ParentID,
-		); err != nil {
-			return 0, fmt.Errorf("updating parent's SpouseID: %w", err)
-		}
 		if err := bumpConfigTableModDate(tx); err != nil {
 			return 0, err
 		}
@@ -337,12 +350,6 @@ func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (f
 		if err != nil {
 			return 0, fmt.Errorf("creating single-parent family: %w", err)
 		}
-		if _, err := tx.Exec(
-			"UPDATE PersonTable SET SpouseID = ?, UTCModDate = "+utcModDateExpr+" WHERE PersonID = ?",
-			familyID, input.ParentID,
-		); err != nil {
-			return 0, fmt.Errorf("updating parent's SpouseID: %w", err)
-		}
 
 		relFather, relMother := 0, 0
 		if roleColumn == "FatherID" {
@@ -350,11 +357,16 @@ func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (f
 		} else {
 			relMother = input.RelType
 		}
+		// ChildOrder is 0-indexed by RootsMagic, not 1-indexed --
+		// confirmed directly against real ChildTable data (royal92.rmtree
+		// and a second, independent real database both start every
+		// multi-child family at ChildOrder=0). An earlier version of
+		// this started at 1; corrected here and in the merge path above.
 		var maxOrder sql.NullInt64
 		if err := tx.QueryRow("SELECT MAX(ChildOrder) FROM ChildTable WHERE FamilyID = ?", familyID).Scan(&maxOrder); err != nil {
 			return 0, fmt.Errorf("finding next child order: %w", err)
 		}
-		childOrder := 1
+		childOrder := 0
 		if maxOrder.Valid {
 			childOrder = int(maxOrder.Int64) + 1
 		}

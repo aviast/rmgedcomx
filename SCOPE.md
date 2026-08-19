@@ -1673,6 +1673,87 @@ quick addition to this fix -- flagged for its own dedicated pass rather
 than rushed in alongside four narrower, already-verified fixes. (It got
 that dedicated pass -- see "`Date.original` as a fallback" below.)
 
+### Three corrections to bring write behavior in line with RootsMagic, prompted by direct review
+
+All three found by directly checking real RootsMagic data rather than
+trusting this project's own earlier claims about it -- two of which
+turned out to be wrong, not just incomplete.
+
+**`BirthYear`/`DeathYear`: duplicated across every name, not just the
+primary.** An earlier version of `CreatePerson`
+(`internal/rmdb/createperson.go`) set these only on a person's primary
+`NameTable` row, with an explicit comment claiming this was "confirmed
+against a real captured diff." That claim was wrong, not just stale --
+checked directly against real multi-name people in two separate real
+RootsMagic databases (neither `royal92.rmtree` nor this project's other
+established fixtures happen to contain a multi-name person at all, which
+is presumably why this was never caught earlier) and found every
+non-primary name row carrying the *same* `BirthYear`/`DeathYear` as its
+person's primary name, with no exceptions. Corrected to duplicate the
+values onto every name row; the incorrect comment was corrected in
+place, not just removed, and the existing test
+(`TestCreatePersonNonPrimaryNameHasNoYears`, whose own name asserted the
+wrong premise) was replaced with
+`TestCreatePersonNonPrimaryNameHasSameYears`.
+
+**`ChildOrder`: 0-indexed, not 1-indexed.** Both places
+`internal/rmdb/createparentchild.go` starts a new family's first child
+(`nextID`-style "one past the current value" logic, defaulting to `1`
+when no children exist yet) used a 1-indexed default. Checked directly
+against real `ChildTable` data across three real RootsMagic databases:
+two independently confirmed every multi-child family starts at
+`ChildOrder = 0`, with only a third, differently-sourced database (of
+unclear provenance, and the outlier against the other two) showing
+1-indexed. Corrected in both the "new family" and "merge into an
+existing family" code paths; the real six-children capture test's own
+`ChildOrder` expectation was corrected too, since it had been asserting
+the wrong (1-indexed) values without anyone having actually checked them
+against the real capture's own `ChildOrder` column specifically.
+
+**`PersonTable.SpouseID`: no longer set by this server at all.** Checked
+directly against the RM4-11 data dictionary's own description before
+reconsidering this field, not assumed: it holds the `FamilyID` of
+whichever family was last *viewed* for this person in RootsMagic's own
+UI (`0` if none ever was) -- a UI navigation state, not a genealogical
+fact, and a value that has no principled correct answer for a record
+created through this API, which was never viewed in that UI at all.
+
+What actually prompted revisiting this wasn't the definition alone,
+though -- it was a real, concrete symptom: a real Brontë test database
+showed a person's `SpouseID` referencing `FamilyID = 7` when only 4
+families existed. Tracing this down surfaced a genuine, separate bug in
+`CreateParentChildRelationship`'s own merge logic (see "A real design
+mistake, corrected" above): when a temporary single-parent family gets
+merged into a pre-existing one and deleted, nothing updated the *other*
+parent's own `SpouseID` if it had been pointing at that now-deleted
+family -- left dangling, referencing a `FamilyID` that no longer
+existed. Given six children each create-then-merge-away a temporary
+family in a typical multi-child scenario, this reliably produces exactly
+the kind of gap-in-the-sequence value reported.
+
+Rather than add more bookkeeping to keep a UI-state field correct across
+every merge -- for a value this server never had genuine information
+for in the first place -- the field is no longer touched at all, by
+either `CreateCoupleRelationship` or `CreateParentChildRelationship`
+(`CreatePerson`'s own `PersonTable` insert already defaulted it to `0`,
+unchanged). This removes the dangling-reference bug as a direct
+consequence of the design change, not as a separate patch alongside it.
+Both real-capture tests that had asserted a specific `SpouseID` value
+(matching what RootsMagic's own UI produced when the golden files were
+originally captured -- which inherently involved viewing the family,
+unlike an API-created one) were updated to confirm it now stays `0`
+instead.
+
+All three fixes verified together, not just individually: reproduced
+this exact scenario end to end through the real HTTP API (Patrick and
+Maria's family, all six real Brontë children, each linked via two
+separate `ParentChild` requests) and confirmed directly against the
+resulting database -- a single, correctly-merged family; `ChildOrder`
+running `0` through `5` across the six children in order; `BirthYear`/
+`DeathYear` duplicated across both of Patrick's own names; and every
+`PersonTable.SpouseID` in the database at `0`, with no dangling values
+anywhere.
+
 ### Nicknames: a real GEDCOM-vs-GEDCOM-X structural mismatch
 
 Prompted by a direct question, not found independently: GEDCOM 5.x nests
@@ -1952,23 +2033,26 @@ as anticipated.
 
 **`CreateCoupleRelationship`** (`internal/rmdb/createcouple.go`) creates
 a new `FamilyTable` row plus zero or more family-owned facts (e.g. a
-Marriage), and updates `SpouseID` on whichever of `FatherID`/`MotherID`
-were actually specified -- RootsMagic itself supports single-parent
+Marriage) -- RootsMagic itself supports single-parent
 families (confirmed against real data: several families in
-`royal92.rmtree` have one of the two at `0`), so only one is required,
-not both. Matched field-by-field against the real captured golden file
-for Patrick and Maria's marriage -- exact match on every field this
-server controls, including `EventTable.FamilyID` staying `0` on the
-marriage fact itself (a family-owned fact identifies its owner via
-`OwnerType`/`OwnerID`, not this column -- the same finding already
-documented for `CreatePerson`'s own facts). One deliberate divergence
-from the real capture, consistent with `CreatePerson`'s own established
-policy: both spouses' `UTCModDate` get bumped here, not just one --
-RootsMagic's own real capture only bumped whichever spouse the operation
-was performed *from* (confirmed directly against raw, unredacted values,
-not just the golden file), which this project has already decided not
-to replicate, for both `Person` and `Relationship` writes, since there's
-no principled reason to prefer one spouse's timestamp over the other's.
+`royal92.rmtree` have one of the two at `0`), so only one of
+`FatherID`/`MotherID` is required, not both. Matched field-by-field
+against the real captured golden file for Patrick and Maria's marriage
+-- exact match on every field this server controls, including
+`EventTable.FamilyID` staying `0` on the marriage fact itself (a
+family-owned fact identifies its owner via `OwnerType`/`OwnerID`, not
+this column -- the same finding already documented for `CreatePerson`'s
+own facts). Two deliberate divergences from the real capture, both
+consistent with `CreatePerson`'s own established policy: both spouses'
+`UTCModDate` get bumped here, not just one -- RootsMagic's own real
+capture only bumped whichever spouse the operation was performed *from*
+(confirmed directly against raw, unredacted values, not just the golden
+file), which this project has already decided not to replicate, for
+both `Person` and `Relationship` writes, since there's no principled
+reason to prefer one spouse's timestamp over the other's; and
+`PersonTable.SpouseID` is left untouched entirely -- the real capture did
+show it set, but see "SpouseID: removed entirely" below for why that
+was reconsidered and reversed.
 
 **`CreateParentChildRelationship`** (`internal/rmdb/createparentchild.go`)
 was the harder design problem in this whole stage, and went through a
@@ -2014,12 +2098,16 @@ the first version never validated `ChildID` actually existed before
 creating a dangling `ChildTable` reference to it -- caught before
 shipping, not after.
 
-Matched field-by-field against the real six-children capture: exact
-match on `RecID`/`ChildID`/`FamilyID`/`ChildOrder` across all six
-children, in order -- now requiring two `ParentChild` requests per
-child (one per parent) rather than one, per the corrected design above;
-the test itself was updated to send both rather than relying on the
-old, incorrect single-request shortcut.
+Checked field-by-field against the real six-children capture -- and this
+specific check is itself worth being honest about, not just stated:
+the original comparison used a `ChildOrder` expectation (`1` through
+`6`) that turned out to be wrong (see "`ChildOrder`: 0-indexed, not
+1-indexed" below), so "exact match" wasn't actually true until that was
+corrected. `RecID`/`ChildID`/`FamilyID`/`ChildOrder` now genuinely match
+across all six children, in order -- requiring two `ParentChild`
+requests per child (one per parent) rather than one, per the corrected
+design above; the test itself was updated to send both rather than
+relying on the old, incorrect single-request shortcut.
 
 ### A real design mistake, corrected
 
@@ -2052,10 +2140,13 @@ later:
 - **`ChildOrder` wasn't recomputed on merge.** Each child, created in
   its own temporary single-parent family before being merged into the
   shared one (case 2 above), always started at `ChildOrder = 1` in that
-  temporary family -- and the merge only moved the `ChildTable` row's
-  `FamilyID`, never recomputed `ChildOrder` against the *target*
-  family's own existing children. All six children would have silently
-  collided at `ChildOrder = 1` instead of getting 1 through 6 in order.
+  temporary family (this project's own indexing at the time this bug
+  was found and fixed -- later itself corrected to start at `0` instead;
+  see "`ChildOrder`: 0-indexed, not 1-indexed" below) -- and the merge
+  only moved the `ChildTable` row's `FamilyID`, never recomputed
+  `ChildOrder` against the *target* family's own existing children. All
+  six children would have silently collided at the same starting value
+  instead of getting distinct positions in order.
 - **`PersonTable.ParentID` wasn't updated on merge either** -- left
   pointing at the now-deleted temporary family instead of the
   pre-existing one actually kept.

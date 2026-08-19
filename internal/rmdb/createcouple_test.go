@@ -67,20 +67,26 @@ func TestCreateCoupleRelationshipMatchesRealCapturedData(t *testing.T) {
 		t.Errorf("Date/SortDate = %q/%d, want the real captured values", dateString, sortDate)
 	}
 
-	// Both spouses' SpouseID -- and, deliberately unlike the real
-	// capture, both spouses' UTCModDate too (checked indirectly: both
-	// rows exist and SpouseID is set on both; UTCModDate's own value
-	// isn't asserted here since it's a timestamp, but the point is both
-	// UPDATE statements this function issues target both persons
-	// identically, confirmed by code inspection and the sqldiff-based
-	// verification this test was built from).
+	// The real captured diff this test was originally built from did
+	// show SpouseID set on both spouses -- but that capture came from
+	// RootsMagic's own UI, where creating a couple relationship
+	// inherently involves viewing it (SpouseID's real meaning, per the
+	// RM4-11 data dictionary: the family last VIEWED for this person in
+	// RootsMagic, not a genealogical fact). A record created through
+	// this API was never viewed in that UI at all, so there's no
+	// principled value to set here -- see CreateParentChildRelationship's
+	// own comment for the full account, including a real, separate bug
+	// this field's own bookkeeping caused before it was removed
+	// entirely. Confirmed left at 0 (CreatePerson's own default), not
+	// asserted to equal familyID the way an earlier version of this test
+	// did.
 	for _, personID := range []int64{p1, p2} {
 		var spouseID int64
 		if err := db.sql.QueryRow("SELECT SpouseID FROM PersonTable WHERE PersonID = ?", personID).Scan(&spouseID); err != nil {
 			t.Fatal(err)
 		}
-		if spouseID != familyID {
-			t.Errorf("PersonID %d SpouseID = %d, want %d", personID, spouseID, familyID)
+		if spouseID != 0 {
+			t.Errorf("PersonID %d SpouseID = %d, want 0 (this server no longer sets it)", personID, spouseID)
 		}
 	}
 }

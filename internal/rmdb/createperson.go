@@ -130,16 +130,20 @@ func (db *DB) CreatePerson(input NewPerson) (personID int64, err error) {
 			return 0, fmt.Errorf("assigning new NameID: %w", err)
 		}
 		isPrimary := 0
-		nameBirthYear, nameDeathYear := 0, 0
 		if n.IsPrimary {
 			isPrimary = 1
-			// Confirmed against a real captured diff: BirthYear/DeathYear
-			// are set on the primary name only -- adding an alias (a
-			// non-primary name) to an existing person left them at 0 on
-			// that alias's own NameTable row, even though the person's
-			// primary name already carried the real birth/death years.
-			nameBirthYear, nameDeathYear = birthYear, deathYear
 		}
+		// BirthYear/DeathYear are duplicated onto every one of a
+		// person's NameTable rows, not just the primary one -- an
+		// earlier version of this comment claimed the opposite
+		// ("confirmed against a real captured diff"), which turned out
+		// to be a real mistake, not a finding: checked directly against
+		// several real multi-name people across multiple real
+		// RootsMagic databases (not the single, single-name capture the
+		// original claim was apparently drawn from) and found every
+		// non-primary name row carrying the same BirthYear/DeathYear as
+		// its person's primary name, with no exceptions. Corrected
+		// rather than left standing.
 		_, err = tx.Exec(
 			`INSERT INTO NameTable
 			 (NameID, OwnerID, Surname, Given, Prefix, Suffix, Nickname, NameType, Date, SortDate,
@@ -147,7 +151,7 @@ func (db *DB) CreatePerson(input NewPerson) (personID int64, err error) {
 			  UTCModDate, SurnameMP, GivenMP, NicknameMP)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, '.', ?, ?, 0, 0, '', '', ?, ?, 0, '', `+utcModDateExpr+`, ?, ?, ?)`,
 			nameID, personID, n.Surname, n.Given, n.Prefix, n.Suffix, n.Nickname, n.NameType,
-			NoDateSortValue, isPrimary, nameBirthYear, nameDeathYear,
+			NoDateSortValue, isPrimary, birthYear, deathYear,
 			FoldAccents(n.Surname), FoldAccents(n.Given), FoldAccents(n.Nickname),
 		)
 		if err != nil {
