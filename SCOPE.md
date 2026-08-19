@@ -1670,7 +1670,167 @@ parseable year, `Original` can just as easily hold `"abt 1870"`, `"MAY
 1870"`, or something with no extractable date at all. Solving this
 properly is a real, open-ended parsing problem in its own right, not a
 quick addition to this fix -- flagged for its own dedicated pass rather
-than rushed in alongside four narrower, already-verified fixes.
+than rushed in alongside four narrower, already-verified fixes. (It got
+that dedicated pass -- see "`Date.original` as a fallback" below.)
+
+### `Date.original` as a fallback when `Date.formal` is absent
+
+The dedicated pass the previous section deferred to. Prompted by the
+same `I785` report, but as its own, explicit request this time: this
+server should accept `Date.original` for populating `EventTable.Date`,
+not assume every client computes `Formal`.
+
+**Grounded in the actual GEDCOM 5.5.1 specification directly**
+(`gedcom.io/specifications/ged551.pdf`, fetched and read in full, not
+recalled or assumed), not in any client-side conversion tooling this
+project's own test data happened to come from -- tooling like that is
+expected to keep changing as it's developed further, so it isn't a
+sound basis for what this server itself needs to support; the
+specification is the actual, stable contract. `Date.original` values
+aren't arbitrary human-typed text in general, but they also aren't
+required to follow any particular grammar at all -- what grounds this
+feature's scope is GEDCOM 5.5.1's own `DATE_VALUE` grammar (page
+45-47), since a `DATE` tag's line value in a real GEDCOM file is
+exactly this grammar, and a client passing that value through into
+`Date.original` verbatim (a reasonable, common thing to do) means this
+server can reasonably expect to see it.
+
+The full `DATE_VALUE` grammar, read directly from the specification:
+
+```
+DATE_VALUE:= [ <DATE> | <DATE_PERIOD> | <DATE_RANGE> |
+               <DATE_APPROXIMATED> | INT <DATE> (<DATE_PHRASE>) |
+               (<DATE_PHRASE>) ]
+DATE_APPROXIMATED:= [ ABT <DATE> | CAL <DATE> | EST <DATE> ]
+DATE_RANGE:= [ BEF <DATE> | AFT <DATE> | BET <DATE> AND <DATE> ]
+DATE_PERIOD:= [ FROM <DATE> | TO <DATE> | FROM <DATE> TO <DATE> ]
+DATE_GREG:= [ <YEAR_GREG>[B.C.] | <MONTH> <YEAR_GREG> |
+              <DAY> <MONTH> <YEAR_GREG> ]
+YEAR_GREG:= [ <NUMBER> | <NUMBER>/<DIGIT><DIGIT> ]
+```
+
+**`internal/gedcomx/gedcom5date.go`'s new `ParseGedcom5Date`** covers
+`<DATE_GREG>` (day/month/year, month/year, or year-only precision) and
+`<DATE_APPROXIMATED>`/the two single-date halves of `<DATE_RANGE>`
+(`ABT`/`CAL`/`EST` qualitative, `BEF`/`AFT` directional -- both
+confirmed, already-supported modifier categories on the read side,
+`rmdate.go`, just not previously reachable from this write path).
+Reuses `EncodeRMDate`'s own RM-date-string construction (extracted into
+a small shared `buildRMDateString` helper rather than duplicated) but
+built from this different source grammar. `royal92.ged`'s own 4018 real
+`DATE` values (now a permanent project fixture, `testdata/royal92.ged`)
+were used to confirm this scope actually holds up against a real file,
+not to define the scope in the first place: 99.5% (3998) parse
+successfully.
+
+**Not yet supported, named here precisely because the specification
+defines them, not because a test file happened to lack examples**:
+`BET <DATE> AND <DATE>` and the `<DATE_PERIOD>` forms (`FROM`/`TO`) --
+both involve two dates, and `BET...AND...` in particular reproduces the
+same ambiguity already documented for `EncodeRMDate`'s own formal-date
+direction (GEDCOM X's formal grammar can't distinguish "between" from
+"from...to" even though GEDCOM 5.5.1's own grammar can); `INT <DATE>
+(<DATE_PHRASE>)` and the bare `(<DATE_PHRASE>)` form -- a free-text
+phrase in parentheses, which the specification itself describes as "any
+statement offered as a date when the year is not recognizable to a date
+parser," i.e. deliberately unstructured by design, not something a
+grammar-based parser should be reaching for; the `B.C.` suffix on
+`YEAR_GREG`; and `YEAR_GREG`'s own double-dating form
+(`<NUMBER>/<DIGIT><DIGIT>`, e.g. `"1743/44"`, for the pre-1752
+Julian/Gregorian new-year-date discrepancy). Each of these needs its own
+real design decision -- what does `SortDate` mean for a date that's
+fundamentally a range, not a point? does double-dating sort by the old-
+style or new-style year? -- not a quick addition alongside the cases
+above just because the grammar exists. One data point cross-checks two
+completely separate parts of this project regardless:
+`ParseGedcom5Date("abt 1808")` produces
+`"D.+18080000.A+00000000.."`, the exact value independently confirmed
+against real captured RootsMagic data during a much earlier
+investigation into a different individual entirely.
+
+**Returns `ok bool`, not an error** -- a deliberate difference from
+`EncodeRMDate`. `Original` is inherently free text with no single
+defined grammar it's required to follow (GEDCOM 5.5.1's own
+`DATE_VALUE` grammar is the common case, not a universal guarantee), so
+not matching it is a normal outcome here, not a client mistake to
+report back as a `400`. `buildNewPersonFact` falls back to no date
+(matching the existing behavior for a fact with no date information at
+all), logs the unparsed value at `Info` level, and -- added on direct
+request, see below -- preserves the original text itself in
+`EventTable.Note`, prefixed with `"rmgedcomx was unable to parse this
+text as a date: "` so it's clearly this server's own annotation and not
+data RootsMagic itself wrote. `NewPersonFact` gained a `Note` field for
+this (`internal/rmdb/createperson.go`), and the previously-hardcoded
+empty `Note` in both `CreatePerson`'s and `CreateCoupleRelationship`'s
+own `EventTable` inserts now binds it properly -- the latter isn't
+currently reachable through the HTTP API (`handleCreateRelationships`
+doesn't build `Facts` for a `Couple` relationship at all yet, a
+separate, pre-existing gap noted here rather than fixed in the same
+change), but keeping both write paths consistent was worth doing
+regardless of which one a request can currently reach.
+
+### A real bug this uncovered: an invalid `Date.formal` rejected the whole request even with a perfectly good `Date.original` right there
+
+A real request to create Charlemagne failed outright:
+`Date.formal="+742-04-02"` (his real birth year, 742 AD) alongside
+`Date.original=" 2 APR  742"`. Checked directly against the actual
+GEDCOM X Date Format specification
+(`github.com/FamilySearch/gedcomx/blob/master/specifications/date-format-specification.md`,
+Section 5.2.2.1) before concluding which side was actually wrong: *"The
+year component is defined as a REQUIRED [+] or [-] and four digits,
+left-padded with zeros as needed."* `"742"` needed to be `"0742"` --
+the request's own `Formal` value is genuinely not spec-compliant, and
+`EncodeRMDate`'s rejection of it was, strictly, correct. That's not
+where this actually stopped, though: the previous version of
+`buildNewPersonFact` treated *any* `Formal` parse failure as an
+immediate, hard rejection of the whole request -- even though the very
+same fact's `Original` value was sitting right there, unambiguous, and
+perfectly parseable by `ParseGedcom5Date`. A `Formal` that's present but
+invalid was, in effect, being treated as a *harder* failure than
+`Formal` being absent entirely, which makes little sense: both cases
+end up needing the same fallback.
+
+Fixed by extending the fallback `buildNewPersonFact` already had for a
+missing `Formal` to also cover an *invalid* one: if `EncodeRMDate`
+fails and `Original` is present, fall back to `ParseGedcom5Date` on
+`Original` before giving up, the same as the missing-`Formal` case
+already did. `EncodeRMDate`'s own validation is untouched -- still
+exactly as strict, still correctly rejecting `"+742-04-02"` on its own
+terms; what changed is only what `buildNewPersonFact` does in response.
+A genuinely unrecoverable case (`Formal` invalid, and no `Original` to
+fall back to at all) still returns a `400` -- the client explicitly
+opted into `Formal`'s strict, machine-readable contract in that case
+and failed it with nothing else offered, which is different from
+`Formal` simply being invalid but recoverable via `Original`.
+
+Verified against the real request directly: both of Charlemagne's facts
+(birth `+742-04-02`, death `+814`, neither zero-padded) now create
+successfully, and a subsequent `GET` shows each correctly re-encoded
+with a properly zero-padded `Formal` (`+0742-04-02`, `+0814`) --
+confirming the value round-trips correctly through `ParseGedcom5Date`
+and back out through the read side's own `ParseRMDate`, not just that
+the request no longer fails.
+`cmd/server/main_test.go`'s `TestCreatePersonsHTTP` gained this exact
+scenario as a permanent regression test, alongside two more: `Formal`
+invalid with `Original` *also* unparseable (falls back to no date plus
+`Note`, still not a rejection) and `Formal` valid with `Original` also
+present (confirms `Formal` still takes priority, unchanged).
+
+`internal/gedcomx/gedcom5date_test.go`'s
+`TestParseGedcom5DateAgainstRealRoyal92GedFile` runs every single one of
+`royal92.ged`'s 4018 real dates through `ParseGedcom5Date`, asserting both
+the overall 99.5% coverage rate and the *exact* set of 20 values that
+don't match -- a future change narrowing or widening real-world coverage
+gets caught here specifically, not just discovered later against a real
+request. Verified end to end through the real HTTP stack too, not just
+the parser in isolation: `cmd/server/main_test.go` reproduces the exact
+`I785` request this bug was reported with, confirming the created
+record's `Date`/`SortDate`/`DeathYear` match the real `royal92.rmtree`
+values for this same individual, plus separate cases confirming an
+unparseable `Original` -- both arbitrary free text and a real,
+specification-defined form this server doesn't parse yet (`BET...AND...`)
+-- is preserved in `Note` with the exact prefix, rather than rejected or
+silently dropped.
 
 **Per RS spec Section 4.9.2 exactly**: `201` + `Location` header when a
 request creates exactly one person, `204` when it creates several. A
@@ -1720,51 +1880,152 @@ to replicate, for both `Person` and `Relationship` writes, since there's
 no principled reason to prefer one spouse's timestamp over the other's.
 
 **`CreateParentChildRelationship`** (`internal/rmdb/createparentchild.go`)
-was the harder design problem in this whole stage, worth explaining
-precisely rather than just stating the result: RootsMagic's own schema
-has nowhere to attach a bare (parent, child) pair directly. A child
-belongs to a *family* (`ChildTable.FamilyID`), and that family
-separately has a `FatherID`/`MotherID` -- the father-child and
-mother-child relationships this server's read side already exposes as
-two distinct `Relationship` resources (see "Relationships" above) are
-really two views onto the same underlying family membership, not two
-facts RootsMagic stores independently. Creating one has to resolve which
-family is actually meant. The design landed on:
+was the harder design problem in this whole stage, and went through a
+real, corrected design mistake before landing where it is now -- see
+"A real design mistake, corrected" below for the full account. The
+short version of where it landed: RootsMagic's own schema has nowhere
+to attach a bare (parent, child) pair directly. A child belongs to a
+*family* (`ChildTable.FamilyID`), and that family separately has a
+`FatherID`/`MotherID` -- the father-child and mother-child relationships
+this server's read side already exposes as two distinct `Relationship`
+resources (see "Relationships" above) are really two views onto the
+same underlying family membership, not two facts RootsMagic stores
+independently. Creating one has to resolve which family is actually
+meant, and the resolution only ever does so based on something already
+established about the *child* specifically -- never based on what the
+named parent alone happens to already have on file:
 
-1. If the parent (role determined by their own `PersonTable.Sex`)
-   already has exactly one existing family in the matching role, the
-   child is added there. This is the real, confirmed workflow (see the
-   reference capture): create the couple relationship first, giving both
-   parents an established family, then link each child with a *single*
-   `ParentChild` request naming either parent -- confirmed directly, via
-   a real HTTP round trip, that this correctly surfaces *both*
-   father-child and mother-child relationships on a subsequent `GET`
-   without needing a second request for the other parent, since both
-   are derived from the one `ChildTable` row the single request creates.
-2. If the parent has no existing family in that role at all, a new
-   single-parent family is created first (matching
-   `CreateCoupleRelationship`'s own support for one), then the child is
-   added there.
-3. If the parent already has more than one family in that role (a real,
-   if less common, case -- remarriage), which family the child belongs
-   to is genuinely ambiguous from a bare (parent, child) pair alone --
-   GEDCOM X's own `ParentChild` relationship type has no third field to
-   name a specific family. Rejected with a clear error rather than
-   guessed at.
+1. If the child already belongs to a matching-kind family (see RelType
+   below) that already has this exact parent in the matching role, this
+   is a no-op (idempotent) -- confirmed directly with a dedicated test,
+   not just reasoned about.
+2. If the child already belongs to a matching-kind family with that role
+   empty, it's completed with this parent. If completing it would create
+   a second family record for parents already paired elsewhere (a real
+   case: the other parent's own `ParentChild` request, or a `Couple`
+   relationship, may have already established that exact pairing under
+   a different `FamilyID`), the child's link is *moved* to the
+   pre-existing family instead, and the now-redundant one is removed.
+3. If the child has no matching family at all, a new one is created for
+   this parent alone (matching `CreateCoupleRelationship`'s own support
+   for single-parent families) -- regardless of how many *other*
+   families the named parent already has on file for other children.
+4. If more than one of the child's existing families could match, this
+   is genuinely ambiguous (a real, schema-supported case -- a child can
+   belong to more than one family at once, e.g. biological and adoptive
+   -- see "RelType" below) and rejected rather than guessed at.
 
-A child already linked to the resolved family is treated as a no-op
-(idempotent), not a duplicate `ChildTable` row or an error -- confirmed
-directly with a dedicated test, not just reasoned about. Sex "Unknown"
-on the parent is rejected outright, the same reasoning `CreateCoupleRelationship`
-already applies via `resolveCoupleRoles` (below) to a couple where
-either person's sex isn't Male/Female. A real gap was caught and fixed
-while building the HTTP layer on top of this: the first version never
-validated `ChildID` actually existed before creating a dangling
-`ChildTable` reference to it -- caught before shipping, not after.
+Sex "Unknown" on the parent is rejected outright, the same reasoning
+`CreateCoupleRelationship` already applies via `resolveCoupleRoles`
+(below) to a couple where either person's sex isn't Male/Female. A real
+gap was caught and fixed while building the HTTP layer on top of this:
+the first version never validated `ChildID` actually existed before
+creating a dangling `ChildTable` reference to it -- caught before
+shipping, not after.
 
 Matched field-by-field against the real six-children capture: exact
 match on `RecID`/`ChildID`/`FamilyID`/`ChildOrder` across all six
-children, in order.
+children, in order -- now requiring two `ParentChild` requests per
+child (one per parent) rather than one, per the corrected design above;
+the test itself was updated to send both rather than relying on the
+old, incorrect single-request shortcut.
+
+### A real design mistake, corrected
+
+An earlier version of this function resolved a bare (parent, child)
+pair by checking whether the named parent already had exactly one
+family on file, and used it directly if so. This was a real, if
+understandable, mistake, caught during design discussion rather than
+after shipping: "the parent happens to have one family recorded" is a
+fact about this database's *current contents*, not a fact about the
+parent's real life. If Mary's only recorded family happens to be with
+Patrick, a bare `ParentChild(Mary, Child)` request says nothing at all
+about whether Patrick is Child's other parent -- it could just as
+easily be Robert, someone not yet in the database at all. Linking the
+child into Patrick's family anyway would silently assert a co-parent
+that was never actually named.
+
+Corrected to the design above, which never reuses a family based on
+the parent's own existing state -- only ever based on the child's.
+Verified directly, not just reasoned about: a person with two real,
+distinct partners (Mary, with children by both Patrick and Robert) was
+constructed and confirmed each child lands in the correct, distinct
+family, never confused with the other, even though Mary already had
+one family on file by the time the second child's link arrived.
+
+Two further, real bugs were found and fixed while updating the existing
+real-data test to send both `ParentChild` requests per child (matching
+the corrected design) rather than just discovering them by accident
+later:
+
+- **`ChildOrder` wasn't recomputed on merge.** Each child, created in
+  its own temporary single-parent family before being merged into the
+  shared one (case 2 above), always started at `ChildOrder = 1` in that
+  temporary family -- and the merge only moved the `ChildTable` row's
+  `FamilyID`, never recomputed `ChildOrder` against the *target*
+  family's own existing children. All six children would have silently
+  collided at `ChildOrder = 1` instead of getting 1 through 6 in order.
+- **`PersonTable.ParentID` wasn't updated on merge either** -- left
+  pointing at the now-deleted temporary family instead of the
+  pre-existing one actually kept.
+
+Both are now fixed as part of the merge step itself, and both are
+covered by the same real-data test, which would fail again if either
+regressed.
+
+### RelType: distinguishing biological, adoptive, step, foster, and guardian relationships
+
+Prompted by the ambiguity case above having a real, named counterpart:
+`ChildTable.RelFather`/`RelMother` (confirmed against the RM4-11 data
+dictionary) aren't flags -- they're an eight-value relationship-kind
+code (0=Birth, 1=Adopted, 2=Step, 3=Foster, 4=Related, 5=Guardian,
+6=Sealed, 7=Unknown), meaning a person genuinely can belong to more
+than one family as a child at once (biological parents and adoptive
+parents both on file is a real, supported case, though not one
+`royal92.rmtree` happens to contain an example of).
+
+**Checked the actual GEDCOM X specification for a matching mechanism
+before building anything, and initially checked the wrong document**:
+the conceptual model spec's own "Known Fact Types" table does list
+`http://gedcomx.org/Adoption`, but that table's own "scope" column marks
+it `person`, not `relationship` -- and there is a *separate, dedicated*
+specification (`fact-types-specification.md`, not
+`conceptual-model-specification.md`) with its own "2.3 Parent-Child
+Relationship Fact Types" section, found only after this project's own
+first attempt used the wrong one and was corrected. That section defines
+ten fact types explicitly scoped to a parent-child relationship, five of
+which have a direct, one-to-one RootsMagic counterpart: `BiologicalParent`
+(RelType 0), `AdoptiveParent` (1), `StepParent` (2), `FosterParent` (3),
+`GuardianParent` (5). `Related` (4), `Sealed` (6, an LDS-temple-ordinance
+concept specific to RootsMagic with no GEDCOM X counterpart at all), and
+`Unknown` (7) are left unmapped -- nothing in GEDCOM X's own vocabulary
+corresponds to them cleanly, and the remaining five GEDCOM X fact types
+in that section (`ChildOrder`, `EnteringHeir`, `ExitingHeir`,
+`SociologicalParent`, `SurrogateParent`) don't correspond to any
+RootsMagic `RelFather`/`RelMother` value at all. `relTypeFromFacts`
+(`internal/api/createrelationship.go`) does the actual mapping, checked
+in the request's own `Facts` order (first match wins), defaulting to
+`RelTypeBirth` when none are present -- matching RootsMagic's own
+default for an unspecified GEDCOM 5.x `PEDIGREE_LINKAGE_TYPE`, and
+`BiologicalParent` exists so a client *can* say so explicitly, not so
+every client *must*.
+
+This isn't just metadata -- it's load-bearing for case 4's own
+ambiguity resolution above: a candidate family is only a match if the
+target role is empty *and* the other role (if already filled) is either
+also empty or the same `RelType`. This is what lets a child who already
+has an incomplete biological family and a separate incomplete adoptive
+family still resolve correctly: a new birth-type link only considers
+birth-type candidates, an adopted-type link only considers adopted-type
+ones -- confirmed directly, end to end through the real HTTP request
+shape a client actually sends, not just at the `rmdb` layer.
+
+**Not yet verified against a real captured adoption case** -- unlike
+almost everything else in this stage, which was checked against real
+RootsMagic data before being trusted. Flagged clearly rather than
+implied: this is real, spec-grounded, internally-tested design, but the
+next real GEDCOM file with an actual adoption in it should be treated as
+a genuine verification step, not just another test run.
 
 **`internal/api/createrelationship.go`**'s `handleCreateRelationships`
 resolves which of the two supported types a request is (`Couple` or
@@ -1777,6 +2038,24 @@ that isn't exactly one Male and one Female, the same principle as
 `CreateParentChildRelationship`'s own unknown-sex rejection. Per RS spec
 Section 4.20.2 (mirroring `Persons`' own `POST`): `201` + `Location` for
 exactly one relationship created, `204` for several.
+
+`CreateCoupleRelationship` (`internal/rmdb/createcouple.go`) also gained
+an eager existing-family check as part of this same redesign -- unlike
+`CreateParentChildRelationship`, this is safe to do eagerly, since a
+`Couple` relationship explicitly names both people; there's no unstated
+"who's the other parent" that reusing an existing family might silently
+assume incorrectly. If a family already exists with exactly this
+Father/Mother pairing, it's reused (idempotent) rather than duplicated;
+if either person already has an existing family with the other role
+empty, it's completed rather than a new one created -- the real case
+this covers being a `Couple` relationship arriving *after* both parents
+were already independently established via separate `ParentChild`
+requests, making it fully redundant except for whatever `Facts` it
+carries (e.g. a `Marriage` date), which still get attached to whichever
+family id ends up in play either way -- verified directly, not assumed,
+since an early draft of this returned before reaching the fact-attaching
+code at all when reusing an existing family, silently dropping any
+`Facts` the request carried.
 
 Verified through the real HTTP stack end to end:
 `cmd/server/main_test.go`'s `TestCreateRelationshipsHTTP` covers the
@@ -2241,9 +2520,10 @@ relationship first"
 `500` is wrong here, and worth being precise about why: it signals "this
 server has a bug, something went wrong on our end" -- but this is a
 perfectly well-formed request, referencing persons that genuinely exist,
-that this server correctly declined to guess about (see
-`CreateParentChildRelationship`'s own comment, case 3, in the "Stage 3"
-section above). That's a client-resolvable situation (the error message
+that this server correctly declined to guess about at the time (the
+original design's own case 3 -- since superseded; see "A real design
+mistake, corrected" in the "Stage 3" section above for why, and for what
+replaced it). That's a client-resolvable situation (the error message
 itself says how: create or identify the specific couple relationship
 first), which is what `400` means, not `500`.
 
@@ -2284,6 +2564,17 @@ existing ambiguity tests were strengthened to assert `errors.Is(err,
 ErrAmbiguous)` specifically, not just that *some* error occurred, and
 `cmd/server/main_test.go`'s `TestCreateRelationshipsHTTP` gained a
 dedicated regression test recreating this exact scenario end to end.
+
+The `ErrAmbiguous`/`400` mapping fixed here remains correct and
+unchanged. The specific scenario quoted above -- a parent already in two
+families, linked to a *new* child with no other information -- no
+longer produces this error at all, though: it was the direct symptom of
+the design mistake corrected later in this same section (see "A real
+design mistake, corrected," above) and now correctly creates a new
+family instead of guessing or rejecting. `ErrAmbiguous`/`400` still
+applies, just to the narrower, still-genuinely-ambiguous case that
+replaced it -- a child already belonging to more than one existing
+family.
 
 ### Other messages, converted in place
 

@@ -243,6 +243,36 @@ func TestCreatePersonRequiresAtLeastOneName(t *testing.T) {
 	}
 }
 
+// TestCreatePersonFactWithNote confirms NewPersonFact.Note is actually
+// persisted to EventTable.Note -- the storage-layer half of the
+// Date.original-unparseable-preserves-the-text feature (the API layer,
+// internal/api/createperson.go's buildNewPersonFact, is what actually
+// decides when to populate this field and with what text; this only
+// confirms CreatePerson correctly writes whatever it's given).
+func TestCreatePersonFactWithNote(t *testing.T) {
+	db := setupCreatePersonTestDB(t)
+
+	const noteText = "rmgedcomx was unable to parse this text as a date: BET 1900 AND 1910"
+	personID, err := db.CreatePerson(NewPerson{
+		Sex:   2,
+		Names: []NewPersonName{{Surname: "Smith", Given: "X", IsPrimary: true}},
+		Facts: []NewPersonFact{
+			{FactTypeID: 1, DateString: ".", Note: noteText},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreatePerson: %v", err)
+	}
+
+	var note string
+	if err := db.sql.QueryRow("SELECT Note FROM EventTable WHERE OwnerID = ?", personID).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	if note != noteText {
+		t.Errorf("EventTable.Note = %q, want %q", note, noteText)
+	}
+}
+
 func TestCreatePersonNoFactsOrPlaces(t *testing.T) {
 	db := setupCreatePersonTestDB(t)
 

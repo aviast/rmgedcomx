@@ -44,6 +44,7 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 		isCouple           bool
 		fatherID, motherID int64 // isCouple
 		parentID, childID  int64 // !isCouple
+		relType            int   // !isCouple; rmdb.RelTypeBirth or rmdb.RelTypeAdopted
 	}
 	toCreate := make([]resolved, 0, len(body.Relationships))
 	for i, rel := range body.Relationships {
@@ -76,7 +77,7 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("relationships[%d].person2 (child): %v", i, err))
 				return
 			}
-			toCreate = append(toCreate, resolved{isCouple: false, parentID: parentID, childID: childID})
+			toCreate = append(toCreate, resolved{isCouple: false, parentID: parentID, childID: childID, relType: relTypeFromFacts(rel.Facts)})
 		default:
 			writeError(w, http.StatusBadRequest, fmt.Sprintf(
 				"relationships[%d]: unsupported relationship type %q -- only Couple and ParentChild can be created", i, rel.Type))
@@ -95,7 +96,7 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 		if rc.isCouple {
 			familyID, err = s.db.CreateCoupleRelationship(rmdb.NewCoupleRelationship{FatherID: rc.fatherID, MotherID: rc.motherID})
 		} else {
-			familyID, err = s.db.CreateParentChildRelationship(rmdb.NewParentChildRelationship{ParentID: rc.parentID, ChildID: rc.childID})
+			familyID, err = s.db.CreateParentChildRelationship(rmdb.NewParentChildRelationship{ParentID: rc.parentID, ChildID: rc.childID, RelType: rc.relType})
 		}
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -120,6 +121,39 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// relTypeFromFacts determines a ParentChild relationship's RelType (one
+// of rmdb.RelType*) from its own Facts, matching GEDCOM X's dedicated
+// "Parent-Child Relationship Fact Types"
+// (fact-types-specification.md, Section 2.3 -- a separate document from
+// the conceptual model spec's own person-scoped fact types; checked
+// directly, not assumed, after an earlier draft of this mistakenly
+// reached for the person-scoped http://gedcomx.org/Adoption instead).
+// Five of that section's ten fact types have a real, direct RootsMagic
+// counterpart -- see rmdb's own RelType* constants for the full
+// rationale on why the other five aren't mapped. Defaults to
+// rmdb.RelTypeBirth (matching RootsMagic's own default for an
+// unspecified GEDCOM 5.x PEDIGREE_LINKAGE_TYPE) when none of these are
+// present, including when BiologicalParent itself isn't explicitly
+// given -- BiologicalParent exists so a client CAN say so explicitly,
+// not so every client MUST.
+func relTypeFromFacts(facts []gedcomx.Fact) int {
+	for _, f := range facts {
+		switch f.Type {
+		case "http://gedcomx.org/AdoptiveParent":
+			return rmdb.RelTypeAdopted
+		case "http://gedcomx.org/StepParent":
+			return rmdb.RelTypeStep
+		case "http://gedcomx.org/FosterParent":
+			return rmdb.RelTypeFoster
+		case "http://gedcomx.org/GuardianParent":
+			return rmdb.RelTypeGuardian
+		case "http://gedcomx.org/BiologicalParent":
+			return rmdb.RelTypeBirth
+		}
+	}
+	return rmdb.RelTypeBirth
 }
 
 // resolveCoupleRoles assigns two person ids to Father/Mother roles by

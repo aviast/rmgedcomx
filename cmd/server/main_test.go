@@ -978,6 +978,128 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
 	})
 
+	// A real bug, found via a real user report: Date.formal is REQUIRED
+	// by the actual GEDCOM X Date Format specification (Section 5.2.2.1)
+	// to have a four-digit, zero-padded year -- checked directly against
+	// the spec text before concluding the request, not this server, was
+	// the one out of line. "+742-04-02" (Charlemagne's real birth year,
+	// 742 AD) is missing that padding and is genuinely invalid Formal.
+	// But this server was hard-rejecting the whole request over it, even
+	// though the same fact's Date.original (" 2 APR  742") was right
+	// there and perfectly parseable. Fixed: an invalid Formal now falls
+	// back to Original the same way an absent Formal already did,
+	// rather than being treated as a harder failure than having no
+	// Formal at all. EncodeRMDate's own strict validation is unchanged --
+	// this is entirely about what happens after it correctly rejects
+	// something.
+	t.Run("invalid Date.formal falls back to Date.original instead of rejecting the request (Charlemagne)", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons": [{"names": [{"nameForms": [{"fullText": "Charlemagne", "parts": [{"type": "http://gedcomx.org/Given", "value": "Charlemagne"}]}]}], "facts": [{"type": "http://gedcomx.org/Birth", "date": {"original": " 2 APR  742", "formal": "+742-04-02"}, "place": {"original": "Aachen,West Germany"}}, {"type": "http://gedcomx.org/Death", "date": {"original": "        814", "formal": "+814"}}], "gender": {"type": "http://gedcomx.org/Male"}}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"formal":"+0742-04-02"`, "birth date should have been parsed from Original and re-encoded with a correctly zero-padded year")
+		require.Contains(t, getBody, `"formal":"+0814"`, "death date likewise")
+	})
+
+	t.Run("invalid Date.formal AND unparseable Date.original both fall back to no date, with Note, not a rejection", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
+			"facts":[{"type":"http://gedcomx.org/Birth","date":{"formal":"/+1910","original":"sometime, who knows"}}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `rmgedcomx was unable to parse this text as a date: sometime, who knows`)
+	})
+
+	t.Run("valid Date.formal still takes priority over Date.original when both are present", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
+			"facts":[{"type":"http://gedcomx.org/Birth","date":{"formal":"+1819-05-24","original":"this text is irrelevant and should be ignored"}}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"formal":"+1819-05-24"`)
+	})
+
+	// A real bug, found via a real user report: this server only ever
+	// consulted Date.formal, silently recording no date at all when a
+	// real client -- converting a real GEDCOM file -- sent only
+	// Date.original (a real royal92.ged individual, entered with a
+	// title, sex, and this exact death date, nothing else). Fixed to
+	// fall back to gedcomx.ParseGedcom5Date when formal is absent -- see
+	// its own comment in internal/gedcomx/gedcom5date.go for the full
+	// account, including why this scope (not the full GEDCOM 5.5.1
+	// grammar) was chosen. Verified here against the exact real request
+	// this bug was reported with, checking the stored Date/SortDate/
+	// DeathYear directly against the real royal92.rmtree values for
+	// this same individual, not just that the request succeeds.
+	t.Run("Date.original is used as a fallback when Date.formal is absent", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons": [{"names": [{"nameForms": [{"fullText": ""}]}], "facts": [{"type": "http://gedcomx.org/Death", "date": {"original": "       1870"}}], "gender": {"type": "http://gedcomx.org/Male"}}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"formal":"+1870"`, "the GET response should now show a Formal value derived from the stored date")
+	})
+
+	// The other side of the same fix: Original present but not in a
+	// supported form should not reject the whole request -- the fact
+	// (and person) still get created, just without a machine-readable
+	// date, the same way a fact with no date at all works today. The
+	// unparseable text itself isn't preserved anywhere (RootsMagic's own
+	// EventTable.Date has no room for arbitrary free text once
+	// ParseGedcom5Date can't interpret it as structured Y/M/D -- see
+	// this test's own absence-of-a-date-field assertion below, and
+	// SCOPE.md's own note on this as a real, separate possible
+	// improvement: EventTable.Note is already unused by every write this
+	// project makes and could hold it instead, not attempted here).
+	// Added, per an explicit follow-up request: the unparseable text is
+	// no longer just logged and lost -- it's preserved in
+	// EventTable.Note, prefixed so it's clearly this server's own
+	// annotation rather than data RootsMagic itself wrote. Two cases
+	// here rather than one: arbitrary free text a client might send,
+	// and separately, a form that's real, defined GEDCOM 5.5.1 grammar
+	// (checked directly against the actual specification -- gedcom.io/
+	// specifications/ged551.pdf, DATE_RANGE, page 47) but not one this
+	// server's own ParseGedcom5Date supports yet (see its own comment
+	// for why ranges specifically were left out). Both should behave
+	// identically from this server's point of view -- neither is a
+	// client mistake, both get preserved rather than silently dropped.
+	t.Run("unparseable Date.original does not reject the request, original text preserved in Note", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
+			"facts":[{"type":"http://gedcomx.org/Birth","date":{"original":"sometime in the 1870s, maybe"}}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"type":"http://gedcomx.org/Birth"`, "the fact itself should still exist")
+		require.NotContains(t, getBody, `"date"`, "RootsMagic's own Date field has no room for unparseable free text -- confirmed no \"date\" key appears at all, not a guessed or partial one")
+		require.Contains(t, getBody, `rmgedcomx was unable to parse this text as a date: sometime in the 1870s, maybe`, "the original text should be preserved in Notes, with the specified prefix")
+	})
+
+	t.Run("a real GEDCOM 5.5.1 form this server doesn't support yet (a date range) is also preserved in Note, not rejected", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
+			"facts":[{"type":"http://gedcomx.org/Birth","date":{"original":"BET 1900 AND 1910"}}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `rmgedcomx was unable to parse this text as a date: BET 1900 AND 1910`)
+	})
+
 	t.Run("unrecognized gender type is rejected", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		body := `{"persons":[{"gender":{"type":"http://gedcomx.org/Alien"},
@@ -1099,8 +1221,19 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 			`{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
 
-		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+		// Both links are required under the corrected design (see
+		// CreateParentChildRelationship's own comment) -- a bare,
+		// single-parent link no longer assumes the child belongs to
+		// that parent's existing family. The first creates a new
+		// single-parent family for Charlotte; the second recognizes
+		// that would duplicate the pre-existing Patrick+Maria family
+		// and merges into it, landing on F1.
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P3"}}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
 		require.Contains(t, headers.Get("Location"), "/relationships/F1")
 
@@ -1144,7 +1277,18 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 	// discovered by actually querying the database during the create
 	// call, which is why it wasn't caught by earlier request-validation
 	// the way "two males" above is. See rmdb.ErrAmbiguous's own comment.
-	t.Run("parent already in two families is rejected with 400, not 500", func(t *testing.T) {
+	// Replaces an earlier version of this test that asserted the
+	// opposite: a father with two real families (remarriage) and a
+	// bare, single-parent ParentChild request for a new child. That
+	// used to be rejected as ambiguous -- now it correctly creates a
+	// new, third family instead of guessing which existing one (or
+	// rejecting outright), since a bare (parent, child) pair carries no
+	// information about which partner the child's other parent actually
+	// was. See CreateParentChildRelationship's own comment (and this
+	// project's SCOPE.md, "Stage 3" section) for the full account of
+	// why this changed, including a real, corrected design mistake this
+	// project made and caught before shipping.
+	t.Run("parent with two existing families creates a new one for an unlinked child, not a guess", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "Father")
 		createPerson(t, testServer, "http://gedcomx.org/Female", "B", "Mother1")
@@ -1158,10 +1302,76 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 			`{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
 
-		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P4"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.NotContains(t, headers.Get("Location"), "/relationships/F1", "should not have assumed the child belongs to the father's first existing family")
+		require.NotContains(t, headers.Get("Location"), "/relationships/F2", "should not have assumed the child belongs to the father's second existing family either")
+	})
+
+	// The case that's still genuinely ambiguous under the corrected
+	// design: a child already belonging to more than one family (a
+	// real, schema-supported case -- see
+	// TestCreateParentChildRelationshipRejectsChildAlreadyInMultipleFamilies
+	// in internal/rmdb for the full account of why this can happen).
+	t.Run("child already in multiple same-kind families is rejected with 400, not 500", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "A", "Father1")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "B", "Father2")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "C", "Child")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "D", "Mother")
+
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P4"},"person2":{"resourceId":"P3"}}]}`)
 		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
-		require.Contains(t, respBody, "already belongs to 2 different families")
+	})
+
+	// A child with a known biological parent and, separately, an
+	// adoptive parent -- each family still missing its other role.
+	// Without the RelType-aware disambiguation (relTypeFromFacts,
+	// driven by GEDCOM X's own dedicated Parent-Child Relationship Fact
+	// Types -- fact-types-specification.md, Section 2.3, a different
+	// document from the person-scoped fact types this project checked
+	// first, before finding the correct one), a new mother-role request
+	// naming either family's remaining role would be genuinely
+	// ambiguous between the two, since both have the target role empty
+	// at the same time. Verified end to end through the real HTTP
+	// request shape a client actually sends, not just the rmdb layer.
+	t.Run("AdoptiveParent/BiologicalParent facts disambiguate a child's biological vs adoptive family", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Robert", "Bio")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Patrick", "Adoptive")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Mary", "Bio")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Jane", "Adoptive")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Kid", "Smith")
+
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/BiologicalParent"}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		bioFamily := headers.Get("Location")
+
+		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/AdoptiveParent"}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		adoptiveFamily := headers.Get("Location")
+		require.NotEqual(t, bioFamily, adoptiveFamily, "biological and adoptive fathers must land in different families")
+
+		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P3"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/BiologicalParent"}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.Equal(t, bioFamily, headers.Get("Location"), "biological mother should complete the biological family, not be rejected as ambiguous")
+
+		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P4"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/AdoptiveParent"}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.Equal(t, adoptiveFamily, headers.Get("Location"), "adoptive mother should complete the adoptive family, not be rejected as ambiguous")
 	})
 
 	t.Run("nonexistent person is rejected with 400, not 500", func(t *testing.T) {

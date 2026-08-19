@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/aviast/rmgedcomx/internal/gedcomx"
@@ -258,13 +259,68 @@ func (s *Server) buildNewPersonFact(f gedcomx.Fact) (rmdb.NewPersonFact, error) 
 	}
 
 	nf := rmdb.NewPersonFact{FactTypeID: factTypeID, DateString: "."}
-	if f.Date != nil && f.Date.Formal != "" {
-		dateString, y, m, d, err := gedcomx.EncodeRMDate(f.Date.Formal)
-		if err != nil {
-			return rmdb.NewPersonFact{}, fmt.Errorf("date: %w", err)
+	if f.Date != nil {
+		dateSet := false
+
+		// Formal, when present, is tried first -- it's the authoritative,
+		// machine-readable source. But "present" and "valid" aren't the
+		// same thing: a real request was found with
+		// Date.formal="+742-04-02" (Charlemagne's birth year, 742 AD).
+		// Checked directly against the actual GEDCOM X Date Format
+		// specification (Section 5.2.2.1) before concluding this was
+		// really invalid, not a bug in this server's own parsing: "The
+		// year component is defined as a REQUIRED [+] or [-] and four
+		// digits, left-padded with zeros as needed" -- "742" needed to
+		// be "0742". EncodeRMDate's own strict validation is correct
+		// and is left exactly as it was; what changed is what happens
+		// next when it fails.
+		if f.Date.Formal != "" {
+			dateString, y, m, d, err := gedcomx.EncodeRMDate(f.Date.Formal)
+			if err == nil {
+				nf.DateString = dateString
+				nf.SortYear, nf.SortMonth, nf.SortDay = y, m, d
+				dateSet = true
+			} else if f.Date.Original == "" {
+				// No fallback available at all -- unlike the case
+				// below, this is still worth rejecting outright: the
+				// client explicitly opted into the strict,
+				// machine-readable contract Formal represents and
+				// failed it, with nothing else offered to fall back
+				// to.
+				return rmdb.NewPersonFact{}, fmt.Errorf("date: %w", err)
+			} else {
+				slog.Info("date.formal present but invalid -- falling back to date.original", "formal", f.Date.Formal, "error", err)
+			}
 		}
-		nf.DateString = dateString
-		nf.SortYear, nf.SortMonth, nf.SortDay = y, m, d
+
+		// Original might still be usable, either because Formal was
+		// never provided at all, or because it was provided but
+		// invalid (see above) -- a real client, converting a real
+		// GEDCOM file, was found sending exactly the first shape (a
+		// GEDCOM 5.x date string in Original, no Formal at all); the
+		// second shape (both present, Formal invalid) is the Charlemagne
+		// case directly. See ParseGedcom5Date's own comment for the
+		// full account of what it does and doesn't cover. A date that
+		// doesn't match either grammar is not a client mistake worth
+		// rejecting the whole fact over -- the fact is still created,
+		// just without a machine-readable date, matching this server's
+		// own existing "don't reject, still record what you can"
+		// precedent for other recognized-but-unsupported request
+		// content (see logIgnoredFields). Unlike that precedent, the
+		// unrecognized text itself isn't just logged and then lost --
+		// it's preserved directly in EventTable.Note (prefixed so it's
+		// clearly this server's own annotation, not data RootsMagic
+		// itself wrote), so a person reviewing the database later, not
+		// just watching logs in real time, can still see and act on it.
+		if !dateSet && f.Date.Original != "" {
+			if dateString, y, m, d, ok := gedcomx.ParseGedcom5Date(f.Date.Original); ok {
+				nf.DateString = dateString
+				nf.SortYear, nf.SortMonth, nf.SortDay = y, m, d
+			} else {
+				slog.Info("couldn't interpret date.original as a GEDCOM 5.x date -- fact created without a date, original text preserved in EventTable.Note", "original", f.Date.Original)
+				nf.Note = "rmgedcomx was unable to parse this text as a date: " + f.Date.Original
+			}
+		}
 	}
 	if f.Place != nil {
 		if f.Place.Original == "" {
