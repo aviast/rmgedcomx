@@ -21,6 +21,24 @@ func (s *Server) buildPerson(rp rmdb.Person) (gedcomx.Person, error) {
 	names := make([]gedcomx.Name, 0, len(rmNames))
 	for _, n := range rmNames {
 		names = append(names, s.buildName(n))
+		// The reverse of buildNewPerson's own write-side absorption
+		// (internal/api/createperson.go): NameTable.Nickname holds a
+		// single string on this one name record, but GEDCOM X's own
+		// model has no matching concept -- checked directly against the
+		// conceptual model spec's "Known Name Types" (Section 3.13.1),
+		// a nickname there is its own, separate Name (type=Nickname),
+		// not a value attached to another Name. Synthesized as a
+		// second Name here so a round trip (write a nickname, read the
+		// person back) doesn't silently lose it. Deliberately given no
+		// id of its own: it isn't a real, separately addressable
+		// NameTable row, and assigning one (e.g. reusing the parent
+		// name's) would misleadingly imply it were.
+		if n.Nickname != "" {
+			names = append(names, gedcomx.Name{
+				Type:      "http://gedcomx.org/Nickname",
+				NameForms: []gedcomx.NameForm{{FullText: n.Nickname}},
+			})
+		}
 	}
 
 	events, err := s.db.GetEvents(rmdb.OwnerTypePerson, rp.PersonID)

@@ -1673,6 +1673,97 @@ quick addition to this fix -- flagged for its own dedicated pass rather
 than rushed in alongside four narrower, already-verified fixes. (It got
 that dedicated pass -- see "`Date.original` as a fallback" below.)
 
+### Nicknames: a real GEDCOM-vs-GEDCOM-X structural mismatch
+
+Prompted by a direct question, not found independently: GEDCOM 5.x nests
+a nickname *within* a `NAME` record (`"2 NICK"` under `"1 NAME"`), but
+GEDCOM X models a nickname as its own, separate `Name` -- checked
+directly against the conceptual model spec's "Known Name Types" (Section
+3.13.1: `BirthName`/`MarriedName`/`AlsoKnownAs`/`Nickname`/`AdoptiveName`/
+`FormalName`/`ReligiousName`), not assumed. A `Name` with `type=Nickname`
+was already a recognized value before this (`gedcomx.NameTypeCode` maps
+it to RootsMagic's own `NameType` 6, matching how an `AlsoKnownAs` or
+`MarriedName` gets its own `NameTable` row), so it was never rejected --
+but that's the wrong mechanism for a GEDCOM-5.x-sourced nickname
+specifically: `NameTable.Nickname`/`NicknameMP` are a single pair of
+columns on *one* name record, not a slot for an arbitrary number of
+alternate nickname entities the way a genuinely separate `AlsoKnownAs`
+name is. A client converting a real GEDCOM 5.x `NICK` value into a
+separate `Name(type=Nickname)` -- the natural, faithful translation,
+given GEDCOM X has no "nested sub-field of another Name" concept at all
+-- would previously have gotten a second, spurious `NameTable` row
+instead of the `Nickname` column RootsMagic itself would have used for
+an equivalent GEDCOM 5.x import.
+
+Fixed in `buildNewPerson` (`internal/api/createperson.go`): a `Name`
+with `type=Nickname` is filtered out of the normal "each `Name` becomes
+its own `NameTable` row" loop before it runs, rather than being passed
+through it. Its text (`nicknameText`: `nameForms[0].fullText`, falling
+back to every part's value concatenated with spaces -- mirroring the
+conceptual model spec's own description of how `fullText` MAY be
+derived from `parts`, since a nickname has no meaningful Given/Surname
+breakdown of its own to preserve) is attached to whichever name ends up
+primary, determined *after* the existing preferred/first-name-default
+logic has already run -- so this works correctly regardless of whether
+the primary name is `names[0]` or a later one explicitly marked
+`preferred`. Given the rarity of the case and RootsMagic's own schema
+only having room for one, a second `Name(type=Nickname)` is dropped
+rather than rejected -- this was floated as the working assumption
+before building anything, confirmed rather than just accepted:
+logged at `Info` level (which nickname was used, which were dropped)
+so it's not silently lost, matching this project's own established
+"log, don't reject" precedent for other recognized-but-necessarily-
+narrowed request content (`logIgnoredFields`). A `Name(type=Nickname)`
+with no `nameForms` at all is still rejected -- `nameForms` is REQUIRED
+on every `Name` regardless of type (Section 3.13), and this server
+doesn't relax that requirement just because a particular `Name`
+happens to be handled differently downstream.
+
+**The read side gained matching support**, not left as a write-only,
+one-way feature: `buildPerson` (`internal/api/convert.go`) synthesizes a
+second, separate `Name(type=Nickname)` from `NameTable.Nickname`
+whenever it's non-empty, alongside the real `Name` built from that same
+row -- the direct reverse of the write-side absorption. Deliberately
+given no `id` of its own: it isn't a real, separately addressable
+`NameTable` row, and assigning one (e.g. reusing the parent name's)
+would misleadingly imply it were addressable when it isn't. Verified as
+a genuine round trip, not assumed: posted a person with a nickname,
+`GET` it back, confirmed the nickname reappears as its own synthesized
+`Name` in the response.
+
+**`NicknameMP` is computed via `FoldAccents`**, the same transformation
+already confirmed for `SurnameMP`/`GivenMP` -- by analogy, not
+independently verified against a real captured example, since no
+`NICK` value exists anywhere in this project's own `royal92.ged`
+reference file. Worth naming precisely why the analogy is the best
+available evidence rather than treating it as equivalent to a real
+capture: the RM4-11 data dictionary's own description of `NicknameMP`
+turned out, on inspection, to be a copy-paste artifact -- `SurnameMP`,
+`GivenMP`, and `NicknameMP` all carry the *identical* description text
+("Version of User Defined NameTable.Surname"), which is clearly a
+mistake in RootsMagic's own documentation (referencing `Surname` for
+all three), not a real semantic claim that `NicknameMP` derives from
+`Surname`. The `Nickname`/`NicknameMP` write path itself (writing
+whatever `NewPersonName.Nickname` is given, computing its `MP` value)
+was already present in `internal/rmdb/createperson.go` before this
+change -- built at some earlier point but never actually reachable,
+since nothing on the API layer populated the field until now.
+`internal/rmdb/createperson_test.go` gained a dedicated test confirming
+both the verbatim write and the folded value (`"Ańné"` verbatim,
+`"Anne"` in `NicknameMP`) directly, and `cmd/server/main_test.go` gained
+five HTTP-level tests: attaches to the primary row rather than creating
+one of its own, attaches correctly when the primary name isn't
+`names[0]`, a second nickname is dropped rather than rejected, and a
+nickname with no `nameForms` is still rejected.
+
+One incidental correction made alongside this: `buildNewPersonName`'s
+own comment previously said nickname was "its own NamePart type" --
+checked directly against the "Known Name Part Types" list (Section
+3.18.1: `Prefix`/`Suffix`/`Given`/`Surname` only) while building this
+feature and found to be wrong; nickname was never a `NamePart` type at
+all, only a `Name` type. Fixed in place rather than left standing next
+to the correct behavior it was actually (if inadvertently) describing.
+
 ### `Date.original` as a fallback when `Date.formal` is absent
 
 The dedicated pass the previous section deferred to. Prompted by the

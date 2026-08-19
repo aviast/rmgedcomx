@@ -962,6 +962,70 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		require.Contains(t, getBody, `"value":"Is"`)
 	})
 
+	// GEDCOM 5.x nests a nickname within the same NAME record ("2 NICK"
+	// under "1 NAME"), but GEDCOM X models it as its own, separate Name
+	// (type=Nickname) -- checked directly against the conceptual model
+	// spec's "Known Name Types," Section 3.13.1, not assumed. RootsMagic's
+	// own schema doesn't have a matching "separate nickname entity"
+	// concept either -- NameTable.Nickname is a single column on one name
+	// record. Prompted by a direct request, not found independently: the
+	// first Nickname-type Name's text is attached to the *primary* name's
+	// own record, not given a NameTable row of its own.
+	t.Run("Nickname-type Name attaches to the primary name's Nickname column, not its own row", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[
+			{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Patrick"},{"type":"http://gedcomx.org/Surname","value":"Brontë"}]}],"preferred":true},
+			{"type":"http://gedcomx.org/Nickname","nameForms":[{"fullText":"Paddy"}]}
+		],"gender":{"type":"http://gedcomx.org/Male"}}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `{"type":"http://gedcomx.org/Nickname","nameForms":[{"fullText":"Paddy"}]}`, "the nickname should round-trip back as its own synthesized Name on GET")
+	})
+
+	t.Run("nickname attaches to whichever name ends up primary, not always names[0]", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[
+			{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Not"},{"type":"http://gedcomx.org/Surname","value":"Preferred"}]}]},
+			{"preferred":true,"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Is"},{"type":"http://gedcomx.org/Surname","value":"Preferred"}]}]},
+			{"type":"http://gedcomx.org/Nickname","nameForms":[{"fullText":"Izzy"}]}
+		]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"fullText":"Izzy"`)
+	})
+
+	t.Run("a second Nickname-type Name is dropped, not an error, first one still used", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[
+			{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Anne"}]}],"preferred":true},
+			{"type":"http://gedcomx.org/Nickname","nameForms":[{"fullText":"First"}]},
+			{"type":"http://gedcomx.org/Nickname","nameForms":[{"fullText":"Second"}]}
+		]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"fullText":"First"`)
+		require.NotContains(t, getBody, `"fullText":"Second"`, "the second nickname should be dropped, not silently kept somewhere")
+	})
+
+	t.Run("Nickname-type Name with no nameForms is rejected", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[
+			{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Anne"}]}],"preferred":true},
+			{"type":"http://gedcomx.org/Nickname","nameForms":[]}
+		]}]}`
+		status, respBody, _ := post(t, testServer, body)
+		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
+	})
+
 	t.Run("unrecognized fact type is rejected", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
