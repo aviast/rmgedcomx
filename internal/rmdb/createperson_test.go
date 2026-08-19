@@ -178,13 +178,15 @@ func TestCreatePersonDeduplicatesPlaces(t *testing.T) {
 	}
 }
 
-// TestCreatePersonNonPrimaryNameHasNoYears confirms that when a person
-// is created with more than one name, only the primary name gets
-// BirthYear/DeathYear -- matching a real captured diff where adding a
-// non-primary alias to an existing person left BirthYear/DeathYear at 0
-// on that alias's own row, even though the same person's primary name
-// already carried the real years.
-func TestCreatePersonNonPrimaryNameHasNoYears(t *testing.T) {
+// TestCreatePersonNonPrimaryNameHasSameYears replaces an earlier version
+// of this test (TestCreatePersonNonPrimaryNameHasNoYears) that asserted
+// the opposite of what's actually correct -- see CreatePerson's own
+// comment for the full account. Checked directly against real
+// multi-name people in two separate real RootsMagic databases before
+// concluding the earlier "confirmed against a real captured diff" claim
+// had been wrong: every non-primary name row carried the same
+// BirthYear/DeathYear as its person's primary name.
+func TestCreatePersonNonPrimaryNameHasSameYears(t *testing.T) {
 	db := setupCreatePersonTestDB(t)
 
 	personID, err := db.CreatePerson(NewPerson{
@@ -229,8 +231,8 @@ func TestCreatePersonNonPrimaryNameHasNoYears(t *testing.T) {
 	if got[0].isPrimary != 1 || got[0].birthYear != 1777 || got[0].deathYear != 1861 {
 		t.Errorf("primary name: got %+v, want IsPrimary=1, BirthYear=1777, DeathYear=1861", got[0])
 	}
-	if got[1].isPrimary != 0 || got[1].birthYear != 0 || got[1].deathYear != 0 {
-		t.Errorf("non-primary name: got %+v, want IsPrimary=0, BirthYear=0, DeathYear=0", got[1])
+	if got[1].isPrimary != 0 || got[1].birthYear != 1777 || got[1].deathYear != 1861 {
+		t.Errorf("non-primary name: got %+v, want IsPrimary=0, BirthYear=1777, DeathYear=1861 (duplicated from the primary name, not left at 0)", got[1])
 	}
 }
 

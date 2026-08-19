@@ -67,7 +67,13 @@ func TestCreateParentChildRelationshipMatchesRealCapturedData(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantOrder := i + 1
+		// ChildOrder is 0-indexed by RootsMagic, not 1-indexed -- an
+		// earlier version of this expectation (wantOrder := i + 1) got
+		// this wrong; confirmed directly against real ChildTable data
+		// (every multi-child family in two separate real RootsMagic
+		// databases starts at ChildOrder=0, not 1) before correcting it
+		// here, not just changed to make the test pass.
+		wantOrder := i
 		if childOrder != wantOrder {
 			t.Errorf("child %d: ChildOrder = %d, want %d", childID, childOrder, wantOrder)
 		}

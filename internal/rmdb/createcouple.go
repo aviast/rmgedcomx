@@ -16,9 +16,8 @@ type NewCoupleRelationship struct {
 }
 
 // CreateCoupleRelationship creates or reuses a FamilyTable row for a
-// "couple" relationship in GEDCOM X terms, attaches zero or more
-// EventTable rows (one per fact, e.g. a Marriage) to it, and updates
-// SpouseID on whichever of FatherID/MotherID were newly added to it.
+// "couple" relationship in GEDCOM X terms, and attaches zero or more
+// EventTable rows (one per fact, e.g. a Marriage) to it.
 //
 // Returns the family's id -- freshly created, or an existing one this
 // exact pairing already matches or can complete (see below). Unlike
@@ -43,16 +42,14 @@ type NewCoupleRelationship struct {
 // a shortcut that skips the rest of the request, only the part that
 // would otherwise create a duplicate FamilyTable row.
 //
+// Deliberately does not touch PersonTable.SpouseID at all -- see
+// CreateParentChildRelationship's own comment for why this project no
+// longer tries to compute a value for it.
+//
 // Matches CreatePerson's own conventions throughout: ids assigned as one
 // past the current maximum (see nextID), UTCModDate set at full
 // precision on exactly the rows this function itself writes and nothing
-// else. A real captured diff for this exact operation showed RootsMagic
-// itself bumping UTCModDate on only one of the two PersonTable rows
-// (confirmed directly against raw, unredacted values, not just the
-// golden file) -- deliberately not replicated, per the same reasoning
-// documented on CreatePerson and in SCOPE.md's "Stage 3" section: both
-// rows get bumped here, consistently, since there's no principled reason
-// to prefer one spouse's timestamp over the other's.
+// else.
 func (db *DB) CreateCoupleRelationship(input NewCoupleRelationship) (familyID int64, err error) {
 	if input.FatherID == 0 && input.MotherID == 0 {
 		return 0, fmt.Errorf("a couple relationship needs at least one of FatherID/MotherID")
@@ -63,14 +60,6 @@ func (db *DB) CreateCoupleRelationship(input NewCoupleRelationship) (familyID in
 		return 0, fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer tx.Rollback()
-
-	// newlyLinked collects whichever of FatherID/MotherID are newly
-	// associated with familyID by this call -- both, for a fresh
-	// family; one, when completing an existing single-parent family;
-	// none, when reusing an exact match that already has both. Only
-	// these get their own SpouseID/UTCModDate touched.
-	var newlyLinked []int64
-	isNewFamily := false
 
 	if input.FatherID != 0 && input.MotherID != 0 {
 		var existing int64
@@ -107,13 +96,11 @@ func (db *DB) CreateCoupleRelationship(input NewCoupleRelationship) (familyID in
 					return 0, fmt.Errorf("completing existing family: %w", err)
 				}
 				familyID = completeFamilyID
-				newlyLinked = append(newlyLinked, completeVal)
 			}
 		}
 	}
 
 	if familyID == 0 {
-		isNewFamily = true
 		familyID, err = nextID(tx, "FamilyTable", "FamilyID")
 		if err != nil {
 			return 0, fmt.Errorf("assigning new FamilyID: %w", err)
@@ -128,11 +115,6 @@ func (db *DB) CreateCoupleRelationship(input NewCoupleRelationship) (familyID in
 		)
 		if err != nil {
 			return 0, fmt.Errorf("creating family: %w", err)
-		}
-		for _, personID := range []int64{input.FatherID, input.MotherID} {
-			if personID != 0 {
-				newlyLinked = append(newlyLinked, personID)
-			}
 		}
 	}
 
@@ -165,25 +147,6 @@ func (db *DB) CreateCoupleRelationship(input NewCoupleRelationship) (familyID in
 		)
 		if err != nil {
 			return 0, fmt.Errorf("creating fact: %w", err)
-		}
-	}
-
-	if !isNewFamily && len(newlyLinked) == 0 {
-		// Exact match reused as-is: still commit (Facts above may have
-		// been added even though no FamilyTable/PersonTable row needed
-		// to change), rather than leaving an open transaction.
-		if err := tx.Commit(); err != nil {
-			return 0, fmt.Errorf("committing (existing family reused): %w", err)
-		}
-		return familyID, nil
-	}
-
-	for _, personID := range newlyLinked {
-		if _, err := tx.Exec(
-			"UPDATE PersonTable SET SpouseID = ?, UTCModDate = "+utcModDateExpr+" WHERE PersonID = ?",
-			familyID, personID,
-		); err != nil {
-			return 0, fmt.Errorf("updating spouse's SpouseID: %w", err)
 		}
 	}
 
