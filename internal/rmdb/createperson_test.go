@@ -243,6 +243,40 @@ func TestCreatePersonRequiresAtLeastOneName(t *testing.T) {
 	}
 }
 
+// TestCreatePersonNameWithNickname confirms NewPersonName.Nickname is
+// persisted to NameTable.Nickname, and NicknameMP is computed via
+// FoldAccents the same way SurnameMP/GivenMP already are -- inferred by
+// analogy with those two (RM4-11 data dictionary's own description of
+// NicknameMP is unfortunately just a copy-paste artifact of SurnameMP's,
+// not independently useful), not yet verified against a real captured
+// example (no NICK value exists anywhere in this project's own
+// royal92.ged reference file). The API layer (buildNewPerson,
+// internal/api/createperson.go) is what actually decides when to
+// populate this field, from a real request; this only confirms
+// CreatePerson correctly writes whatever it's given, including folding.
+func TestCreatePersonNameWithNickname(t *testing.T) {
+	db := setupCreatePersonTestDB(t)
+
+	personID, err := db.CreatePerson(NewPerson{
+		Sex:   1,
+		Names: []NewPersonName{{Surname: "Brontë", Given: "Anne", Nickname: "Ańné", IsPrimary: true}},
+	})
+	if err != nil {
+		t.Fatalf("CreatePerson: %v", err)
+	}
+
+	var nickname, nicknameMP string
+	if err := db.sql.QueryRow("SELECT Nickname, NicknameMP FROM NameTable WHERE OwnerID = ?", personID).Scan(&nickname, &nicknameMP); err != nil {
+		t.Fatal(err)
+	}
+	if nickname != "Ańné" {
+		t.Errorf("NameTable.Nickname = %q, want %q (verbatim, not folded)", nickname, "Ańné")
+	}
+	if nicknameMP != "Anne" {
+		t.Errorf("NameTable.NicknameMP = %q, want %q (accent-folded, matching SurnameMP/GivenMP's own confirmed behavior)", nicknameMP, "Anne")
+	}
+}
+
 // TestCreatePersonFactWithNote confirms NewPersonFact.Note is actually
 // persisted to EventTable.Note -- the storage-layer half of the
 // Date.original-unparseable-preserves-the-text feature (the API layer,

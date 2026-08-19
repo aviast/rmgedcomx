@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/aviast/rmgedcomx/internal/gedcomx"
 	"github.com/aviast/rmgedcomx/internal/rmdb"
@@ -106,8 +107,24 @@ func (s *Server) buildNewPerson(p gedcomx.Person) (rmdb.NewPerson, error) {
 	// NameTable rows for a person is unconfirmed behavior this server
 	// has no evidence for, and RootsMagic's own UI/data model likely
 	// expects every person to have at least one.
+	// A Name with type Nickname is handled separately from every other
+	// Name, not run through the same "each Name becomes its own
+	// NameTable row" loop below -- see nicknameText's own comment for
+	// the real GEDCOM-vs-GEDCOM-X structural mismatch that motivates
+	// this, prompted by a direct request rather than found
+	// independently.
 	names := make([]rmdb.NewPersonName, 0, len(p.Names))
+	var nicknameTexts []string
 	for i, n := range p.Names {
+		if n.Type == "http://gedcomx.org/Nickname" {
+			if len(n.NameForms) == 0 {
+				return rmdb.NewPerson{}, fmt.Errorf("names[%d]: a name must have at least one nameForm (GEDCOM X conceptual model Section 3.13: nameForms is REQUIRED)", i)
+			}
+			if text := nicknameText(n.NameForms[0]); text != "" {
+				nicknameTexts = append(nicknameTexts, text)
+			}
+			continue
+		}
 		nn, err := s.buildNewPersonName(n)
 		if err != nil {
 			return rmdb.NewPerson{}, fmt.Errorf("names[%d]: %w", i, err)
@@ -143,6 +160,33 @@ func (s *Server) buildNewPerson(p gedcomx.Person) (rmdb.NewPerson, error) {
 		}
 	}
 
+	// A GEDCOM 5.x nickname ("2 NICK" under "1 NAME") is a real
+	// structural mismatch with GEDCOM X, which -- checked directly
+	// against the conceptual model spec's own "Known Name Types"
+	// (Section 3.13.1), not assumed -- models a nickname as its own,
+	// separate Name (type=Nickname), not a NamePart nested within
+	// another Name the way GEDCOM 5.x nests NICK. RootsMagic's own
+	// schema doesn't have a matching concept either: NameTable.Nickname
+	// is a single column on a single name record, not a slot for an
+	// arbitrary number of alternate nickname entities. Attaching the
+	// first nickname's text to the *primary* name's own record is the
+	// direct request that motivated this (see SCOPE.md's "Write
+	// support" section for the full account); any further Name entries
+	// of this type are dropped, logged rather than silently lost, given
+	// there's nowhere in this schema to put a second one.
+	if len(nicknameTexts) > 0 {
+		for i := range names {
+			if names[i].IsPrimary {
+				names[i].Nickname = nicknameTexts[0]
+				break
+			}
+		}
+		if len(nicknameTexts) > 1 {
+			slog.Info("ignoring additional nickname(s) beyond the first -- RootsMagic's NameTable.Nickname holds only one per name record",
+				"used", nicknameTexts[0], "dropped", nicknameTexts[1:])
+		}
+	}
+
 	facts := make([]rmdb.NewPersonFact, 0, len(p.Facts))
 	for i, f := range p.Facts {
 		nf, err := s.buildNewPersonFact(f)
@@ -153,6 +197,29 @@ func (s *Server) buildNewPerson(p gedcomx.Person) (rmdb.NewPerson, error) {
 	}
 
 	return rmdb.NewPerson{Sex: sex, Names: names, Facts: facts}, nil
+}
+
+// nicknameText extracts a Nickname-type Name's plain text, the same way
+// buildNewPersonName would for an ordinary Name's Given field: fullText
+// if present, otherwise every part's value concatenated with spaces
+// (matching the conceptual model spec's own description of how fullText
+// MAY be derived from parts -- Section 3.19 -- since a nickname has no
+// meaningful Given/Surname breakdown of its own to preserve). Returns ""
+// if neither yields anything usable.
+func nicknameText(form gedcomx.NameForm) string {
+	if form.FullText != "" {
+		return form.FullText
+	}
+	if len(form.Parts) == 0 {
+		return ""
+	}
+	values := make([]string, 0, len(form.Parts))
+	for _, part := range form.Parts {
+		if part.Value != "" {
+			values = append(values, part.Value)
+		}
+	}
+	return strings.Join(values, " ")
 }
 
 // buildNewPersonName extracts Surname/Given/Prefix/Suffix from a Name's
@@ -231,12 +298,12 @@ func (s *Server) buildNewPersonName(n gedcomx.Name) (rmdb.NewPersonName, error) 
 		return rmdb.NewPersonName{}, fmt.Errorf("unrecognized name type %q", n.Type)
 	}
 	nn.NameType = nameType
-	// Nickname is its own NamePart type in the GEDCOM X conceptual model
-	// but has no confirmed real capture in this project's own reference
-	// data -- RootsMagic's NicknameMP handling is only inferred from
-	// SurnameMP/GivenMP's own confirmed transformation, never directly
-	// captured. Left unset here deliberately rather than wired to a
-	// NamePart type with no confirmed mapping.
+	// NameTypeCode's own mapping includes "http://gedcomx.org/Nickname"
+	// (RootsMagic NameType 6), but a Name of that type never actually
+	// reaches this function -- buildNewPerson filters it out first and
+	// handles it separately, attaching its text to the *primary* name's
+	// own Nickname column instead of creating a second NameTable row.
+	// See nicknameText's own comment for why.
 	return nn, nil
 }
 

@@ -40,6 +40,7 @@ def parse_gedcom(filename):
                     records[current_type][current_id]['names'].append({
                         'value': value,
                         'parts': {},
+                        'nicknames': [],
                         'preferred': is_preferred
                     })
                 elif tag in ['HUSB', 'WIFE', 'CHIL']:
@@ -51,10 +52,14 @@ def parse_gedcom(filename):
                     records[current_type][current_id]['events'][tag] = {}
 
             elif level == 2 and current_id and current_tag:
-                # Level 2 Name Parts (GIVN, SURN) for both NAME and ALIA tags
-                if current_tag in ['NAME', 'ALIA'] and tag in ['GIVN', 'SURN']:
-                    if records[current_type][current_id]['names']:
-                        records[current_type][current_id]['names'][-1]['parts'][tag] = value
+                # Level 2 Name Parts (GIVN, SURN) and Nicknames (NICK) for both NAME and ALIA tags
+                if current_tag in ['NAME', 'ALIA']:
+                    if tag in ['GIVN', 'SURN']:
+                        if records[current_type][current_id]['names']:
+                            records[current_type][current_id]['names'][-1]['parts'][tag] = value
+                    elif tag == 'NICK':
+                        if records[current_type][current_id]['names']:
+                            records[current_type][current_id]['names'][-1]['nicknames'].append(value)
                 # Level 2 Pedigree under FAMC (PEDI adopted / birth / foster / step)
                 elif current_tag == 'FAMC' and current_type == 'INDI' and tag == 'PEDI':
                     if current_famc_id and current_famc_id in records[current_type][current_id]['famc']:
@@ -161,6 +166,15 @@ def build_person_doc(ind_id, ind_data):
         else:
             gx_name["preferred"] = False
             alternate_names.append(gx_name)
+
+        # Process Nicknames into their own distinct name entities
+        for nick in name_data.get('nicknames', []):
+            nick_name_obj = {
+                "type": "http://gedcomx.org/Nickname",
+                "nameForms": [{"fullText": nick}],
+                "preferred": False
+            }
+            alternate_names.append(nick_name_obj)
 
     # GEDCOM X specs indicate the preferred name comes first in the array
     person['names'] = preferred_names + alternate_names
