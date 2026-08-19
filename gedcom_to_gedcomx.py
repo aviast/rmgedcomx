@@ -5,7 +5,7 @@ import requests
 def parse_gedcom(filename):
     """Parses a GEDCOM file into a dictionary of individuals and families."""
     records = {'INDI': {}, 'FAM': {}}
-    current_id, current_type, current_tag = None, None, None
+    current_id, current_type, current_tag, current_famc_id = None, None, None, None
 
     with open(filename, 'r', encoding='utf-8') as f:
         for line in f:
@@ -21,33 +21,52 @@ def parse_gedcom(filename):
                 if value in ['INDI', 'FAM']:
                     current_id = tag
                     current_type = value
-                    records[current_type][current_id] = {'id': current_id, 'events': {}}
+                    records[current_type][current_id] = {
+                        'id': current_id,
+                        'names': [],
+                        'events': {},
+                        'famc': {}
+                    }
                 else:
                     current_id = None
+                    current_type = None
+
             elif level == 1 and current_id:
+                current_tag = tag
                 if tag == 'SEX':
                     records[current_type][current_id][tag] = value
-                elif tag == 'NAME':
-                    current_tag = tag
-                    records[current_type][current_id][tag] = value
-                    records[current_type][current_id]['name_parts'] = {}
+                elif tag in ['NAME', 'ALIA']:
+                    is_preferred = (tag == 'NAME')
+                    records[current_type][current_id]['names'].append({
+                        'value': value,
+                        'parts': {},
+                        'preferred': is_preferred
+                    })
                 elif tag in ['HUSB', 'WIFE', 'CHIL']:
                     records[current_type][current_id].setdefault(tag, []).append(value)
-                elif tag in ['BIRT', 'CHR', 'DEAT', 'BURI', 'MARR']:
-                    current_tag = tag
-                    records[current_type][current_id]['events'][current_tag] = {}
+                elif tag == 'FAMC' and current_type == 'INDI':
+                    current_famc_id = value
+                    records[current_type][current_id]['famc'][current_famc_id] = {}
+                elif tag in ['BIRT', 'CHR', 'DEAT', 'BURI', 'MARR', 'DIV', 'ADOP', 'ANUL', 'ENGA', 'SEPR']:
+                    records[current_type][current_id]['events'][tag] = {}
+
             elif level == 2 and current_id and current_tag:
-                # Capture Level 2 name parts (GIVN, SURN)
-                if current_tag == 'NAME' and tag in ['GIVN', 'SURN']:
-                    records[current_type][current_id]['name_parts'][tag] = value
-                # Capture Level 2 event details (DATE, PLAC)
-                elif current_tag in ['BIRT', 'CHR', 'DEAT', 'BURI', 'MARR'] and tag in ['DATE', 'PLAC']:
+                # Level 2 Name Parts (GIVN, SURN) for both NAME and ALIA tags
+                if current_tag in ['NAME', 'ALIA'] and tag in ['GIVN', 'SURN']:
+                    if records[current_type][current_id]['names']:
+                        records[current_type][current_id]['names'][-1]['parts'][tag] = value
+                # Level 2 Pedigree under FAMC (PEDI adopted / birth / foster / step)
+                elif current_tag == 'FAMC' and current_type == 'INDI' and tag == 'PEDI':
+                    if current_famc_id and current_famc_id in records[current_type][current_id]['famc']:
+                        records[current_type][current_id]['famc'][current_famc_id]['pedi'] = value
+                # Level 2 Event details (DATE, PLAC, FAMC pointer for ADOP)
+                elif current_tag in ['BIRT', 'CHR', 'DEAT', 'BURI', 'MARR', 'DIV', 'ADOP', 'ANUL', 'ENGA', 'SEPR'] and tag in ['DATE', 'PLAC', 'FAMC']:
                     records[current_type][current_id]['events'][current_tag][tag] = value
 
     return records
 
 def normalize_gedcom_date(date_str):
-    """Converts a typical GEDCOM date string into a GEDCOM X formal date string."""
+    """Converts a GEDCOM date string into a GEDCOM X formal date string (+YYYY-MM-DD)."""
     if not date_str:
         return None
 
@@ -65,7 +84,6 @@ def normalize_gedcom_date(date_str):
     suffix = ""
     is_approximate = False
 
-    # Handle GEDCOM approximation and bounds modifiers
     if parts[0] in ['ABT', 'CAL', 'EST']:
         is_approximate = True
         parts = parts[1:]
@@ -80,10 +98,9 @@ def normalize_gedcom_date(date_str):
     for part in reversed(parts):
         if part.isdigit():
             if not year:
-                # First numeric part from right is the year. Pad to 4 digits.
+                # First numeric token from right is year; pad to 4 digits per GEDCOM X spec
                 year = part.zfill(4)
             else:
-                # Second numeric part from right is the day. Pad to 2 digits.
                 day = part.zfill(2)
         elif part in months:
             month = months[part]
@@ -91,45 +108,42 @@ def normalize_gedcom_date(date_str):
     if not year:
         return None
 
-    # Construct standard simple date format +YYYY[-MM[-DD]]
     formal_date = f"+{year}"
     if month:
         formal_date += f"-{month}"
         if day:
             formal_date += f"-{day}"
 
-    # Apply GEDCOM X formal spec modifiers
     if is_approximate:
         formal_date = f"A{formal_date}"
 
     return f"{prefix}{formal_date}{suffix}"
 
 def build_person_doc(ind_id, ind_data):
-    """Builds a GEDCOM X document for a single person, including fallback NAME solidus parsing and formal dates."""
+    """Builds a GEDCOM X document for a single person."""
     person = {"names": [], "facts": []}
 
-    if 'NAME' in ind_data:
-        raw_name = ind_data['NAME']
+    preferred_names = []
+    alternate_names = []
+
+    # Process all parsed names and aliases
+    for name_data in ind_data.get('names', []):
+        raw_name = name_data['value']
         name_str = raw_name.replace('/', '').strip()
         name_form = {"fullText": name_str}
 
         parts = []
-
-        # 1. Prefer explicitly parsed Level 2 GIVN and SURN elements
-        if 'name_parts' in ind_data and ind_data['name_parts']:
-            if 'GIVN' in ind_data['name_parts']:
-                parts.append({"type": "http://gedcomx.org/Given", "value": ind_data['name_parts']['GIVN']})
-            if 'SURN' in ind_data['name_parts']:
-                parts.append({"type": "http://gedcomx.org/Surname", "value": ind_data['name_parts']['SURN']})
-
-        # 2. Fallback: Parse the solidus characters in the raw NAME string
+        if name_data['parts']:
+            if 'GIVN' in name_data['parts']:
+                parts.append({"type": "http://gedcomx.org/Given", "value": name_data['parts']['GIVN']})
+            if 'SURN' in name_data['parts']:
+                parts.append({"type": "http://gedcomx.org/Surname", "value": name_data['parts']['SURN']})
         elif '/' in raw_name:
             match = re.search(r'^(.*?)/(.*?)/(.*?)$', raw_name)
             if match:
                 given1, surname, given2 = match.groups()
                 given = (given1.strip() + " " + given2.strip()).strip()
                 surname = surname.strip()
-
                 if given:
                     parts.append({"type": "http://gedcomx.org/Given", "value": given})
                 if surname:
@@ -138,15 +152,29 @@ def build_person_doc(ind_id, ind_data):
         if parts:
             name_form["parts"] = parts
 
-        person['names'].append({"nameForms": [name_form]})
+        gx_name = {"nameForms": [name_form]}
+
+        # Determine sorting preference
+        if name_data['preferred']:
+            gx_name["preferred"] = True
+            preferred_names.append(gx_name)
+        else:
+            gx_name["preferred"] = False
+            alternate_names.append(gx_name)
+
+    # GEDCOM X specs indicate the preferred name comes first in the array
+    person['names'] = preferred_names + alternate_names
 
     if 'SEX' in ind_data:
         gender_type = "http://gedcomx.org/Male" if ind_data['SEX'] == 'M' else "http://gedcomx.org/Female"
         person['gender'] = {"type": gender_type}
 
     event_mapping = {
-        'BIRT': 'http://gedcomx.org/Birth', 'DEAT': 'http://gedcomx.org/Death',
-        'CHR': 'http://gedcomx.org/Christening', 'BURI': 'http://gedcomx.org/Burial'
+        'BIRT': 'http://gedcomx.org/Birth',
+        'DEAT': 'http://gedcomx.org/Death',
+        'CHR':  'http://gedcomx.org/Christening',
+        'BURI': 'http://gedcomx.org/Burial',
+        'ADOP': 'http://gedcomx.org/Adoption'
     }
 
     for event_tag, event_data in ind_data.get('events', {}).items():
@@ -182,7 +210,7 @@ def discover_endpoints(server_url, headers):
     data = r.json()
     collections = data.get('collections', [])
     if not collections:
-        raise ValueError("No collections found at the root URL. Cannot proceed.")
+        raise ValueError("No collections found at the root URL.")
 
     first_collection = collections[0]
     links = first_collection.get('links', {})
@@ -196,7 +224,7 @@ def discover_endpoints(server_url, headers):
     return persons_url, rels_url
 
 def upload_data(server_url, gedcom_data):
-    """Executes the state machine: discover -> create persons -> create relationships."""
+    """Executes state machine upload for persons, couples (including divorces), and parent-child facts."""
     headers = {
         "Content-Type": "application/x-gedcomx-v1+json",
         "Accept": "application/x-gedcomx-v1+json"
@@ -208,6 +236,7 @@ def upload_data(server_url, gedcom_data):
 
         id_map = {}
 
+        # 1. Upload Persons
         print(f"Uploading individuals to {persons_url} ...")
         for ind_id, ind_data in gedcom_data['INDI'].items():
             doc = build_person_doc(ind_id, ind_data)
@@ -219,37 +248,77 @@ def upload_data(server_url, gedcom_data):
                 raise ValueError(f"Server did not return a Location header for person {ind_id}")
             id_map[ind_id] = server_uri
 
+        # 2. Upload Relationships
         print(f"Uploading relationships to {rels_url} ...")
+
+        # Fact mappings for couple relationships
+        couple_event_map = {
+            'MARR': 'http://gedcomx.org/Marriage',
+            'DIV':  'http://gedcomx.org/Divorce',
+            'ANUL': 'http://gedcomx.org/Annulment',
+            'ENGA': 'http://gedcomx.org/Engagement',
+            'SEPR': 'http://gedcomx.org/Separation'
+        }
+
+        # Fact mappings for parent-child relationship pedigree
+        pedi_map = {
+            'ADOPTED':  'http://gedcomx.org/AdoptiveParent',
+            'BIRTH':    'http://gedcomx.org/BiologicalParent',
+            'FOSTER':   'http://gedcomx.org/FosterParent',
+            'STEP':     'http://gedcomx.org/StepParent',
+            'GUARDIAN': 'http://gedcomx.org/GuardianParent'
+        }
+
         for fam_id, fam_data in gedcom_data['FAM'].items():
             husbands = fam_data.get('HUSB', [])
             wives = fam_data.get('WIFE', [])
             children = fam_data.get('CHIL', [])
 
+            # --- Couples & Couple Facts (Marriage, Divorce, etc.) ---
             for husb in husbands:
                 for wife in wives:
                     if husb in id_map and wife in id_map:
-                        facts = []
-                        if 'MARR' in fam_data.get('events', {}):
-                            marr = fam_data['events']['MARR']
-                            fact = {"type": "http://gedcomx.org/Marriage"}
-                            if 'DATE' in marr:
-                                fact["date"] = {"original": marr['DATE']}
-                                formal_date = normalize_gedcom_date(marr['DATE'])
-                                if formal_date:
-                                    fact["date"]["formal"] = formal_date
-                            if 'PLAC' in marr:
-                                fact["place"] = {"original": marr['PLAC']}
-                            facts.append(fact)
+                        couple_facts = []
 
-                        doc = build_relationship_doc("http://gedcomx.org/Couple", id_map[husb], id_map[wife], facts)
+                        for ev_tag, fact_uri in couple_event_map.items():
+                            if ev_tag in fam_data.get('events', {}):
+                                ev_info = fam_data['events'][ev_tag]
+                                fact = {"type": fact_uri}
+                                if 'DATE' in ev_info:
+                                    fact["date"] = {"original": ev_info['DATE']}
+                                    formal_date = normalize_gedcom_date(ev_info['DATE'])
+                                    if formal_date:
+                                        fact["date"]["formal"] = formal_date
+                                if 'PLAC' in ev_info:
+                                    fact["place"] = {"original": ev_info['PLAC']}
+                                couple_facts.append(fact)
+
+                        doc = build_relationship_doc("http://gedcomx.org/Couple", id_map[husb], id_map[wife], couple_facts)
                         r = requests.post(rels_url, json=doc, headers=headers)
                         r.raise_for_status()
 
+            # --- Parent-Child & Pedigree Facts (Adoptive, Biological, etc.) ---
             parents = husbands + wives
             for parent in parents:
                 for child in children:
                     if parent in id_map and child in id_map:
-                        doc = build_relationship_doc("http://gedcomx.org/ParentChild", id_map[parent], id_map[child])
+                        pc_facts = []
+
+                        # Inspect child record for PEDI tag or ADOP event pointing to this family
+                        child_famc_info = gedcom_data['INDI'].get(child, {}).get('famc', {}).get(fam_id, {})
+                        pedi_val = child_famc_info.get('pedi', '').upper()
+
+                        child_events = gedcom_data['INDI'].get(child, {}).get('events', {})
+                        has_adop_event = 'ADOP' in child_events and (
+                            child_events['ADOP'].get('FAMC') == fam_id or not child_events['ADOP'].get('FAMC')
+                        )
+
+                        if pedi_val in pedi_map:
+                            pc_facts.append({"type": pedi_map[pedi_val]})
+                        elif has_adop_event:
+                            pc_facts.append({"type": "http://gedcomx.org/AdoptiveParent"})
+
+                        doc = build_relationship_doc("http://gedcomx.org/ParentChild", id_map[parent], id_map[child], facts=pc_facts)
                         r = requests.post(rels_url, json=doc, headers=headers)
                         r.raise_for_status()
 
