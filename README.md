@@ -1,15 +1,18 @@
 # rmgedcomx
 
-A lightweight RESTful API server, written in Go, that exposes the contents of a
+A RESTful API server, written in Go, that exposes the contents of a
 [RootsMagic](https://rootsmagic.com/) genealogy database (SQLite) through a subset of the
 [GEDCOM X RS](https://github.com/FamilySearch/gedcomx-rs) specification. Read-only by
-default; write support for a small, deliberately-limited set of resources is available
-via `-write` -- see [SCOPE.md](./SCOPE.md#write-support).
+default; a growing set of write operations is available via `-write` -- see
+[SCOPE.md](./SCOPE.md#write-support) for the full account of what's implemented, how it was
+verified against real RootsMagic data, and every design decision behind it.
 
 ## Scope
 
-This server implements the **core genealogy resources** of GEDCOM X RS. Almost
-everything is `GET`-only:
+### Reading
+
+This server implements the **core genealogy resources** of GEDCOM X RS as `GET`-only
+resources:
 
 - `Collections` / `Collection`
 - `Persons` / `Person`
@@ -21,31 +24,67 @@ everything is `GET`-only:
 - `Artifacts` (scanned certificates, photos, and other multimedia)
 - `Events` / `Event` (shared events with multiple participants, e.g. a marriage with witnesses)
 
-Not implemented (out of scope for this build): OAuth2 authentication,
-`Records`, `Agents`, Atom search-result feeds, and any write operations (`POST`/`DELETE`).
-See [SCOPE.md](./SCOPE.md) for details and rationale, and for notes on extending the server
-later if you need any of this.
+### Writing (`-write`)
+
+- **Create a person or several** (`POST /persons`) -- names (including multiple names per
+  person, an explicit `preferred` name or the GEDCOM X convention of the first name in the
+  list being preferred, and a nickname attached to the primary name rather than a row of its
+  own), facts (with a `formal` date, a `Date.original` fallback parsed from GEDCOM 5.x syntax
+  when `formal` is absent or invalid, a place, and/or a free-text `value` -- e.g. `Occupation`
+  or `Religion`), and gender. See [SCOPE.md](./SCOPE.md#stage-3----creating-people-and-relationships-done)
+  for the full account, including several real bugs found and fixed by checking actual
+  RootsMagic behavior rather than assuming it.
+- **Create a `Couple` or `ParentChild` relationship, or several** (`POST /relationships`) --
+  resolves Father/Mother roles from each person's own recorded sex, reuses or completes an
+  existing family rather than creating a duplicate when the same two people are already
+  paired, and never guesses which of a parent's existing families a bare parent-child link
+  belongs to (a real design mistake, corrected during development -- see
+  [SCOPE.md](./SCOPE.md#a-real-design-mistake-corrected)). Supports marking a `ParentChild`
+  relationship as adoptive, step, or foster via GEDCOM X's own dedicated fact types
+  (`AdoptiveParent`, `StepParent`, `FosterParent`, `GuardianParent`, `BiologicalParent`).
+- **Attach or replace linked media** on an existing `Person`, `Event`, `Relationship`
+  (`Family`), `Place Description`, or `Source Description` (`POST /persons/{id}`,
+  `POST /events/{id}`, `POST /relationships/{id}`, `POST /places/{id}`,
+  `POST /source-descriptions/{id}`) -- this is the *only* thing these five endpoints support
+  writing; no other fields on an existing resource can be changed through this API yet.
+- **Correct an artifact's file path** (`POST /artifacts/{id}`) -- for when RootsMagic's own
+  stored `MediaPath` no longer resolves to a real file (moved, renamed, or on a different
+  machine).
+
+Every write is validated before anything is written, rejects unrecognized JSON fields
+outright rather than silently ignoring them, and is verified against real, captured
+RootsMagic behavior wherever that was possible -- see [SCOPE.md](./SCOPE.md) for the specifics
+and the evidence behind each one, including a few places where this project's own earlier
+claims about RootsMagic's behavior turned out to be wrong and were corrected in place rather
+than left standing.
+
+**Not implemented**, and out of scope for this build: `DELETE` of any kind; changing a
+`Person`'s or `Event`'s own names, facts, or gender once created (only linked media can be
+updated on an existing one); OAuth2 authentication; `Records`, `Agents`, and Atom
+search-result feeds. See [SCOPE.md](./SCOPE.md) for details, rationale, and notes on
+extending the server later if you need any of this.
 
 ## RootsMagic schema
 
 RootsMagic 8 or later is required. The table and column layout is effectively unchanged
-from RootsMagic 8 through RootsMagic 10/11 for the tables this server reads
-(`PersonTable`, `NameTable`, `FamilyTable`, `ChildTable`, `EventTable`,
-`FactTypeTable`, `PlaceTable`, `SourceTable`, `CitationTable`, `CitationLinkTable`, `RoleTable`).
-The server queries columns by name (not position) and only requires the columns it actually
-uses, so it works unmodified against RootsMagic 8–11 files. RootsMagic 7 is rejected
-specifically because it has no modification-timestamp column at all on the tables this
-server's write support depends on -- see [SCOPE.md](./SCOPE.md) for the full account, and
-for what happens if you point it at an older file.
+from RootsMagic 8 through RootsMagic 10/11 for the tables this server reads and writes
+(`PersonTable`, `NameTable`, `FamilyTable`, `ChildTable`, `EventTable`, `FactTypeTable`,
+`PlaceTable`, `SourceTable`, `CitationTable`, `CitationLinkTable`, `RoleTable`,
+`MultimediaTable`, `MediaLinkTable`, `ConfigTable`). The server queries columns by name
+(not position) and only requires the columns it actually uses, so it works unmodified
+against RootsMagic 8–11 files. RootsMagic 7 is rejected specifically because it has no
+modification-timestamp column at all on several of these tables, which this server's write
+support depends on -- see [SCOPE.md](./SCOPE.md) for the full account, and for what happens
+if you point it at an older file.
 
 ## Build
 
-Requires Go 1.22+. No C compiler needed — this uses
-[`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite), a CGo-free, pure-Go
-SQLite implementation (mirrored on GitHub at
-[modernc-org/sqlite](https://github.com/modernc-org/sqlite)), so
-cross-compiling and building on machines without a C toolchain both just
-work.
+Requires Go 1.25 or later (a dependency of the test-only `testify` module this project
+uses requires it; the server itself has no 1.25-specific requirement of its own). No C
+compiler needed -- this uses [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite), a
+CGo-free, pure-Go SQLite implementation (mirrored on GitHub at
+[modernc-org/sqlite](https://github.com/modernc-org/sqlite)), so cross-compiling and
+building on machines without a C toolchain both just work.
 
 ```sh
 go mod tidy   # first time only: fetches modernc.org/sqlite and friends, fills in go.sum
@@ -70,16 +109,22 @@ public-domain GEDCOM of European royalty, imported into RootsMagic. It's the
 only sample data included, and every example in this README and in
 [SCOPE.md](./SCOPE.md) is generated from it, deliberately -- there's no
 privacy concern in publishing exact ids or example responses for people who
-died over a century ago.)
+died over a century ago. The original GEDCOM file it was imported from is
+also included, at `testdata/royal92.ged`, and has independently been a
+repeated, genuine source of real edge cases this project's write support was
+built and corrected against -- see [SCOPE.md](./SCOPE.md) for several of
+them.)
 
 On startup, the server prints a table mapping each collection's id to its
-title and source file -- one row per `-db` flag. Here's the real output for
-`royal92.rmtree` on its own:
+title, source file, and RootsMagic's own database `UniqueID` -- one row per
+`-db` flag. Here's the real output for `royal92.rmtree` on its own:
 
 ```
+Read-only (pass -write to enable write support).
+
 Collections available this session:
-COLLECTION ID             TITLE                       DATABASE FILE
-victoria-hanover-royal92  Victoria Hanover (royal92)  royal92.rmtree
+COLLECTION ID             TITLE                       DATABASE FILE   UNIQUE ID
+victoria-hanover-royal92  Victoria Hanover (royal92)  royal92.rmtree  1474AA04B27542E9B980E4DDBD107FFAC8BD
 ```
 
 **A collection's id is not guaranteed to be the same across restarts** -- it's
@@ -87,18 +132,17 @@ derived from RootsMagic's "Home Person" setting (which a user can change) and
 the filename (which can be renamed, copied, or restored from backup), chosen
 to be human-recognizable rather than durable. **No client should persist a
 collection id across sessions** -- discover fresh via `GET /collections` every
-time a client starts (as the example Python client does), and use the startup
-table above to confirm, as a human, which id corresponds to which database for
-the session about to start. See [SCOPE.md](./SCOPE.md#multiple-databases--collections)
-for the full reasoning.
+time a client starts, and use the startup table above to confirm, as a human,
+which id corresponds to which database for the session about to start. See
+[SCOPE.md](./SCOPE.md#multiple-databases--collections) for the full reasoning.
 
-Then browse, e.g. (all real, verified against `royal92.rmtree` -- P1 is
-Victoria Hanover; F1 is her marriage to Albert, whose Marriage fact
-`E5049` is the same id as `.../events/E5049` -- see
-[SCOPE.md](./SCOPE.md#events). That event's `roles` include real witnesses
-already in the database, like P219, Queen Adelaide, alongside her
-bridesmaids, who aren't; and its `sources` include `M1`, an actual scan of
-the painting of the wedding):
+### Reading
+
+All real, verified against `royal92.rmtree` -- P1 is Victoria Hanover; F1 is her marriage
+to Albert, whose Marriage fact `E5049` is the same id as `.../events/E5049` -- see
+[SCOPE.md](./SCOPE.md#events). That event's `roles` include real witnesses already in the
+database, like P219, Queen Adelaide, alongside her bridesmaids, who aren't; and its
+`sources` include `M1`, an actual scan of the painting of the wedding:
 
 ```
 curl http://localhost:8080/
@@ -131,12 +175,55 @@ real limits of resolving a `MediaPath` to a file on disk (cloud-drive letters, R
 "Media Folder" setting, and items that turn out to be external links rather than local
 files).
 
-Writing to a resource that exists (anything other than `GET`) gets a `405 Method Not
-Allowed` with a correct `Allow` header; a URL this server doesn't implement at all
-(`Records`, `Agents`, `Person Matches`, OAuth2) gets a plain `404` -- see
-[SCOPE.md](./SCOPE.md#http-semantics) for the reasoning. Error bodies follow
-[RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) Problem Details (`application/problem+json`:
-`title`, `status`, `detail`), not a bespoke shape.
+### Writing (`-write`)
+
+Create a person with two facts, one carrying only a free-text `value` rather than a date or
+place (`Occupation`):
+
+```sh
+curl -X POST http://localhost:8080/collections/victoria-hanover-royal92/persons \
+  -H 'Content-Type: application/x-gedcomx-v1+json' \
+  -d '{
+    "persons": [{
+      "names": [{"nameForms": [{"parts": [
+        {"type": "http://gedcomx.org/Given", "value": "Joseph Patrick"},
+        {"type": "http://gedcomx.org/Surname", "value": "Kennedy"}
+      ]}]}],
+      "gender": {"type": "http://gedcomx.org/Male"},
+      "facts": [
+        {"type": "http://gedcomx.org/Birth", "date": {"formal": "+1888-09-06"}, "place": {"original": "Boston, MA"}},
+        {"type": "http://gedcomx.org/Occupation", "value": "Bank President, Ambassador"}
+      ]
+    }]
+  }'
+```
+
+A single created resource gets `201 Created` with a `Location` header pointing at it; several
+in one request get `204 No Content` instead, per the RS spec's own paging/collection
+semantics for a multi-resource `POST` -- see [SCOPE.md](./SCOPE.md) for the exact reasoning.
+Link two existing people as a couple, then link a child to each of them separately (a bare,
+single-parent link never assumes which of a parent's existing families it belongs to -- see
+[SCOPE.md](./SCOPE.md#a-real-design-mistake-corrected)):
+
+```sh
+curl -X POST http://localhost:8080/collections/victoria-hanover-royal92/relationships \
+  -H 'Content-Type: application/x-gedcomx-v1+json' \
+  -d '{"relationships": [{
+    "type": "http://gedcomx.org/Couple",
+    "person1": {"resourceId": "P1"},
+    "person2": {"resourceId": "P2"}
+  }]}'
+```
+
+Writing to a resource in a way this server doesn't support (`POST` to a resource whose
+own fields can't be changed, or any method this server doesn't implement at all for that
+path) gets a `405 Method Not Allowed` with a correct `Allow` header; a URL this server
+doesn't implement at all (`Records`, `Agents`, `Person Matches`, OAuth2) gets a plain `404`
+-- see [SCOPE.md](./SCOPE.md#http-semantics) for the reasoning. Error bodies follow
+[RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) Problem Details
+(`application/problem+json`: `title`, `status`, `detail`), not a bespoke shape, and a request
+this server rejects for any reason names the actual problem in `detail` rather than a generic
+message.
 
 ### Flags
 
@@ -146,11 +233,11 @@ Allowed` with a correct `Allow` header; a URL this server doesn't implement at a
 | `-addr` | `:8080` | Address to listen on |
 | `-base-url` | `http://localhost:8080` | Base URL used to build absolute links in responses |
 | `-media-folder` | *(none)* | RootsMagic's configured "Media Folder", if any multimedia paths use it (see [SCOPE.md](./SCOPE.md#multimedia)); shared by every `-db`, since it's a RootsMagic-installation-wide setting, not a per-database one. **Cannot be combined with `-write`** -- write mode determines the Media Folder itself, from RootsMagic's own configuration (see below) |
-| `-write` | `false` | Enable write support (see [SCOPE.md](./SCOPE.md#write-support) for exactly what that covers at any given point -- it's being built in small, tested stages, not all at once). Refuses to start if RootsMagic itself appears to be running. **Windows and macOS only**: reads the Media Folder from RootsMagic's own `RootsMagicUser.xml` (the macOS location is based on community reports, not independently confirmed -- see SCOPE.md) |
+| `-write` | `false` | Enable write support -- see [SCOPE.md](./SCOPE.md#write-support) for exactly what that covers. Refuses to start if RootsMagic itself appears to be running. **Windows and macOS only**: reads the Media Folder from RootsMagic's own `RootsMagicUser.xml` (the macOS location is based on community reports, not independently confirmed -- see SCOPE.md) |
 | `-default-generations` | `4` | Default number of generations for ancestry/descendancy queries |
 | `-max-page-size` | `200` | Maximum number of entries returned by a single paged request |
 | `-log-level` | `info` | `trace`, `debug`, `info`, `warn`, or `error`. `debug` additionally logs request and response bodies for every failed (4xx/5xx) request; `trace` logs them for every request. The response body is normally the fastest way to see why a failure happened, since it is either this server's own detailed reason, or (if the request never reached this server's own handler code at all, e.g. a write route that doesn't exist because `-write` wasn't passed) Go's own bare text response, which is itself the diagnostic |
-| `-log-format` | `text` | `text` or `json`. Logs go to stderr; the startup collection table (below) goes to stdout, so the two are independently redirectable if that's useful |
+| `-log-format` | `text` | `text` or `json`. Logs go to stderr; the startup collection table (above) goes to stdout, so the two are independently redirectable if that's useful |
 
 By default, the database is never written to: `Open()` uses SQLite's native `mode=ro` URI
 parameter, which `modernc.org/sqlite` honors natively since it transpiles the

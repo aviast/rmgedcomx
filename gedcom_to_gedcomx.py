@@ -48,8 +48,11 @@ def parse_gedcom(filename):
                 elif tag == 'FAMC' and current_type == 'INDI':
                     current_famc_id = value
                     records[current_type][current_id]['famc'][current_famc_id] = {}
-                elif tag in ['BIRT', 'CHR', 'DEAT', 'BURI', 'MARR', 'DIV', 'ADOP', 'ANUL', 'ENGA', 'SEPR']:
+                elif tag in ['BIRT', 'CHR', 'DEAT', 'BURI', 'MARR', 'DIV', 'ADOP', 'ANUL', 'ENGA', 'SEPR', 'OCCU', 'EDUC', 'RELI', 'TITL']:
                     records[current_type][current_id]['events'][tag] = {}
+                    # Some attributes (like OCCU, EDUC) include the value directly on the level-1 line
+                    if value:
+                        records[current_type][current_id]['events'][tag]['value'] = value
 
             elif level == 2 and current_id and current_tag:
                 # Level 2 Name Parts (GIVN, SURN) and Nicknames (NICK) for both NAME and ALIA tags
@@ -65,7 +68,7 @@ def parse_gedcom(filename):
                     if current_famc_id and current_famc_id in records[current_type][current_id]['famc']:
                         records[current_type][current_id]['famc'][current_famc_id]['pedi'] = value
                 # Level 2 Event details (DATE, PLAC, FAMC pointer for ADOP)
-                elif current_tag in ['BIRT', 'CHR', 'DEAT', 'BURI', 'MARR', 'DIV', 'ADOP', 'ANUL', 'ENGA', 'SEPR'] and tag in ['DATE', 'PLAC', 'FAMC']:
+                elif current_tag in ['BIRT', 'CHR', 'DEAT', 'BURI', 'MARR', 'DIV', 'ADOP', 'ANUL', 'ENGA', 'SEPR', 'OCCU', 'EDUC', 'RELI', 'TITL'] and tag in ['DATE', 'PLAC', 'FAMC']:
                     records[current_type][current_id]['events'][current_tag][tag] = value
 
     return records
@@ -188,12 +191,21 @@ def build_person_doc(ind_id, ind_data):
         'DEAT': 'http://gedcomx.org/Death',
         'CHR':  'http://gedcomx.org/Christening',
         'BURI': 'http://gedcomx.org/Burial',
-        'ADOP': 'http://gedcomx.org/Adoption'
+        'ADOP': 'http://gedcomx.org/Adoption',
+        'OCCU': 'http://gedcomx.org/Occupation',
+        'EDUC': 'http://gedcomx.org/Education',
+        'RELI': 'http://gedcomx.org/Religion',
+        'TITL': 'http://gedcomx.org/TitleOfNobility'
     }
 
     for event_tag, event_data in ind_data.get('events', {}).items():
         if event_tag in event_mapping:
             fact = {"type": event_mapping[event_tag]}
+
+            # Embed values for attributes like OCCU, EDUC, RELI, TITL
+            if 'value' in event_data:
+                fact["value"] = event_data['value']
+
             if 'DATE' in event_data:
                 fact["date"] = {"original": event_data['DATE']}
                 formal_date = normalize_gedcom_date(event_data['DATE'])
@@ -344,13 +356,16 @@ def upload_data(server_url, gedcom_data):
         print(f"Error: {e}")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python gedcom_to_gedcomx.py <gedcom_filename> <gedcomx_server_url>")
+    if len(sys.argv) not in [2, 3]:
+        print("Usage: python gedcom_to_gedcomx.py <gedcom_filename> [gedcomx_server_url]")
         sys.exit(1)
 
     filename = sys.argv[1]
-    server_url = sys.argv[2]
+    server_url = sys.argv[2] if len(sys.argv) == 3 else "http://localhost:8080/"
 
+    print(f"GEDCOM Filename : {filename}")
+    print(f"GEDCOM X Server : {server_url}")
     print(f"Parsing {filename}...")
+
     parsed_data = parse_gedcom(filename)
     upload_data(server_url, parsed_data)

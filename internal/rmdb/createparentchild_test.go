@@ -81,12 +81,18 @@ func TestCreateParentChildRelationshipMatchesRealCapturedData(t *testing.T) {
 			t.Errorf("child %d: RelFather/RelMother = %d/%d, want 0/0", childID, relFather, relMother)
 		}
 
+		// PersonTable.ParentID -- like SpouseID, a UI navigation state
+		// (RM4-11 data dictionary: the family last viewed for this
+		// person as a child, not a genealogical fact -- see
+		// CreateParentChildRelationship's own comment for the full
+		// account) -- is confirmed left at 0, not set to familyID the
+		// way an earlier version of this test asserted.
 		var parentID int64
 		if err := db.sql.QueryRow("SELECT ParentID FROM PersonTable WHERE PersonID = ?", childID).Scan(&parentID); err != nil {
 			t.Fatal(err)
 		}
-		if parentID != familyID {
-			t.Errorf("child %d: PersonTable.ParentID = %d, want %d", childID, parentID, familyID)
+		if parentID != 0 {
+			t.Errorf("child %d: PersonTable.ParentID = %d, want 0 (this server no longer sets it)", childID, parentID)
 		}
 	}
 }

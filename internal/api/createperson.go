@@ -325,7 +325,17 @@ func (s *Server) buildNewPersonFact(f gedcomx.Fact) (rmdb.NewPersonFact, error) 
 		return rmdb.NewPersonFact{}, fmt.Errorf("fact type %q is not a Person-level fact in this database", f.Type)
 	}
 
-	nf := rmdb.NewPersonFact{FactTypeID: factTypeID, DateString: "."}
+	// Details = f.Value directly -- GEDCOM X's Fact.value ("the value of
+	// the fact," string, OPTIONAL -- conceptual model spec, Section
+	// 3.14, checked directly rather than quoted from memory) is exactly
+	// EventTable.Details, confirmed by the read side already reversing
+	// this same mapping (internal/api/convert.go's buildFact:
+	// e.Details -> f.Value) -- this was the one direction of that
+	// mapping never actually wired up on write. Empty when Value isn't
+	// provided, matching every other optional field here; a fact type
+	// like Birth or Death that doesn't typically carry a free-text
+	// value at all is unaffected.
+	nf := rmdb.NewPersonFact{FactTypeID: factTypeID, DateString: ".", Details: f.Value}
 	if f.Date != nil {
 		dateSet := false
 
