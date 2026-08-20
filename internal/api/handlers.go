@@ -68,7 +68,35 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, gedcomx.PersonDocument{Persons: []gedcomx.Person{p}, Links: p.Links})
+
+	// RS spec Section 4.10.5, "Embedded States": child-relationships,
+	// parent-relationships, and spouse-relationships are each MUST --
+	// either a link, or the data embedded directly in this same
+	// response. This server embeds, reusing the identical computation
+	// GET .../parents, .../children, and .../spouses already needed for
+	// their own Relationships fields (see personParentRelationships's
+	// own comment).
+	rels := []gedcomx.Relationship{}
+	parentRels, err := s.personParentRelationships(pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rels = append(rels, parentRels...)
+	childRels, err := s.personChildRelationships(pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rels = append(rels, childRels...)
+	spouseRels, err := s.personSpouseRelationships(pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rels = append(rels, spouseRels...)
+
+	writeJSON(w, http.StatusOK, gedcomx.PersonDocument{Persons: []gedcomx.Person{p}, Relationships: rels, Links: p.Links})
 }
 
 // handleUpdatePerson implements the Person state's POST operation (RS
@@ -189,6 +217,37 @@ func mediaIDFromReference(ref gedcomx.SourceReference) (int64, error) {
 
 // --- Person Parents / Children / Spouses ---
 
+// personParentRelationships returns the ParentChild relationships where
+// pid is the CHILD -- the same computation handlePersonParents already
+// needed for its own Relationships field, extracted so handlePerson can
+// reuse it (RS spec Section 4.10.5: the Person state's
+// "parent-relationships" embedded state is MUST -- either a link, or
+// the data embedded directly in the Person state's own response; this
+// server does the latter, in PersonDocument.Relationships).
+func (s *Server) personParentRelationships(pid int64) ([]gedcomx.Relationship, error) {
+	childRows, err := s.db.ChildRowsAsChild(pid)
+	if err != nil {
+		return nil, err
+	}
+	var rels []gedcomx.Relationship
+	for _, cr := range childRows {
+		fam, err := s.db.GetFamily(cr.FamilyID)
+		if err != nil {
+			return nil, err
+		}
+		if fam == nil {
+			continue
+		}
+		if fam.FatherID != 0 {
+			rels = append(rels, s.buildParentChildRelationship(fam.FamilyID, fam.FatherID, pid, true))
+		}
+		if fam.MotherID != 0 {
+			rels = append(rels, s.buildParentChildRelationship(fam.FamilyID, fam.MotherID, pid, false))
+		}
+	}
+	return rels, nil
+}
+
 func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pid, err := parsePersonID(id)
@@ -203,7 +262,6 @@ func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var persons []gedcomx.Person
-	var rels []gedcomx.Relationship
 	seen := map[int64]bool{}
 	for _, cr := range childRows {
 		fam, err := s.db.GetFamily(cr.FamilyID)
@@ -234,12 +292,11 @@ func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 			}
 			persons = append(persons, p)
 		}
-		if fam.FatherID != 0 {
-			rels = append(rels, s.buildParentChildRelationship(fam.FamilyID, fam.FatherID, pid, true))
-		}
-		if fam.MotherID != 0 {
-			rels = append(rels, s.buildParentChildRelationship(fam.FamilyID, fam.MotherID, pid, false))
-		}
+	}
+	rels, err := s.personParentRelationships(pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	status := http.StatusOK
@@ -252,6 +309,30 @@ func (s *Server) handlePersonParents(w http.ResponseWriter, r *http.Request) {
 		Relationships: rels,
 		Links:         gedcomx.Links{"person": {Href: s.url("/persons/" + id)}},
 	})
+}
+
+// personChildRelationships returns the ParentChild relationships where
+// pid is a PARENT -- the same computation handlePersonChildren already
+// needed for its own Relationships field, extracted so handlePerson can
+// reuse it. See personParentRelationships's own comment for the full
+// account of why this exists.
+func (s *Server) personChildRelationships(pid int64) ([]gedcomx.Relationship, error) {
+	families, err := s.db.FamiliesAsParent(pid)
+	if err != nil {
+		return nil, err
+	}
+	var rels []gedcomx.Relationship
+	for _, fam := range families {
+		isFather := fam.FatherID == pid
+		children, err := s.db.ChildRowsOfFamily(fam.FamilyID)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range children {
+			rels = append(rels, s.buildParentChildRelationship(fam.FamilyID, pid, c.ChildID, isFather))
+		}
+	}
+	return rels, nil
 }
 
 func (s *Server) handlePersonChildren(w http.ResponseWriter, r *http.Request) {
@@ -268,10 +349,7 @@ func (s *Server) handlePersonChildren(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var persons []gedcomx.Person
-	var rels []gedcomx.Relationship
-	isFather := true
 	for _, fam := range families {
-		isFather = fam.FatherID == pid
 		children, err := s.db.ChildRowsOfFamily(fam.FamilyID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -292,8 +370,12 @@ func (s *Server) handlePersonChildren(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			persons = append(persons, p)
-			rels = append(rels, s.buildParentChildRelationship(fam.FamilyID, pid, c.ChildID, isFather))
 		}
+	}
+	rels, err := s.personChildRelationships(pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	status := http.StatusOK
@@ -306,6 +388,46 @@ func (s *Server) handlePersonChildren(w http.ResponseWriter, r *http.Request) {
 		Relationships: rels,
 		Links:         gedcomx.Links{"person": {Href: s.url("/persons/" + id)}},
 	})
+}
+
+// personSpouseRelationships returns the Couple relationships where pid
+// is one of the two parents -- the same computation handlePersonSpouses
+// already needed for its own Relationships field, extracted so
+// handlePerson can reuse it. See personParentRelationships's own
+// comment for the full account of why this exists. Matches
+// handlePersonSpouses's own existing behavior exactly, including
+// skipping a family whose spouse PersonID doesn't actually resolve to a
+// real person (a dangling reference, unlikely but not impossible) --
+// consistency with what GET .../spouses itself would return matters
+// more here than the extra GetPerson call it costs.
+func (s *Server) personSpouseRelationships(pid int64) ([]gedcomx.Relationship, error) {
+	families, err := s.db.FamiliesAsParent(pid)
+	if err != nil {
+		return nil, err
+	}
+	var rels []gedcomx.Relationship
+	for _, fam := range families {
+		if fam.FatherID == 0 || fam.MotherID == 0 {
+			continue
+		}
+		spouseID := fam.MotherID
+		if fam.FatherID != pid {
+			spouseID = fam.FatherID
+		}
+		rp, err := s.db.GetPerson(spouseID)
+		if err != nil {
+			return nil, err
+		}
+		if rp == nil {
+			continue
+		}
+		rel, err := s.buildCoupleRelationship(fam)
+		if err != nil {
+			return nil, err
+		}
+		rels = append(rels, rel)
+	}
+	return rels, nil
 }
 
 func (s *Server) handlePersonSpouses(w http.ResponseWriter, r *http.Request) {
@@ -322,7 +444,6 @@ func (s *Server) handlePersonSpouses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var persons []gedcomx.Person
-	var rels []gedcomx.Relationship
 	for _, fam := range families {
 		spouseID := fam.MotherID
 		if fam.FatherID != pid {
@@ -345,14 +466,11 @@ func (s *Server) handlePersonSpouses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		persons = append(persons, p)
-		if fam.FatherID != 0 && fam.MotherID != 0 {
-			rel, err := s.buildCoupleRelationship(fam)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			rels = append(rels, rel)
-		}
+	}
+	rels, err := s.personSpouseRelationships(pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	status := http.StatusOK

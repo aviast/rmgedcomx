@@ -538,6 +538,62 @@ who *are* real `Person`s (below): the role type and its free-text details
 are always two distinct pieces of information, never one replacing the
 other.
 
+## Embedded relationship states on the `Person` state
+
+Prompted by direct review, not found independently: the RS spec's
+Section 4.10.5, "Embedded States," lists `child-relationships`,
+`parent-relationships`, and `spouse-relationships` as each `MUST` for
+the `Person` state -- *"If no link to `child-relationships` is
+provided, the list of child relationships MUST be included"* in the
+same response (and correspondingly for the other two). The separate
+"Link Relation Types" appendix (Section 5.2) confirms the same three
+rel names as "embedded link[s]." This server previously provided
+neither -- no `links.child-relationships`/etc., and `PersonDocument`
+had no field to embed the data in at all -- so a single `GET
+.../persons/{id}` never surfaced a person's own relationships, only
+links to the separate `.../parents`, `.../children`, `.../spouses`
+endpoints (which return lists of `Person`s, not `Relationship`s, and
+are a different rel name entirely from the three the spec requires
+here).
+
+Fixed by embedding rather than linking: `PersonDocument`
+(`internal/gedcomx/model.go`) gained a `Relationships` field,
+deliberately without `omitempty` -- an absent field would be
+indistinguishable from a person who genuinely has none, which is the
+whole ambiguity the spec's own `MUST` is there to resolve. `handlePerson`
+(`internal/api/handlers.go`) populates it with every `ParentChild`
+relationship where this person is a child, every `ParentChild`
+relationship where this person is a parent, and every `Couple`
+relationship this person is part of.
+
+Rather than duplicate that computation a fourth time, it reuses the
+identical logic `GET .../persons/{id}/parents`, `.../children`, and
+`.../spouses` already needed for their own, pre-existing
+`Relationships` fields (`PersonRelativesDocument`, which already
+embedded relationships correctly -- this gap was specific to the single
+`Person` state, not those three). Each of the three handlers'
+relationship-computation logic was extracted into its own
+`personParentRelationships`/`personChildRelationships`/
+`personSpouseRelationships` helper, with the three original handlers
+refactored to call their own helper rather than duplicate the logic
+inline -- checked against the full existing test suite immediately
+after the refactor, before adding anything new, to confirm this was a
+genuine extraction and not an accidental behavior change.
+
+Verified directly against real data, not just reasoned about: `GET
+.../persons/P1` (Victoria) now embeds exactly 11 relationships -- her
+two parents, all nine of her real children with Albert, and her own
+Couple relationship to Albert (complete with its `Marriage` fact,
+sources, and all) -- confirmed against the live response, not assumed
+from the code. The existing golden-file test for this exact endpoint
+(`cmd/server/testdata/get_person_expected.json`) was regenerated from a
+real server response rather than hand-edited, to avoid a transcription
+error in a file this large. A dedicated test also confirms a person
+with genuinely zero relationships gets `"relationships":[]`, not
+`null` or an absent field -- the specific failure mode the spec's
+`MUST` requirement is there to prevent, and the reason the new field
+was deliberately not marked `omitempty`.
+
 ## Write support
 
 Off by default. `-write` enables it; without it, this server behaves

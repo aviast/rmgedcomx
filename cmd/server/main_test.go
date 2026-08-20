@@ -873,6 +873,25 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		require.Contains(t, string(getBody), `County Down, Ireland`)
 	})
 
+	// RS spec Section 4.10.5, "Embedded States": child-relationships,
+	// parent-relationships, and spouse-relationships are each MUST for
+	// the Person state -- either a link, or embedded directly. A person
+	// with genuinely zero relationships (never linked to anyone via
+	// Couple or ParentChild) still needs the field present as an empty
+	// array, not absent or null -- an absent field would be
+	// indistinguishable from a server that doesn't support this
+	// embedded state at all.
+	t.Run("a person with no relationships gets an empty relationships array, not null or absent", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons":[{"names":[{"nameForms":[{"fullText":"Solo Person"}]}]}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"relationships":[]`)
+	})
+
 	t.Run("multiple persons in one request creates 204", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		body := `{"persons":[
