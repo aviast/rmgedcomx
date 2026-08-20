@@ -26,9 +26,13 @@
     {
       "display": {
         "birthDate": "1819",
+        "birthPlace": "Kensington, Palace, London, England",
         "deathDate": "1901",
+        "deathPlace": "Osborne House, Isle of Wight, England",
         "gender": "Female",
         "lifespan": "1819 - 1901",
+        "marriageDate": "10 Feb 1840",
+        "marriagePlace": "Chapel Royal, St. James Palace, England",
         "name": "Victoria Hanover"
       },
       "facts": [

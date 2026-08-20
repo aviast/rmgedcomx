@@ -633,6 +633,105 @@ test suite) to confirm `collection`/`href` were the *only* keys added
 and nothing was accidentally removed, before trusting the regeneration
 and replacing the files.
 
+## `DisplayProperties`: `marriageDate`/`marriagePlace` were never implemented, `birthPlace`/`deathPlace` were implemented but never wired up
+
+Prompted by a direct report -- "`marriageDate`/`marriagePlace` appear to
+be omitted." Checked directly against the RS spec's own `DisplayProperties`
+properties table (Section 2.2) before touching anything: `name`, `gender`,
+`lifespan`, `birthDate`, `birthPlace`, `deathDate`, `deathPlace`,
+`marriageDate`, `marriagePlace`, `ascendancyNumber`, `descendancyNumber`,
+`familiesAsParent`, `familiesAsChild`. `marriageDate`/`marriagePlace`
+weren't just unpopulated -- the `DisplayProperties` struct
+(`internal/gedcomx/model.go`) had no fields for them at all, added as
+part of this fix. While investigating, `birthPlace`/`deathPlace` turned
+out to have the same underlying gap one level less visible: the struct
+fields already existed, but `buildDisplayProperties`
+(`internal/api/convert.go`) never actually populated either one --
+fixed alongside `marriageDate`/`marriagePlace`, since it's the exact
+same shape of gap against the same spec table, not a separate report.
+`familiesAsParent`/`familiesAsChild` are a real, separate gap too (also
+unpopulated) but are a meaningfully larger feature -- each `FamilyView`
+needs its own `parent1`/`parent2`/`children` construction across every
+family a person is in, both as parent and as child -- and weren't part
+of the report; left for their own turn rather than folded in here.
+
+`birthPlace`/`deathPlace` come directly from this same person's own
+Birth/Death facts -- `buildPerson` already computes these as
+`[]gedcomx.Fact` before calling `buildDisplayProperties`, so the
+already-built facts are reused rather than re-fetched. There's only
+ever one Birth and one Death fact per real person in practice, so no
+"which one" ambiguity the way marriage has.
+
+`marriageDate`/`marriagePlace` needed a real design decision the spec
+itself doesn't make: a person can have more than one marriage, and
+`DisplayProperties` has room for exactly one of each. Resolved the same
+way this project has resolved other "which one, when there are several"
+questions with no other spec guidance -- take the first, consistently
+ordered (`FamiliesAsParent`'s own query, `ORDER BY FamilyID`, matching
+the existing convention already used for a person's primary name and
+other "the first one" choices), and skip to the next family only if the
+first has no Marriage fact at all, rather than treating a family known
+not to have one as this person's answer. Verified against real,
+non-obvious data, not a constructed example: `royal92.rmtree`'s own
+person 21 (William II) has two real families where exactly this
+happens -- the first (FamilyID 136) has no Marriage fact, the second
+(146) does (5 Nov 1922) -- and this server correctly reports the
+second, not an empty result from the first. This required
+`buildDisplayProperties`'s own signature to change (it previously only
+took `names`/`sex`; now also takes `personID` and the already-built
+`facts`, and returns an error, since it now queries the database for
+this person's own families).
+
+Four golden files needed regenerating as a result
+(`get_persons_expected.json`, `get_person_expected.json`,
+`get_person_ancestry_expected.json`, `get_person_descendancy_expected.json`)
+-- each diffed programmatically against its own prior version, the same
+way as the `collection` link fix above, confirming `birthPlace`/
+`deathPlace`/`marriageDate`/`marriagePlace` were the only keys added.
+
+### A real, separate bug this surfaced: `Couple` relationship `facts` were silently discarded
+
+Building a self-contained test for the fix above (rather than relying
+only on `royal92.rmtree`'s existing data) required posting a `Couple`
+relationship with a `Marriage` fact through the real HTTP API -- which
+is when this was found: `handleCreateRelationships`
+(`internal/api/createrelationship.go`) read a relationship's own
+`Facts` for `ParentChild` (`relTypeFromFacts`, to detect
+`Adoptive`/`Biological`/etc.) but never even looked at `Facts` for
+`Couple` at all. `rmdb.NewCoupleRelationship` already has a `Facts`
+field the storage layer already knows how to write -- it just never
+received anything, since nothing on the API layer's `Couple` branch
+ever populated it. The request itself gave no indication anything was
+wrong: `POST /relationships` with a `Marriage` fact returned a normal
+`201 Created`; the fact was simply never written to `EventTable` at
+all, confirmed directly by querying the resulting database rather than
+just re-reading the API's own response.
+
+This had gone undetected because the two layers were each tested in
+isolation: `internal/rmdb`'s own tests construct
+`rmdb.NewCoupleRelationship{..., Facts: [...]}` directly, which
+correctly exercises `CreateCoupleRelationship`'s own fact-writing
+logic but never touches `handleCreateRelationships` at all; no existing
+HTTP-level test had ever posted a `Couple` relationship with `Facts`
+and then checked they actually round-tripped back on `GET`.
+
+Fixed by generalizing `buildNewPersonFact` (renamed `buildNewFact`,
+`internal/api/createperson.go`) to accept the fact's *expected* owner
+type as a parameter (`rmdb.OwnerTypePerson` or `rmdb.OwnerTypeFamily`)
+rather than hardcoding `Person` -- the conversion logic itself (date
+parsing and its own fallback chain, place handling, `Details`/`Value`)
+is identical either way; only the `FactTypeTable` ownership check
+differs. `handleCreateRelationships`'s `Couple` branch now converts
+`rel.Facts` the same way `ParentChild` already read them for
+`relTypeFromFacts`, and passes the result through to
+`CreateCoupleRelationship`. Verified with a dedicated regression test
+(`cmd/server/main_test.go`, `TestCreateRelationshipsHTTP`) posting a
+`Couple` relationship with a real `Marriage` fact and confirming it
+reads back correctly via `GET` -- deliberately placed and named
+independently of the `DisplayProperties` test that surfaced it, since
+this is a genuinely separate bug a future reader should be able to find
+by name.
+
 ## Write support
 
 Off by default. `-write` enables it; without it, this server behaves

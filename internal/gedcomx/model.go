@@ -126,6 +126,8 @@ type DisplayProperties struct {
 	BirthPlace        string       `json:"birthPlace,omitempty"`
 	DeathDate         string       `json:"deathDate,omitempty"`
 	DeathPlace        string       `json:"deathPlace,omitempty"`
+	MarriageDate      string       `json:"marriageDate,omitempty"`
+	MarriagePlace     string       `json:"marriagePlace,omitempty"`
 	AscendancyNumber  string       `json:"ascendancyNumber,omitempty"`
 	DescendancyNumber string       `json:"descendancyNumber,omitempty"`
 	FamiliesAsParent  []FamilyView `json:"familiesAsParent,omitempty"`

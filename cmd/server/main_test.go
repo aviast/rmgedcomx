@@ -376,6 +376,116 @@ func TestPersonAndRelationshipHaveCollectionLink(t *testing.T) {
 	})
 }
 
+func TestDisplayPropertiesBirthDeathMarriage(t *testing.T) {
+	post := func(t *testing.T, testServer *httptest.Server, path, body string) (int, string, http.Header) {
+		t.Helper()
+		req, err := http.NewRequest("POST", testServer.URL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(respBody), resp.Header
+	}
+	get := func(t *testing.T, testServer *httptest.Server, location string) (int, string) {
+		t.Helper()
+		url := strings.Replace(location, "http://localhost:8080", testServer.URL, 1)
+		resp, err := http.Get(url)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body)
+	}
+	newTestServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		tempDir := t.TempDir()
+		tempDBPath := filepath.Join(tempDir, "empty.rmtree")
+		copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
+		router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", true, 4, 200)
+		t.Cleanup(cleanup)
+		return httptest.NewServer(router)
+	}
+
+	t.Run("birthPlace and deathPlace are populated from the person's own facts", func(t *testing.T) {
+		testServer := newTestServer(t)
+		status, respBody, headers := post(t, testServer, "/collections/empty/persons", `{"persons":[{
+			"names":[{"nameForms":[{"fullText":"Test Person"}]}],
+			"facts":[
+				{"type":"http://gedcomx.org/Birth","place":{"original":"Boston, MA"}},
+				{"type":"http://gedcomx.org/Death","place":{"original":"Hyannis Port, MA"}}
+			]
+		}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, body := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", body)
+		require.Contains(t, body, `"birthPlace":"Boston, MA"`)
+		require.Contains(t, body, `"deathPlace":"Hyannis Port, MA"`)
+	})
+
+	t.Run("marriageDate and marriagePlace are populated from a Couple relationship's Marriage fact", func(t *testing.T) {
+		testServer := newTestServer(t)
+		_, respBody, h1 := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Spouse One"}]}],"gender":{"type":"http://gedcomx.org/Male"}}]}`)
+		require.Contains(t, h1.Get("Location"), "/persons/P1", "body: %s", respBody)
+		_, respBody, h2 := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Spouse Two"}]}],"gender":{"type":"http://gedcomx.org/Female"}}]}`)
+		require.Contains(t, h2.Get("Location"), "/persons/P2", "body: %s", respBody)
+
+		status, respBody, _ := post(t, testServer, "/collections/empty/relationships", `{"relationships":[{
+			"type":"http://gedcomx.org/Couple",
+			"person1":{"resourceId":"P1"},
+			"person2":{"resourceId":"P2"},
+			"facts":[{"type":"http://gedcomx.org/Marriage","date":{"original":"3 Jun 1972","formal":"+1972-06-03"},"place":{"original":"New York, NY"}}]
+		}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, body := get(t, testServer, h1.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", body)
+		require.Contains(t, body, `"marriageDate":"3 Jun 1972"`)
+		require.Contains(t, body, `"marriagePlace":"New York, NY"`)
+	})
+
+	t.Run("a person with no marriage at all has marriageDate/marriagePlace absent, not empty strings", func(t *testing.T) {
+		testServer := newTestServer(t)
+		status, respBody, headers := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Never Married"}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, body := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", body)
+		require.NotContains(t, body, `"marriageDate"`)
+		require.NotContains(t, body, `"marriagePlace"`)
+	})
+
+	t.Run("a family with no Marriage fact is skipped in favor of a later family that has one", func(t *testing.T) {
+		testServer := newTestServer(t)
+		_, respBody, hParent := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Twice Married"}]}],"gender":{"type":"http://gedcomx.org/Male"}}]}`)
+		require.Contains(t, hParent.Get("Location"), "/persons/P1", "body: %s", respBody)
+		status, respBody, _ := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"First Spouse"}]}],"gender":{"type":"http://gedcomx.org/Female"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P2
+		status, respBody, _ = post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Second Spouse"}]}],"gender":{"type":"http://gedcomx.org/Female"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P3
+
+		// First family: no Marriage fact at all.
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		// Second family: has one.
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{
+			"type":"http://gedcomx.org/Couple",
+			"person1":{"resourceId":"P1"},
+			"person2":{"resourceId":"P3"},
+			"facts":[{"type":"http://gedcomx.org/Marriage","date":{"original":"1 Jan 1990"},"place":{"original":"London, England"}}]
+		}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, body := get(t, testServer, hParent.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", body)
+		require.Contains(t, body, `"marriageDate":"1 Jan 1990"`)
+		require.Contains(t, body, `"marriagePlace":"London, England"`)
+	})
+}
+
 // Pre-compile regex to replace dynamic timestamps in sqldiff output
 var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
 var familySearchIDRegex = regexp.MustCompile(`,\s*fsID=-?[0-9]+`)
@@ -1521,6 +1631,31 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P4"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/AdoptiveParent"}]}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
 		require.Equal(t, adoptiveFamily, headers.Get("Location"), "adoptive mother should complete the adoptive family, not be rejected as ambiguous")
+	})
+
+	// A real, previously-undetected bug: rel.Facts was read for
+	// ParentChild (relTypeFromFacts, above) but never even looked at
+	// for Couple -- a Marriage fact sent alongside a Couple relationship
+	// got 201 Created with nothing actually written to EventTable, no
+	// error at all. Existing rmdb-layer tests never caught this because
+	// they construct rmdb.NewCoupleRelationship directly, bypassing this
+	// exact API-layer gap entirely -- only a real HTTP round trip
+	// through handleCreateRelationships itself exercises it.
+	t.Run("a Marriage fact on a Couple relationship is actually written, not silently dropped", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Patrick", "Brontë")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Maria", "Branwell")
+
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"},"facts":[{"type":"http://gedcomx.org/Marriage","date":{"original":"29 Dec 1812","formal":"+1812-12-29"},"place":{"original":"Guiseley, Yorks."}}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		require.Contains(t, headers.Get("Location"), "/relationships/F1")
+
+		getStatus, getBody := get(t, testServer, "/collections/empty/relationships/F1")
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"type":"http://gedcomx.org/Marriage"`)
+		require.Contains(t, getBody, `"original":"29 Dec 1812"`)
+		require.Contains(t, getBody, `"original":"Guiseley, Yorks."`)
 	})
 
 	t.Run("nonexistent person is rejected with 400, not 500", func(t *testing.T) {

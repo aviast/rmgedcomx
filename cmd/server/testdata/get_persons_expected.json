@@ -14,9 +14,13 @@
     {
       "display": {
         "birthDate": "1819",
+        "birthPlace": "Kensington, Palace, London, England",
         "deathDate": "1901",
+        "deathPlace": "Osborne House, Isle of Wight, England",
         "gender": "Female",
         "lifespan": "1819 - 1901",
+        "marriageDate": "10 Feb 1840",
+        "marriagePlace": "Chapel Royal, St. James Palace, England",
         "name": "Victoria Hanover"
       },
       "facts": [
@@ -152,9 +156,13 @@
     {
       "display": {
         "birthDate": "1819",
+        "birthPlace": "Schloss Rosenau, Near Coburg, Germany",
         "deathDate": "1861",
+        "deathPlace": "Windsor Castle, Berkshire, England",
         "gender": "Male",
         "lifespan": "1819 - 1861",
+        "marriageDate": "10 Feb 1840",
+        "marriagePlace": "Chapel Royal, St. James Palace, England",
         "name": "Albert Augustus Charles"
       },
       "facts": [
@@ -275,9 +283,13 @@
     {
       "display": {
         "birthDate": "1840",
+        "birthPlace": "Buckingham, Palace, London, England",
         "deathDate": "1901",
+        "deathPlace": "Friedrichshof, Near, Kronberg, Taunus",
         "gender": "Female",
         "lifespan": "1840 - 1901",
+        "marriageDate": "25 Jan 1858",
+        "marriagePlace": "London, England",
         "name": "Victoria Adelaide Mary"
       },
       "facts": [
@@ -416,9 +428,13 @@
     {
       "display": {
         "birthDate": "1841",
+        "birthPlace": "Buckingham, Palace, London, England",
         "deathDate": "1910",
+        "deathPlace": "Buckingham, Palace, London, England",
         "gender": "Male",
         "lifespan": "1841 - 1910",
+        "marriageDate": "10 Mar 1863",
+        "marriagePlace": "St. George Chap., Windsor, , England",
         "name": "Edward_VII Wettin"
       },
       "facts": [
@@ -547,9 +563,13 @@
     {
       "display": {
         "birthDate": "1843",
+        "birthPlace": "Buckingham, Palace, London, England",
         "deathDate": "1878",
+        "deathPlace": "Darmstadt, , , Germany",
         "gender": "Female",
         "lifespan": "1843 - 1878",
+        "marriageDate": "1 Jul 1862",
+        "marriagePlace": "Osborne House, Isle of Wight",
         "name": "Alice Maud Mary"
       },
       "facts": [
@@ -656,9 +676,13 @@
     {
       "display": {
         "birthDate": "1844",
+        "birthPlace": "Windsor Castle, Berkshire, England",
         "deathDate": "1900",
+        "deathPlace": "Schloss Rosenau, Near Coburg",
         "gender": "Male",
         "lifespan": "1844 - 1900",
+        "marriageDate": "23 Jan 1874",
+        "marriagePlace": "Winter Palace, St. Petersburg, Russia",
         "name": "Alfred Ernest Albert"
       },
       "facts": [
@@ -765,9 +789,13 @@
     {
       "display": {
         "birthDate": "1846",
+        "birthPlace": "Buckingham, Palace, London, England",
         "deathDate": "1923",
+        "deathPlace": "Schomberg House, Pall Mall, London, England",
         "gender": "Female",
         "lifespan": "1846 - 1923",
+        "marriageDate": "5 Jul 1866",
+        "marriagePlace": "Windsor Castle, , , England",
         "name": "Helena Augusta Victoria"
       },
       "facts": [
@@ -874,9 +902,13 @@
     {
       "display": {
         "birthDate": "1848",
+        "birthPlace": "Buckingham, Palace, London, England",
         "deathDate": "1939",
+        "deathPlace": "Kensington, Palace, London, England",
         "gender": "Female",
         "lifespan": "1848 - 1939",
+        "marriageDate": "21 Mar 1871",
+        "marriagePlace": "St. George Chap., Windsor, , England",
         "name": "Louise Caroline Alberta"
       },
       "facts": [
@@ -997,9 +1029,13 @@
     {
       "display": {
         "birthDate": "1850",
+        "birthPlace": "Buckingham, Palace, London, England",
         "deathDate": "1942",
+        "deathPlace": "Bagshot Park, Surrey",
         "gender": "Male",
         "lifespan": "1850 - 1942",
+        "marriageDate": "13 Mar 1879",
+        "marriagePlace": "St. George Chap., Windsor, , England",
         "name": "Arthur William Patrick"
       },
       "facts": [
@@ -1106,9 +1142,13 @@
     {
       "display": {
         "birthDate": "1853",
+        "birthPlace": "Buckingham, Palace, London, England",
         "deathDate": "1884",
+        "deathPlace": "Cannes",
         "gender": "Male",
         "lifespan": "1853 - 1884",
+        "marriageDate": "27 Apr 1882",
+        "marriagePlace": "St. George Chap., Windsor, , England",
         "name": "Leopold George Duncan"
       },
       "facts": [
@@ -1215,9 +1255,13 @@
     {
       "display": {
         "birthDate": "1857",
+        "birthPlace": "Buckingham, Palace, London, England",
         "deathDate": "1944",
+        "deathPlace": "Bantridge Park, Balcombe, Sussex, England",
         "gender": "Female",
         "lifespan": "1857 - 1944",
+        "marriageDate": "23 Jul 1885",
+        "marriagePlace": "Whippingham, Isle of Wight",
         "name": "Beatrice Mary Victoria"
       },
       "facts": [
@@ -1324,9 +1368,13 @@
     {
       "display": {
         "birthDate": "1844",
+        "birthPlace": "Yellow Palace, Copenhagen, Denmark",
         "deathDate": "1925",
+        "deathPlace": "Sandringham, , Norfolk, England",
         "gender": "Female",
         "lifespan": "1844 - 1925",
+        "marriageDate": "10 Mar 1863",
+        "marriagePlace": "St. George Chap., Windsor, , England",
         "name": "Alexandra of_Denmark \"Alix\""
       },
       "facts": [
@@ -1447,7 +1495,9 @@
     {
       "display": {
         "birthDate": "1864",
+        "birthPlace": "Frogmore House, Windsor, Berkshire, England",
         "deathDate": "1892",
+        "deathPlace": "Sandringham, , Norfolk, England",
         "gender": "Male",
         "lifespan": "1864 - 1892",
         "name": "Albert Victor Christian"
@@ -1574,9 +1624,13 @@
     {
       "display": {
         "birthDate": "1865",
+        "birthPlace": "Marlborough Hse, London, England",
         "deathDate": "1936",
+        "deathPlace": "Sandringham, Norfolk, England",
         "gender": "Male",
         "lifespan": "1865 - 1936",
+        "marriageDate": "6 Jul 1893",
+        "marriagePlace": "Chapel Royal, St. James Palace",
         "name": "George_V Windsor"
       },
       "facts": [
@@ -1719,9 +1773,13 @@
     {
       "display": {
         "birthDate": "1867",
+        "birthPlace": "Marlborough, House, London, England",
         "deathDate": "1931",
+        "deathPlace": "Portman Square, London, England",
         "gender": "Female",
         "lifespan": "1867 - 1931",
+        "marriageDate": "27 Jul 1889",
+        "marriagePlace": "Buckingham, Palace, London, England",
         "name": "Louise Victoria Alexandra"
       },
       "facts": [
@@ -1828,7 +1886,9 @@
     {
       "display": {
         "birthDate": "1868",
+        "birthPlace": "Marlborough, House, London, England",
         "deathDate": "1935",
+        "deathPlace": "Coppins, Iver, Bucks, England",
         "gender": "Female",
         "lifespan": "1868 - 1935",
         "name": "Victoria Alexandra Olga"
@@ -1926,9 +1986,13 @@
     {
       "display": {
         "birthDate": "1869",
+        "birthPlace": "Marlborough, House, London, England",
         "deathDate": "1938",
+        "deathPlace": "London, England",
         "gender": "Female",
         "lifespan": "1869 - 1938",
+        "marriageDate": "22 Jul 1896",
+        "marriagePlace": "Buckingham, Palace, London, England",
         "name": "Maude Charlotte Mary"
       },
       "facts": [
@@ -2226,9 +2290,13 @@
     {
       "display": {
         "birthDate": "1831",
+        "birthPlace": "Neues Palais, Potsdam, Germany",
         "deathDate": "1888",
+        "deathPlace": "Neues Palais, Potsdam, Germany",
         "gender": "Male",
         "lifespan": "1831 - 1888",
+        "marriageDate": "25 Jan 1858",
+        "marriagePlace": "London, England",
         "name": "Frederick_III"
       },
       "facts": [
@@ -2349,9 +2417,13 @@
     {
       "display": {
         "birthDate": "1859",
+        "birthPlace": "Berlin, Germany",
         "deathDate": "1941",
+        "deathPlace": "Haus Doorn, Netherlands",
         "gender": "Male",
         "lifespan": "1859 - 1941",
+        "marriageDate": "5 Nov 1922",
+        "marriagePlace": "Haus Doorn, Netherlands",
         "name": "William_II"
       },
       "facts": [
@@ -2461,6 +2533,8 @@
         "deathDate": "1892",
         "gender": "Male",
         "lifespan": "1837 - 1892",
+        "marriageDate": "1 Jul 1862",
+        "marriagePlace": "Osborne House, Isle of Wight",
         "name": "Louis_IV of_Hesse"
       },
       "facts": [
@@ -2559,9 +2633,13 @@
     {
       "display": {
         "birthDate": "1861",
+        "birthPlace": "Arolsen",
         "deathDate": "1922",
+        "deathPlace": "Tyrol",
         "gender": "Female",
         "lifespan": "1861 - 1922",
+        "marriageDate": "27 Apr 1882",
+        "marriagePlace": "St. George Chap., Windsor, , England",
         "name": "Helena Frederica of_Waldeck"
       },
       "facts": [
@@ -2772,6 +2850,8 @@
         "deathDate": "1896",
         "gender": "Male",
         "lifespan": "1858 - 1896",
+        "marriageDate": "23 Jul 1885",
+        "marriagePlace": "Whippingham, Isle of Wight",
         "name": "Henry Maurice of_Battenberg"
       },
       "facts": [
@@ -2986,8 +3066,11 @@
       "display": {
         "birthDate": "1887",
         "deathDate": "1969",
+        "deathPlace": "Lausanne",
         "gender": "Female",
         "lifespan": "1887 - 1969",
+        "marriageDate": "1906",
+        "marriagePlace": "Church of, San Jeronimo, Madrid, Spain",
         "name": "Victoria Eugenie \"Ena\""
       },
       "facts": [
@@ -3281,9 +3364,13 @@
     {
       "display": {
         "birthDate": "1867",
+        "birthPlace": "Kensington, Palace, London, England",
         "deathDate": "1953",
+        "deathPlace": "Marlborough Hse, London, England",
         "gender": "Female",
         "lifespan": "1867 - 1953",
+        "marriageDate": "6 Jul 1893",
+        "marriagePlace": "Chapel Royal, St. James Palace",
         "name": "Mary_of_Teck (May)"
       },
       "facts": [
@@ -3408,9 +3495,13 @@
     {
       "display": {
         "birthDate": "1894",
+        "birthPlace": "White Lodge, Richmond Park, Surrey, England",
         "deathDate": "1972",
+        "deathPlace": "Paris, , , France",
         "gender": "Male",
         "lifespan": "1894 - 1972",
+        "marriageDate": "3 Jun 1937",
+        "marriagePlace": "Chateau de Cande, Monts, , France",
         "name": "Edward_VIII Windsor"
       },
       "facts": [
@@ -3535,9 +3626,12 @@
     {
       "display": {
         "birthDate": "1895",
+        "birthPlace": "York Cottage, Sandringham, Norfolk, England",
         "deathDate": "1952",
+        "deathPlace": "Sandringham, Norfolk, England",
         "gender": "Male",
         "lifespan": "1895 - 1952",
+        "marriageDate": "26 Apr 1923",
         "name": "George_VI Windsor"
       },
       "facts": [
@@ -3666,9 +3760,13 @@
     {
       "display": {
         "birthDate": "1897",
+        "birthPlace": "York Cottage, Sandringham, Norfolk, England",
         "deathDate": "1965",
+        "deathPlace": "Harewood House, Yorkshire, , England",
         "gender": "Female",
         "lifespan": "1897 - 1965",
+        "marriageDate": "28 Feb 1922",
+        "marriagePlace": "Westminster, Abbey, London, England",
         "name": "Mary Windsor"
       },
       "facts": [
@@ -3779,9 +3877,12 @@
     {
       "display": {
         "birthDate": "1900",
+        "birthPlace": "York Cottage, Sandringham, Norfolk, England",
         "deathDate": "1974",
         "gender": "Male",
         "lifespan": "1900 - 1974",
+        "marriageDate": "6 Nov 1935",
+        "marriagePlace": "Buckingham, Palace, London, England",
         "name": "Henry William Frederick Windsor"
       },
       "facts": [
@@ -3888,9 +3989,13 @@
     {
       "display": {
         "birthDate": "1902",
+        "birthPlace": "York Cottage, Sandringham, Norfolk, England",
         "deathDate": "1942",
+        "deathPlace": "Morven, , , Scotland",
         "gender": "Male",
         "lifespan": "1902 - 1942",
+        "marriageDate": "29 Nov 1934",
+        "marriagePlace": "Westminster, Abbey, London, England",
         "name": "George Edward Alexander Windsor"
       },
       "facts": [
@@ -4001,7 +4106,9 @@
     {
       "display": {
         "birthDate": "1905",
+        "birthPlace": "York Cottage, Sandringham, Norfolk, England",
         "deathDate": "1919",
+        "deathPlace": "Wood Farm, Wolferton, Norfolk, England",
         "gender": "Male",
         "lifespan": "1905 - 1919",
         "name": "John Charles Francis Windsor"
@@ -4128,9 +4235,13 @@
     {
       "display": {
         "birthDate": "1868",
+        "birthPlace": "Tsarskoye Selo, Pushkin, , Russia",
         "deathDate": "1918",
+        "deathPlace": "Ekaterinburg, , , Russia",
         "gender": "Male",
         "lifespan": "1868 - 1918",
+        "marriageDate": "26 Nov 1894",
+        "marriagePlace": "Winter Palace, , St. Petersburg, Russia",
         "name": "Nicholas_II Alexandrovich Romanov"
       },
       "facts": [
@@ -4244,6 +4355,7 @@
         "deathDate": "1950",
         "gender": "Female",
         "lifespan": "1863 - 1950",
+        "marriageDate": "1884",
         "name": "Victoria Alberta of_Hesse"
       },
       "facts": [
@@ -4342,9 +4454,13 @@
     {
       "display": {
         "birthDate": "1872",
+        "birthPlace": "Darmstadt, , , Germany",
         "deathDate": "1918",
+        "deathPlace": "Ekaterinburg, , , Russia",
         "gender": "Female",
         "lifespan": "1872 - 1918",
+        "marriageDate": "26 Nov 1894",
+        "marriagePlace": "Winter Palace, , St. Petersburg, Russia",
         "name": "Alexandra Fedorovna \"Alix\""
       },
       "facts": [
@@ -4452,8 +4568,10 @@
       "display": {
         "birthDate": "1845",
         "deathDate": "1894",
+        "deathPlace": "Livadia, Crimea, Near Yalta, Russia",
         "gender": "Male",
         "lifespan": "1845 - 1894",
+        "marriageDate": "1866",
         "name": "Alexander_III Alexandrovich Romanov"
       },
       "facts": [
@@ -4579,8 +4697,10 @@
       "display": {
         "birthDate": "1847",
         "deathDate": "1928",
+        "deathPlace": "Copenhagen, , , Denmark",
         "gender": "Female",
         "lifespan": "1847 - 1928",
+        "marriageDate": "1866",
         "name": "Dagmar \"Marie\" of_Denmark"
       },
       "facts": [
@@ -4686,6 +4806,7 @@
         "deathDate": "1855",
         "gender": "Male",
         "lifespan": "1796 - 1855",
+        "marriageDate": "1817",
         "name": "Nicholas_I Romanov"
       },
       "facts": [
@@ -4791,6 +4912,7 @@
         "deathDate": "1860",
         "gender": "Female",
         "lifespan": "1798 - 1860",
+        "marriageDate": "1817",
         "name": "Charlotte of_Prussia"
       },
       "facts": [
@@ -4892,6 +5014,7 @@
         "deathDate": "1881",
         "gender": "Male",
         "lifespan": "1818 - 1881",
+        "marriageDate": "1840",
         "name": "Alexander_II Nicholoevich Romanov"
       },
       "facts": [
@@ -4997,6 +5120,7 @@
         "deathDate": "1880",
         "gender": "Female",
         "lifespan": "1824 - 1880",
+        "marriageDate": "1840",
         "name": "Marie of_Hesse- Darmstadt"
       },
       "facts": [
@@ -5084,7 +5208,9 @@
     {
       "display": {
         "birthDate": "1895",
+        "birthPlace": "Alexander Palace, Tsarskoe Selo, , Russia",
         "deathDate": "1918",
+        "deathPlace": "Ekaterinburg, , , Russia",
         "gender": "Female",
         "lifespan": "1895 - 1918",
         "name": "Olga Nicholovna Romanov"
@@ -5198,6 +5324,7 @@
       "display": {
         "birthDate": "1897",
         "deathDate": "1918",
+        "deathPlace": "Ekaterinburg, , , Russia",
         "gender": "Female",
         "lifespan": "1897 - 1918",
         "name": "Tatiana Nicholovna"
@@ -5303,6 +5430,7 @@
       "display": {
         "birthDate": "1899",
         "deathDate": "1918",
+        "deathPlace": "Ekaterinburg, , , Russia",
         "gender": "Female",
         "lifespan": "1899 - 1918",
         "name": "Maria Nicholovna Romanov"
@@ -5412,6 +5540,7 @@
       "display": {
         "birthDate": "1901",
         "deathDate": "1918",
+        "deathPlace": "Ekaterinburg, , , Russia",
         "gender": "Female",
         "lifespan": "1901 - 1918",
         "name": "Anastasia Nicholovna Romanov"
@@ -5520,7 +5649,9 @@
     {
       "display": {
         "birthDate": "1904",
+        "birthPlace": "Peterhof, Near, St. Petersburg, Russia",
         "deathDate": "1918",
+        "deathPlace": "Ekaterinburg, , , Russia",
         "gender": "Male",
         "lifespan": "1904 - 1918",
         "name": "Alexis Nicolaievich Romanov"

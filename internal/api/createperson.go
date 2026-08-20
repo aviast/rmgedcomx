@@ -189,7 +189,7 @@ func (s *Server) buildNewPerson(p gedcomx.Person) (rmdb.NewPerson, error) {
 
 	facts := make([]rmdb.NewPersonFact, 0, len(p.Facts))
 	for i, f := range p.Facts {
-		nf, err := s.buildNewPersonFact(f)
+		nf, err := s.buildNewFact(f, rmdb.OwnerTypePerson)
 		if err != nil {
 			return rmdb.NewPerson{}, fmt.Errorf("facts[%d]: %w", i, err)
 		}
@@ -307,12 +307,14 @@ func (s *Server) buildNewPersonName(n gedcomx.Name) (rmdb.NewPersonName, error) 
 	return nn, nil
 }
 
-// buildNewPersonFact resolves a Fact's Type URI to a RootsMagic
-// FactTypeID (built-in fact types only -- see
-// gedcomx.GedcomTagForFactType's own comment for why a custom fact-type
-// URI is rejected rather than guessed at), and its Date to RootsMagic's
-// encoded Date string and sort components via gedcomx.EncodeRMDate.
-func (s *Server) buildNewPersonFact(f gedcomx.Fact) (rmdb.NewPersonFact, error) {
+// buildNewFact converts a GEDCOM X Fact into the rmdb-layer
+// representation used for both Person-owned facts (via CreatePerson)
+// and Family-owned facts (via CreateCoupleRelationship) -- wantOwnerType
+// (rmdb.OwnerTypePerson or rmdb.OwnerTypeFamily) is checked against this
+// database's own FactTypeTable to reject a fact type that exists but
+// isn't valid at this level (e.g. Marriage, which is Family-owned, used
+// where a Person-owned fact was expected, or vice versa).
+func (s *Server) buildNewFact(f gedcomx.Fact, wantOwnerType int) (rmdb.NewPersonFact, error) {
 	tag, ok := gedcomx.GedcomTagForFactType(f.Type)
 	if !ok {
 		return rmdb.NewPersonFact{}, fmt.Errorf("unrecognized or unsupported fact type %q -- only built-in GEDCOM X fact types with a confirmed RootsMagic mapping can be created", f.Type)
@@ -321,8 +323,12 @@ func (s *Server) buildNewPersonFact(f gedcomx.Fact) (rmdb.NewPersonFact, error) 
 	if !ok {
 		return rmdb.NewPersonFact{}, fmt.Errorf("fact type %q (GEDCOM tag %s) has no matching entry in this database's own FactTypeTable", f.Type, tag)
 	}
-	if ownerType != rmdb.OwnerTypePerson {
-		return rmdb.NewPersonFact{}, fmt.Errorf("fact type %q is not a Person-level fact in this database", f.Type)
+	if ownerType != wantOwnerType {
+		levelName := "a Person-level"
+		if wantOwnerType == rmdb.OwnerTypeFamily {
+			levelName = "a Family-level (relationship)"
+		}
+		return rmdb.NewPersonFact{}, fmt.Errorf("fact type %q is not %s fact in this database", f.Type, levelName)
 	}
 
 	// Details = f.Value directly -- GEDCOM X's Fact.value ("the value of

@@ -69,7 +69,7 @@ var gedcom5DateRe = regexp.MustCompile(`^(?:(ABT|CAL|EST|BEF|AFT)\s+)?(?:(\d{1,2
 // matching a known pattern is a normal outcome here, not a client
 // mistake to report back. Callers should fall back to no date (rather
 // than reject the whole request) when this returns false -- see
-// buildNewPersonFact's own comment for why, and for the log line that
+// buildNewFact's own comment for why, and for the log line that
 // keeps this fallback from being entirely silent.
 func ParseGedcom5Date(original string) (rmDateString string, year, month, day int, ok bool) {
 	s := strings.ToUpper(strings.TrimSpace(original))

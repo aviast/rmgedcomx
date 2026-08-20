@@ -285,7 +285,7 @@ func TestCreatePersonNameWithNickname(t *testing.T) {
 // or Religion, with no date or place of its own) was never reaching
 // EventTable.Details at all, even though the read side
 // (internal/api/convert.go's buildFact) already reversed this exact
-// mapping the other way. The API layer (buildNewPersonFact,
+// mapping the other way. The API layer (buildNewFact,
 // internal/api/createperson.go) is what actually decides when to
 // populate this field, from a real request; this only confirms
 // CreatePerson correctly writes whatever it's given.
@@ -316,7 +316,7 @@ func TestCreatePersonFactWithDetails(t *testing.T) {
 // TestCreatePersonFactWithNote confirms NewPersonFact.Note is actually
 // persisted to EventTable.Note -- the storage-layer half of the
 // Date.original-unparseable-preserves-the-text feature (the API layer,
-// internal/api/createperson.go's buildNewPersonFact, is what actually
+// internal/api/createperson.go's buildNewFact, is what actually
 // decides when to populate this field and with what text; this only
 // confirms CreatePerson correctly writes whatever it's given).
 func TestCreatePersonFactWithNote(t *testing.T) {

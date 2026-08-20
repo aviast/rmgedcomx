@@ -59,6 +59,11 @@ func (s *Server) buildPerson(rp rmdb.Person) (gedcomx.Person, error) {
 		return gedcomx.Person{}, err
 	}
 
+	display, err := s.buildDisplayProperties(rp.PersonID, rmNames, facts, rp.Sex)
+	if err != nil {
+		return gedcomx.Person{}, err
+	}
+
 	p := gedcomx.Person{
 		ID:      id,
 		Living:  gedcomx.BoolPtr(rp.Living == 1),
@@ -67,7 +72,7 @@ func (s *Server) buildPerson(rp rmdb.Person) (gedcomx.Person, error) {
 		Facts:   facts,
 		Sources: sources,
 		Media:   media,
-		Display: s.buildDisplayProperties(rmNames, rp.Sex),
+		Display: display,
 		Links:   gedcomx.Links{},
 	}
 	p.Links["person"] = gedcomx.Link{Href: s.url("/persons/" + id)}
@@ -250,7 +255,45 @@ func (s *Server) buildSourcesAndMedia(ownerType int, ownerID int64) (sources []g
 	return sources, media, nil
 }
 
-func (s *Server) buildDisplayProperties(names []rmdb.Name, sex int) *gedcomx.DisplayProperties {
+// buildDisplayProperties assembles the RS "DisplayProperties" extension
+// (Section 2.2) -- checked directly against the spec's own properties
+// table before implementing any of this, not assumed: name, gender,
+// lifespan, birthDate, birthPlace, deathDate, deathPlace, marriageDate,
+// marriagePlace, ascendancyNumber, descendancyNumber, familiesAsParent,
+// familiesAsChild.
+//
+// A real, reported gap: marriageDate/marriagePlace weren't implemented
+// at all -- the struct itself had no fields for them until this change.
+// While fixing that, birthPlace/deathPlace turned out to have the exact
+// same problem one level less visible: the struct fields already
+// existed, but this function never actually populated them, silently
+// leaving both permanently empty since whoever added the fields never
+// wired them up. Fixed together, since both are the same shape of gap
+// against the same spec table -- flagged clearly rather than assumed to
+// be in scope: familiesAsParent/familiesAsChild are a real, separate gap
+// too (also unpopulated), but are a meaningfully larger feature (each
+// FamilyView needs its own parent1/parent2/children construction across
+// every family a person is in, both as parent and as child) and weren't
+// part of the reported request -- left for its own turn rather than
+// folded in here.
+//
+// birthPlace/deathPlace come from this same person's own Birth/Death
+// facts (already-built facts, reused directly rather than re-fetched --
+// buildPerson computes these before calling this function). There's
+// only ever one Birth and one Death fact per real person in practice,
+// so no "which one" ambiguity the way marriage has.
+//
+// marriageDate/marriagePlace require a real design decision the spec
+// itself doesn't make: a person can have more than one marriage, and
+// DisplayProperties has room for exactly one of each. Resolved the same
+// way this project has resolved other "which one, when there are
+// several" questions with no other guidance -- take the first,
+// consistently ordered (FamiliesAsParent's own query, ORDER BY
+// FamilyID -- matching the existing convention used for a person's
+// primary name and other "the first one" choices), and skip to the next
+// family only if the first has no Marriage fact at all rather than
+// picking a family known not to have one.
+func (s *Server) buildDisplayProperties(personID int64, names []rmdb.Name, facts []gedcomx.Fact, sex int) (*gedcomx.DisplayProperties, error) {
 	disp := &gedcomx.DisplayProperties{}
 	switch sex {
 	case 0:
@@ -276,7 +319,52 @@ func (s *Server) buildDisplayProperties(names []rmdb.Name, sex int) *gedcomx.Dis
 			disp.DeathDate = d
 		}
 	}
-	return disp
+
+	for _, f := range facts {
+		if f.Place == nil || f.Place.Original == "" {
+			continue
+		}
+		switch f.Type {
+		case "http://gedcomx.org/Birth":
+			disp.BirthPlace = f.Place.Original
+		case "http://gedcomx.org/Death":
+			disp.DeathPlace = f.Place.Original
+		}
+	}
+
+	families, err := s.db.FamiliesAsParent(personID)
+	if err != nil {
+		return nil, err
+	}
+	for _, fam := range families {
+		events, err := s.db.GetEvents(rmdb.OwnerTypeFamily, fam.FamilyID)
+		if err != nil {
+			return nil, err
+		}
+		var marriageFact *gedcomx.Fact
+		for _, e := range events {
+			f, err := s.buildFact(e)
+			if err != nil {
+				return nil, err
+			}
+			if f.Type == "http://gedcomx.org/Marriage" {
+				marriageFact = &f
+				break
+			}
+		}
+		if marriageFact == nil {
+			continue
+		}
+		if marriageFact.Date != nil {
+			disp.MarriageDate = marriageFact.Date.Original
+		}
+		if marriageFact.Place != nil {
+			disp.MarriagePlace = marriageFact.Place.Original
+		}
+		break
+	}
+
+	return disp, nil
 }
 
 // --- Collection ---
