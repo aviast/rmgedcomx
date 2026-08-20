@@ -71,6 +71,9 @@ func (s *Server) buildPerson(rp rmdb.Person) (gedcomx.Person, error) {
 		Links:   gedcomx.Links{},
 	}
 	p.Links["person"] = gedcomx.Link{Href: s.url("/persons/" + id)}
+	// RS spec Section 4.10.4, "Transitions": collection | Collection
+	// State | Link to the collection that contains this person.
+	p.Links["collection"] = gedcomx.Link{Href: s.collectionBaseURL}
 	p.Links["parents"] = gedcomx.Link{Href: s.url("/persons/" + id + "/parents")}
 	p.Links["children"] = gedcomx.Link{Href: s.url("/persons/" + id + "/children")}
 	p.Links["spouses"] = gedcomx.Link{Href: s.url("/persons/" + id + "/spouses")}
@@ -359,7 +362,12 @@ func (s *Server) buildCoupleRelationship(f rmdb.Family) (gedcomx.Relationship, e
 		Facts:   facts,
 		Sources: sources,
 		Media:   media,
-		Links:   gedcomx.Links{"relationship": {Href: s.url("/relationships/" + id)}},
+		// RS spec Section 4.21.4, "Transitions": collection | Collection
+		// State | Link to the collection that contains this relationship.
+		Links: gedcomx.Links{
+			"relationship": {Href: s.url("/relationships/" + id)},
+			"collection":   {Href: s.collectionBaseURL},
+		},
 	}
 	return rel, nil
 }
@@ -371,7 +379,10 @@ func (s *Server) buildParentChildRelationship(familyID, parentID, childID int64,
 		Type:    gedcomx.RelationshipTypeParentChild,
 		Person1: gedcomx.ResourceReference{Resource: s.url("/persons/" + personRef(parentID)), ResourceID: personRef(parentID)},
 		Person2: gedcomx.ResourceReference{Resource: s.url("/persons/" + personRef(childID)), ResourceID: personRef(childID)},
-		Links:   gedcomx.Links{"relationship": {Href: s.url("/relationships/" + id)}},
+		Links: gedcomx.Links{
+			"relationship": {Href: s.url("/relationships/" + id)},
+			"collection":   {Href: s.collectionBaseURL},
+		},
 	}
 }
 

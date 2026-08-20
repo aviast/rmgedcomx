@@ -581,7 +581,7 @@ after the refactor, before adding anything new, to confirm this was a
 genuine extraction and not an accidental behavior change.
 
 Verified directly against real data, not just reasoned about: `GET
-.../persons/P1` (Victoria) now embeds exactly 11 relationships -- her
+.../persons/P1` (Victoria) now embeds exactly 12 relationships -- her
 two parents, all nine of her real children with Albert, and her own
 Couple relationship to Albert (complete with its `Marriage` fact,
 sources, and all) -- confirmed against the live response, not assumed
@@ -593,6 +593,45 @@ with genuinely zero relationships gets `"relationships":[]`, not
 `null` or an absent field -- the specific failure mode the spec's
 `MUST` requirement is there to prevent, and the reason the new field
 was deliberately not marked `omitempty`.
+
+## `collection` link on the `Person` and `Relationship` states
+
+Also prompted by direct review: the RS spec's own "Transitions" tables
+for both states list a `collection` transition -- Section 4.10.4 for
+`Person` ("Link to the collection that contains this person"), Section
+4.21.4 for `Relationship` ("Link to the collection that contains this
+relationship"). Neither state produced one; `Person` had links to
+`parents`/`children`/`spouses`/`ancestry`/`descendancy`/itself, and
+`Relationship` had only a self-link, `relationship`.
+
+Fixed directly using the existing `s.collectionBaseURL` field
+(`internal/api/server.go`) -- already exactly `cfg.BaseURL +
+"/collections/" + cfg.ID`, i.e. the collection's own URL, computed once
+at server startup and already used (via the `s.url` helper, which
+appends a path to it) for every other link this server builds. The new
+`collection` link uses `s.collectionBaseURL` directly, with no path
+appended, since the collection state's own URL is exactly that value. In
+`internal/api/convert.go`: `buildPerson` gains it alongside `person`;
+`buildCoupleRelationship` and `buildParentChildRelationship` both gain
+it alongside `relationship`. `RelationshipDocument.Links` already
+mirrors a relationship's own `Links` field directly (`Links: rel.Links`
+in `handleRelationship`), so no separate change was needed there for it
+to propagate to the top level.
+
+Verified as a genuine round trip, not just a string match: fetched
+`.../persons/P1`'s and `.../relationships/F1`'s own `collection` link
+`href` values directly and confirmed each one resolves to this same
+collection's real `Collection` resource (`"id":"victoria-hanover-royal92"`
+in the response), not merely present with a plausible-looking value.
+Six existing golden files needed regenerating as a result
+(`get_persons_expected.json`, `get_person_expected.json`,
+`get_person_ancestry_expected.json`, `get_person_descendancy_expected.json`,
+`get_relationships_expected.json`, `get_relationship_expected.json`) --
+each diffed programmatically against its own prior version afterward
+(comparing the full set of JSON key names present, not just running the
+test suite) to confirm `collection`/`href` were the *only* keys added
+and nothing was accidentally removed, before trusting the regeneration
+and replacing the files.
 
 ## Write support
 

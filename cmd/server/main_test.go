@@ -330,6 +330,52 @@ func TestReadOperations(t *testing.T) {
 	}
 }
 
+// TestPersonAndRelationshipHaveCollectionLink confirms both the Person
+// state (RS spec Section 4.10.4, "Transitions") and the Relationship
+// state (Section 4.21.4, "Transitions") carry a "collection" link back
+// to the Collection state that contains them -- a real gap, prompted by
+// direct review, not found independently: this server previously
+// produced neither, only links to sub-resources under each (.../parents,
+// .../children, .../spouses for Person; nothing at all for
+// Relationship). Verified as a genuine round trip, not just a string
+// match: the href is actually fetched and confirmed to return this same
+// collection's own resource, not merely present with a plausible-looking
+// value.
+func TestPersonAndRelationshipHaveCollectionLink(t *testing.T) {
+	router, cleanup := SetupRouter([]string{"../../royal92.rmtree"}, "http://localhost:8080", "testdata/media", false, 4, 200)
+	defer cleanup()
+	testServer := httptest.NewServer(router)
+	defer testServer.Close()
+
+	const wantCollectionURL = "http://localhost:8080/collections/victoria-hanover-royal92"
+
+	fetchAndCheck := func(t *testing.T, path string) {
+		t.Helper()
+		resp, err := http.Get(testServer.URL + path)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+		require.Contains(t, string(body), `"collection":{"href":"`+wantCollectionURL+`"}`)
+
+		collResp, err := http.Get(strings.Replace(wantCollectionURL, "http://localhost:8080", testServer.URL, 1))
+		require.NoError(t, err)
+		defer collResp.Body.Close()
+		collBody, err := io.ReadAll(collResp.Body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, collResp.StatusCode, "the collection link's own href should resolve: %s", collBody)
+		require.Contains(t, string(collBody), `"id":"victoria-hanover-royal92"`)
+	}
+
+	t.Run("Person", func(t *testing.T) {
+		fetchAndCheck(t, "/collections/victoria-hanover-royal92/persons/P1")
+	})
+	t.Run("Relationship", func(t *testing.T) {
+		fetchAndCheck(t, "/collections/victoria-hanover-royal92/relationships/F1")
+	})
+}
+
 // Pre-compile regex to replace dynamic timestamps in sqldiff output
 var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
 var familySearchIDRegex = regexp.MustCompile(`,\s*fsID=-?[0-9]+`)

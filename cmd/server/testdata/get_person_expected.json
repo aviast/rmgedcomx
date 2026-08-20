@@ -6,6 +6,9 @@
     "children": {
       "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/children"
     },
+    "collection": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+    },
     "descendancy": {
       "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/descendancy"
     },
@@ -113,6 +116,9 @@
         "children": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/children"
         },
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "descendancy": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/descendancy"
         },
@@ -160,6 +166,9 @@
     {
       "id": "F42-FC1",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F42-FC1"
         }
@@ -177,6 +186,9 @@
     {
       "id": "F42-MC1",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F42-MC1"
         }
@@ -194,6 +206,9 @@
     {
       "id": "F1-MC3",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC3"
         }
@@ -211,6 +226,9 @@
     {
       "id": "F1-MC4",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC4"
         }
@@ -228,6 +246,9 @@
     {
       "id": "F1-MC5",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC5"
         }
@@ -245,6 +266,9 @@
     {
       "id": "F1-MC6",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC6"
         }
@@ -262,6 +286,9 @@
     {
       "id": "F1-MC7",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC7"
         }
@@ -279,6 +306,9 @@
     {
       "id": "F1-MC8",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC8"
         }
@@ -296,6 +326,9 @@
     {
       "id": "F1-MC9",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC9"
         }
@@ -313,6 +346,9 @@
     {
       "id": "F1-MC10",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC10"
         }
@@ -330,6 +366,9 @@
     {
       "id": "F1-MC11",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC11"
         }
@@ -371,6 +410,9 @@
       ],
       "id": "F1",
       "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
         "relationship": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1"
         }
