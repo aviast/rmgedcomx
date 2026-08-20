@@ -279,6 +279,40 @@ func TestCreatePersonNameWithNickname(t *testing.T) {
 	}
 }
 
+// TestCreatePersonFactWithDetails confirms NewPersonFact.Details is
+// persisted to EventTable.Details -- the storage-layer half of a real
+// reported gap: GEDCOM X's Fact.value (a value-only fact like Occupation
+// or Religion, with no date or place of its own) was never reaching
+// EventTable.Details at all, even though the read side
+// (internal/api/convert.go's buildFact) already reversed this exact
+// mapping the other way. The API layer (buildNewPersonFact,
+// internal/api/createperson.go) is what actually decides when to
+// populate this field, from a real request; this only confirms
+// CreatePerson correctly writes whatever it's given.
+func TestCreatePersonFactWithDetails(t *testing.T) {
+	db := setupCreatePersonTestDB(t)
+
+	const details = "Bank President, Ambassador"
+	personID, err := db.CreatePerson(NewPerson{
+		Sex:   0,
+		Names: []NewPersonName{{Surname: "Kennedy", Given: "Joseph", IsPrimary: true}},
+		Facts: []NewPersonFact{
+			{FactTypeID: 26, DateString: ".", Details: details}, // Occupation
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreatePerson: %v", err)
+	}
+
+	var got string
+	if err := db.sql.QueryRow("SELECT Details FROM EventTable WHERE OwnerID = ?", personID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != details {
+		t.Errorf("EventTable.Details = %q, want %q", got, details)
+	}
+}
+
 // TestCreatePersonFactWithNote confirms NewPersonFact.Note is actually
 // persisted to EventTable.Note -- the storage-layer half of the
 // Date.original-unparseable-preserves-the-text feature (the API layer,

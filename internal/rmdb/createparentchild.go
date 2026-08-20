@@ -112,21 +112,28 @@ type NewParentChildRelationship struct {
 // Mother at all and is rejected -- this server has no basis to guess
 // which role was meant.
 //
-// Deliberately does not touch PersonTable.SpouseID at all. Checked
-// directly against the RM4-11 data dictionary's own description before
-// concluding this: SpouseID holds the FamilyID of whichever family was
-// last VIEWED for this person in RootsMagic's own UI (0 if none ever
-// was) -- a UI navigation state, not a genealogical fact, and not
-// something a record created via this API (which was never viewed in
-// that UI at all) has a principled value for. An earlier version of
-// this function did set it, and in doing so exposed a real, separate
-// bug: when a temporary single-parent family gets merged away (see case
-// 2 above) and deleted, nothing updated the *other* parent's own
-// SpouseID if it had been pointing at that now-deleted family -- a
-// concrete, reported symptom of exactly this (a person left with
-// SpouseID referencing a FamilyID that no longer existed) is what
-// prompted reconsidering the field at all, not a hypothetical. Removing
-// the field entirely removes the bug along with it, rather than adding
+// Deliberately does not touch PersonTable.SpouseID or
+// PersonTable.ParentID at all. Checked directly against the RM4-11 data
+// dictionary's own description before concluding this for both:
+// SpouseID and ParentID each hold the FamilyID of whichever family was
+// last VIEWED for this person in RootsMagic's own UI (as a spouse, or
+// as a child, respectively -- 0 if none ever was) -- a UI navigation
+// state, not a genealogical fact, and not something a record created
+// via this API (which was never viewed in that UI at all) has a
+// principled value for. Confirmed empirically too, not just from the
+// dictionary's own wording: in royal92.rmtree, 1964 of the 2018 people
+// (97%) who genuinely do belong to a family as a child via a real
+// ChildTable row still have ParentID=0 -- the authoritative source of
+// the real relationship is ChildTable, never PersonTable.ParentID.
+// An earlier version of this function set SpouseID (and ParentID, once
+// it existed), and in doing so exposed a real, separate bug: when a
+// temporary single-parent family gets merged away (see case 2 above)
+// and deleted, nothing updated the *other* parent's own SpouseID if it
+// had been pointing at that now-deleted family -- a concrete, reported
+// symptom of exactly this (a person left with SpouseID referencing a
+// FamilyID that no longer existed) is what prompted reconsidering the
+// field at all, not a hypothetical. Removing both fields entirely
+// removes that whole category of bug along with it, rather than adding
 // more bookkeeping to keep a UI-state field correct across merges for a
 // value this server never had any real information for in the first
 // place.
@@ -278,12 +285,6 @@ func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (f
 			); err != nil {
 				return 0, fmt.Errorf("moving child to the pre-existing family: %w", err)
 			}
-			if _, err := tx.Exec(
-				"UPDATE PersonTable SET ParentID = ?, UTCModDate = "+utcModDateExpr+" WHERE PersonID = ?",
-				dupFamilyID, input.ChildID,
-			); err != nil {
-				return 0, fmt.Errorf("updating child's ParentID to the pre-existing family: %w", err)
-			}
 			var remaining int
 			if err := tx.QueryRow("SELECT COUNT(*) FROM ChildTable WHERE FamilyID = ?", fid).Scan(&remaining); err != nil {
 				return 0, fmt.Errorf("checking for remaining children in the now-redundant family: %w", err)
@@ -383,12 +384,6 @@ func (db *DB) CreateParentChildRelationship(input NewParentChildRelationship) (f
 		)
 		if err != nil {
 			return 0, fmt.Errorf("linking child to family: %w", err)
-		}
-		if _, err := tx.Exec(
-			"UPDATE PersonTable SET ParentID = ?, UTCModDate = "+utcModDateExpr+" WHERE PersonID = ?",
-			familyID, input.ChildID,
-		); err != nil {
-			return 0, fmt.Errorf("updating child's ParentID: %w", err)
 		}
 		if err := bumpConfigTableModDate(tx); err != nil {
 			return 0, err

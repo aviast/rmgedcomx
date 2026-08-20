@@ -1673,11 +1673,11 @@ quick addition to this fix -- flagged for its own dedicated pass rather
 than rushed in alongside four narrower, already-verified fixes. (It got
 that dedicated pass -- see "`Date.original` as a fallback" below.)
 
-### Three corrections to bring write behavior in line with RootsMagic, prompted by direct review
+### Four corrections to bring write behavior in line with RootsMagic, prompted by direct review
 
-All three found by directly checking real RootsMagic data rather than
-trusting this project's own earlier claims about it -- two of which
-turned out to be wrong, not just incomplete.
+All found by directly checking real RootsMagic data rather than trusting
+this project's own earlier claims about it -- two of the four turned out
+to be wrong, not just incomplete.
 
 **`BirthYear`/`DeathYear`: duplicated across every name, not just the
 primary.** An earlier version of `CreatePerson`
@@ -1710,41 +1710,52 @@ existing family" code paths; the real six-children capture test's own
 the wrong (1-indexed) values without anyone having actually checked them
 against the real capture's own `ChildOrder` column specifically.
 
-**`PersonTable.SpouseID`: no longer set by this server at all.** Checked
-directly against the RM4-11 data dictionary's own description before
-reconsidering this field, not assumed: it holds the `FamilyID` of
-whichever family was last *viewed* for this person in RootsMagic's own
-UI (`0` if none ever was) -- a UI navigation state, not a genealogical
-fact, and a value that has no principled correct answer for a record
-created through this API, which was never viewed in that UI at all.
+**`PersonTable.SpouseID` and `PersonTable.ParentID`: neither is set by
+this server at all.** Checked directly against the RM4-11 data
+dictionary's own description before reconsidering either field, not
+assumed: each holds the `FamilyID` of whichever family was last *viewed*
+for this person in RootsMagic's own UI -- as a spouse, or as a child,
+respectively (`0` if none ever was) -- a UI navigation state, not a
+genealogical fact, and a value that has no principled correct answer for
+a record created through this API, which was never viewed in that UI at
+all. `ParentID` was found second, in direct follow-up review after
+`SpouseID`, using the identical reasoning and the identical dictionary
+wording (down to the "last displayed in Pedigree, Family, or Descendent
+View" phrasing) -- confirmed empirically too, not just from the
+dictionary's own text: in `royal92.rmtree`, 1964 of the 2018 people
+(97%) who genuinely do belong to a family as a child via a real
+`ChildTable` row still have `ParentID = 0`. The authoritative source of
+the real relationship is `ChildTable`, never either of these two
+`PersonTable` columns.
 
-What actually prompted revisiting this wasn't the definition alone,
-though -- it was a real, concrete symptom: a real Brontë test database
-showed a person's `SpouseID` referencing `FamilyID = 7` when only 4
-families existed. Tracing this down surfaced a genuine, separate bug in
-`CreateParentChildRelationship`'s own merge logic (see "A real design
-mistake, corrected" above): when a temporary single-parent family gets
-merged into a pre-existing one and deleted, nothing updated the *other*
-parent's own `SpouseID` if it had been pointing at that now-deleted
-family -- left dangling, referencing a `FamilyID` that no longer
-existed. Given six children each create-then-merge-away a temporary
-family in a typical multi-child scenario, this reliably produces exactly
-the kind of gap-in-the-sequence value reported.
+What actually prompted revisiting `SpouseID` first wasn't the definition
+alone, though -- it was a real, concrete symptom: a real Brontë test
+database showed a person's `SpouseID` referencing `FamilyID = 7` when
+only 4 families existed. Tracing this down surfaced a genuine, separate
+bug in `CreateParentChildRelationship`'s own merge logic (see "A real
+design mistake, corrected" above): when a temporary single-parent family
+gets merged into a pre-existing one and deleted, nothing updated the
+*other* parent's own `SpouseID` if it had been pointing at that
+now-deleted family -- left dangling, referencing a `FamilyID` that no
+longer existed. Given six children each create-then-merge-away a
+temporary family in a typical multi-child scenario, this reliably
+produces exactly the kind of gap-in-the-sequence value reported.
 
 Rather than add more bookkeeping to keep a UI-state field correct across
 every merge -- for a value this server never had genuine information
-for in the first place -- the field is no longer touched at all, by
-either `CreateCoupleRelationship` or `CreateParentChildRelationship`
-(`CreatePerson`'s own `PersonTable` insert already defaulted it to `0`,
-unchanged). This removes the dangling-reference bug as a direct
-consequence of the design change, not as a separate patch alongside it.
-Both real-capture tests that had asserted a specific `SpouseID` value
-(matching what RootsMagic's own UI produced when the golden files were
-originally captured -- which inherently involved viewing the family,
-unlike an API-created one) were updated to confirm it now stays `0`
-instead.
+for in the first place -- neither field is touched at all, by either
+`CreateCoupleRelationship` or `CreateParentChildRelationship`
+(`CreatePerson`'s own `PersonTable` insert already defaulted both to
+`0`, unchanged). This removes the dangling-reference bug as a direct
+consequence of the design change, not as a separate patch alongside it,
+and removes the equivalent (if never separately reported) bug `ParentID`
+would have had for exactly the same reason. Real-capture tests that had
+asserted a specific value for either field (matching what RootsMagic's
+own UI produced when the golden files were originally captured --
+which inherently involved viewing the family, unlike an API-created
+one) were updated to confirm both now stay `0` instead.
 
-All three fixes verified together, not just individually: reproduced
+All four fixes verified together, not just individually: reproduced
 this exact scenario end to end through the real HTTP API (Patrick and
 Maria's family, all six real Brontë children, each linked via two
 separate `ParentChild` requests) and confirmed directly against the
@@ -1753,6 +1764,40 @@ running `0` through `5` across the six children in order; `BirthYear`/
 `DeathYear` duplicated across both of Patrick's own names; and every
 `PersonTable.SpouseID` in the database at `0`, with no dangling values
 anywhere.
+
+### `Fact.value` was never reaching `EventTable.Details`
+
+A real, reported gap, not found independently: a value-only fact --
+`Occupation`, `Education`, `Religion`, and similar types that carry a
+free-text `value` rather than (or alongside) a date or place -- created
+successfully and produced a real `EventTable` row, but with `Details`
+always empty. `buildNewPersonFact` (`internal/api/createperson.go`)
+simply never read `f.Value` at all, and `NewPersonFact`
+(`internal/rmdb/createperson.go`) had no field to carry it even if it
+had. This was a one-directional gap specifically -- the read side
+(`buildFact`, `internal/api/convert.go`) already reversed this exact
+mapping (`e.Details` -> `f.Value`) correctly, so a fact created any other
+way (or inspected directly in the database) always showed the value
+correctly; only this server's own write path never wrote it.
+
+Checked directly against the conceptual model spec before wiring
+anything up, not assumed: `Fact.value`, Section 3.14 -- "the value of
+the fact," string, `OPTIONAL`. Fixed by adding a `Details` field to
+`NewPersonFact`, setting it directly from `f.Value` in
+`buildNewPersonFact`, and binding it in both places an `EventTable` row
+gets created from a `NewPersonFact` (`CreatePerson` and
+`CreateCoupleRelationship`, the latter for family-owned facts like a
+`Marriage` that might equally carry a `value` -- both had the exact same
+hardcoded-empty gap, even though only the person-level path had a real
+report against it). Verified against the real request this was reported
+with directly: a person with three ordinary date/place facts (`Birth`,
+`Death`, `Burial`) and three value-only ones (`Occupation`, `Education`,
+`Religion`) in the same request, confirming each `Details` value lands
+on the correct fact and neither kind of fact interferes with the other.
+`internal/rmdb/createperson_test.go` gained a storage-layer test
+confirming the write directly; `cmd/server/main_test.go` gained an
+HTTP-level test reproducing the exact reported request end to end.
+
 
 ### Nicknames: a real GEDCOM-vs-GEDCOM-X structural mismatch
 

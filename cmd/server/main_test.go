@@ -1026,6 +1026,26 @@ func TestCreatePersonsHTTP(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, status, "body: %s", respBody)
 	})
 
+	// A real reported gap: a value-only fact (Occupation, Education,
+	// Religion -- no date or place of its own) never reached
+	// EventTable.Details, even though the read side already reversed
+	// this exact mapping the other way (buildFact: e.Details ->
+	// f.Value). Reproduces the exact real request this was found with,
+	// mixing value-only facts alongside ordinary date/place ones in the
+	// same person, to confirm neither kind interferes with the other.
+	t.Run("Fact.value is written to EventTable.Details", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		body := `{"persons": [{"names": [{"nameForms": [{"fullText": "Joseph Patrick KENNEDY", "parts": [{"type": "http://gedcomx.org/Given", "value": "Joseph Patrick"}, {"type": "http://gedcomx.org/Surname", "value": "KENNEDY"}]}], "preferred": true}], "facts": [{"type": "http://gedcomx.org/Birth", "date": {"original": "6 SEP 1888", "formal": "+1888-09-06"}, "place": {"original": "Boston, MA"}}, {"type": "http://gedcomx.org/Death", "date": {"original": "18 NOV 1969", "formal": "+1969-11-18"}, "place": {"original": "Hyannis Port, MA"}}, {"type": "http://gedcomx.org/Burial", "place": {"original": "Holyhood Cemetery, Brookline, MA"}}, {"type": "http://gedcomx.org/Occupation", "value": "Bank President, Ambassador"}, {"type": "http://gedcomx.org/Education", "value": "Harvard Graduate"}, {"type": "http://gedcomx.org/Religion", "value": "Roman Catholic"}], "gender": {"type": "http://gedcomx.org/Male"}}]}`
+		status, respBody, headers := post(t, testServer, body)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, getBody := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", getBody)
+		require.Contains(t, getBody, `"value":"Bank President, Ambassador"`)
+		require.Contains(t, getBody, `"value":"Harvard Graduate"`)
+		require.Contains(t, getBody, `"value":"Roman Catholic"`)
+	})
+
 	t.Run("unrecognized fact type is rejected", func(t *testing.T) {
 		testServer := newTestServer(t, true)
 		body := `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"X"}]}]}],
