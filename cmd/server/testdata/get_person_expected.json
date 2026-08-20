@@ -1,1 +1,435 @@
-{"persons":[{"id":"P1","living":false,"gender":{"type":"http://gedcomx.org/Female"},"names":[{"id":"N1","preferred":true,"nameForms":[{"fullText":"Victoria Hanover","parts":[{"type":"http://gedcomx.org/Given","value":"Victoria"},{"type":"http://gedcomx.org/Surname","value":"Hanover"}]}]}],"facts":[{"id":"E2","type":"http://gedcomx.org/Birth","date":{"original":"24 May 1819","formal":"+1819-05-24"},"place":{"original":"Kensington, Palace, London, England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL206"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E3","type":"http://gedcomx.org/Death","date":{"original":"22 Jan 1901","formal":"+1901-01-22"},"place":{"original":"Osborne House, Isle of Wight, England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL207"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E1","type":"http://gedcomx.org/TitleOfNobility","value":"Queen of England","sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E4","type":"http://gedcomx.org/Burial","place":{"original":"Royal Mausoleum, Frogmore, Berkshire, England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL208"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E5","type":"http://rootsmagic.local/fact-type/Reference%20No","value":"1","sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]}],"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}],"display":{"name":"Victoria Hanover","gender":"Female","lifespan":"1819 - 1901","birthDate":"1819","deathDate":"1901"},"links":{"ancestry":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/ancestry"},"children":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/children"},"descendancy":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/descendancy"},"parents":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/parents"},"person":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1"},"spouses":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/spouses"}}}],"links":{"ancestry":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/ancestry"},"children":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/children"},"descendancy":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/descendancy"},"parents":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/parents"},"person":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1"},"spouses":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/spouses"}}}
+{
+  "links": {
+    "ancestry": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/ancestry"
+    },
+    "children": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/children"
+    },
+    "collection": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+    },
+    "descendancy": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/descendancy"
+    },
+    "parents": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/parents"
+    },
+    "person": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1"
+    },
+    "spouses": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/spouses"
+    }
+  },
+  "persons": [
+    {
+      "display": {
+        "birthDate": "1819",
+        "birthPlace": "Kensington, Palace, London, England",
+        "deathDate": "1901",
+        "deathPlace": "Osborne House, Isle of Wight, England",
+        "gender": "Female",
+        "lifespan": "1819 - 1901",
+        "marriageDate": "10 Feb 1840",
+        "marriagePlace": "Chapel Royal, St. James Palace, England",
+        "name": "Victoria Hanover"
+      },
+      "facts": [
+        {
+          "date": {
+            "formal": "+1819-05-24",
+            "original": "24 May 1819"
+          },
+          "id": "E2",
+          "place": {
+            "original": "Kensington, Palace, London, England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL206"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Birth"
+        },
+        {
+          "date": {
+            "formal": "+1901-01-22",
+            "original": "22 Jan 1901"
+          },
+          "id": "E3",
+          "place": {
+            "original": "Osborne House, Isle of Wight, England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL207"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Death"
+        },
+        {
+          "id": "E1",
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/TitleOfNobility",
+          "value": "Queen of England"
+        },
+        {
+          "id": "E4",
+          "place": {
+            "original": "Royal Mausoleum, Frogmore, Berkshire, England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL208"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Burial"
+        },
+        {
+          "id": "E5",
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://rootsmagic.local/fact-type/Reference%20No",
+          "value": "1"
+        }
+      ],
+      "gender": {
+        "type": "http://gedcomx.org/Female"
+      },
+      "id": "P1",
+      "links": {
+        "ancestry": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/ancestry"
+        },
+        "children": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/children"
+        },
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "descendancy": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/descendancy"
+        },
+        "parents": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/parents"
+        },
+        "person": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1"
+        },
+        "spouses": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/spouses"
+        }
+      },
+      "living": false,
+      "names": [
+        {
+          "id": "N1",
+          "nameForms": [
+            {
+              "fullText": "Victoria Hanover",
+              "parts": [
+                {
+                  "type": "http://gedcomx.org/Given",
+                  "value": "Victoria"
+                },
+                {
+                  "type": "http://gedcomx.org/Surname",
+                  "value": "Hanover"
+                }
+              ]
+            }
+          ],
+          "preferred": true
+        }
+      ],
+      "sources": [
+        {
+          "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+          "descriptionId": "S1"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "id": "F42-FC1",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F42-FC1"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133",
+        "resourceId": "P133"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F42-MC1",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F42-MC1"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138",
+        "resourceId": "P138"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC3",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC3"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P3",
+        "resourceId": "P3"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC4",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC4"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P4",
+        "resourceId": "P4"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC5",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC5"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P5",
+        "resourceId": "P5"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC6",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC6"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P6",
+        "resourceId": "P6"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC7",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC7"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P7",
+        "resourceId": "P7"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC8",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC8"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P8",
+        "resourceId": "P8"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC9",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC9"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P9",
+        "resourceId": "P9"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC10",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC10"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P10",
+        "resourceId": "P10"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "id": "F1-MC11",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1-MC11"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P11",
+        "resourceId": "P11"
+      },
+      "type": "http://gedcomx.org/ParentChild"
+    },
+    {
+      "facts": [
+        {
+          "date": {
+            "formal": "+1840-02-10",
+            "original": "10 Feb 1840"
+          },
+          "id": "E5049",
+          "place": {
+            "original": "Chapel Royal, St. James Palace, England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL378"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            },
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S2",
+              "descriptionId": "S2"
+            }
+          ],
+          "type": "http://gedcomx.org/Marriage"
+        }
+      ],
+      "id": "F1",
+      "links": {
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "relationship": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships/F1"
+        }
+      },
+      "person1": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2",
+        "resourceId": "P2"
+      },
+      "person2": {
+        "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+        "resourceId": "P1"
+      },
+      "type": "http://gedcomx.org/Couple"
+    }
+  ]
+}

@@ -126,6 +126,8 @@ type DisplayProperties struct {
 	BirthPlace        string       `json:"birthPlace,omitempty"`
 	DeathDate         string       `json:"deathDate,omitempty"`
 	DeathPlace        string       `json:"deathPlace,omitempty"`
+	MarriageDate      string       `json:"marriageDate,omitempty"`
+	MarriagePlace     string       `json:"marriagePlace,omitempty"`
 	AscendancyNumber  string       `json:"ascendancyNumber,omitempty"`
 	DescendancyNumber string       `json:"descendancyNumber,omitempty"`
 	FamiliesAsParent  []FamilyView `json:"familiesAsParent,omitempty"`
@@ -268,7 +270,17 @@ type SourceDescriptionsDocument struct {
 // the list, per Section 4.10.3 of the RS spec).
 type PersonDocument struct {
 	Persons []Person `json:"persons"`
-	Links   Links    `json:"links,omitempty"`
+	// Relationships is always present, even as an empty array -- RS
+	// spec Section 4.10.5, "Embedded States": child-relationships,
+	// parent-relationships, and spouse-relationships are each MUST,
+	// either as a link or embedded directly. This server embeds. An
+	// omitted field would be ambiguous between "this person genuinely
+	// has none" and "this server doesn't support the embedded state at
+	// all" -- the second was true until this was added; the field's
+	// unconditional presence is what actually resolves that ambiguity
+	// for a real client.
+	Relationships []Relationship `json:"relationships"`
+	Links         Links          `json:"links,omitempty"`
 }
 
 // RelationshipDocument wraps a single Relationship.

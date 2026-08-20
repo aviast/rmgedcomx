@@ -1,1 +1,396 @@
-{"results":3,"persons":[{"id":"P1","living":false,"gender":{"type":"http://gedcomx.org/Female"},"names":[{"id":"N1","preferred":true,"nameForms":[{"fullText":"Victoria Hanover","parts":[{"type":"http://gedcomx.org/Given","value":"Victoria"},{"type":"http://gedcomx.org/Surname","value":"Hanover"}]}]}],"facts":[{"id":"E2","type":"http://gedcomx.org/Birth","date":{"original":"24 May 1819","formal":"+1819-05-24"},"place":{"original":"Kensington, Palace, London, England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL206"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E3","type":"http://gedcomx.org/Death","date":{"original":"22 Jan 1901","formal":"+1901-01-22"},"place":{"original":"Osborne House, Isle of Wight, England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL207"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E1","type":"http://gedcomx.org/TitleOfNobility","value":"Queen of England","sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E4","type":"http://gedcomx.org/Burial","place":{"original":"Royal Mausoleum, Frogmore, Berkshire, England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL208"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E5","type":"http://rootsmagic.local/fact-type/Reference%20No","value":"1","sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]}],"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}],"display":{"name":"Victoria Hanover","gender":"Female","lifespan":"1819 - 1901","birthDate":"1819","deathDate":"1901","ascendancyNumber":"1"},"links":{"ancestry":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/ancestry"},"children":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/children"},"descendancy":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/descendancy"},"parents":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/parents"},"person":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1"},"spouses":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/spouses"}}},{"id":"P133","living":false,"gender":{"type":"http://gedcomx.org/Male"},"names":[{"id":"N133","preferred":true,"nameForms":[{"fullText":"Edward Augustus Hanover","parts":[{"type":"http://gedcomx.org/Given","value":"Edward Augustus"},{"type":"http://gedcomx.org/Surname","value":"Hanover"}]}]}],"facts":[{"id":"E378","type":"http://gedcomx.org/Birth","date":{"original":"2 Nov 1767","formal":"+1767-11-02"},"place":{"original":"Buckingham House, , London, England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL313"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E379","type":"http://gedcomx.org/Death","date":{"original":"23 Jan 1820","formal":"+1820-01-23"},"place":{"original":"Sidmouth, Devon, , England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL314"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E377","type":"http://gedcomx.org/TitleOfNobility","value":"Duke of Kent","sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E380","type":"http://rootsmagic.local/fact-type/Reference%20No","value":"2","sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]}],"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}],"display":{"name":"Edward Augustus Hanover","gender":"Male","lifespan":"1767 - 1820","birthDate":"1767","deathDate":"1820","ascendancyNumber":"2"},"links":{"ancestry":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/ancestry"},"children":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/children"},"descendancy":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/descendancy"},"parents":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/parents"},"person":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P133"},"spouses":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/spouses"}}},{"id":"P138","living":false,"gender":{"type":"http://gedcomx.org/Female"},"names":[{"id":"N138","preferred":true,"nameForms":[{"fullText":"Victoria Mary Louisa","parts":[{"type":"http://gedcomx.org/Given","value":"Victoria Mary Louisa"}]}]}],"facts":[{"id":"E391","type":"http://gedcomx.org/Birth","date":{"original":"17 Aug 1786","formal":"+1786-08-17"},"place":{"original":"Coburg","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL315"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E392","type":"http://gedcomx.org/Death","date":{"original":"16 Mar 1861","formal":"+1861-03-16"},"place":{"original":"Frogmore House, Windsor, , England","resource":"http://localhost:8080/collections/victoria-hanover-royal92/places/PL316"},"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]},{"id":"E393","type":"http://rootsmagic.local/fact-type/Reference%20No","value":"3","sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}]}],"sources":[{"description":"http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1","descriptionId":"S1"}],"display":{"name":"Victoria Mary Louisa","gender":"Female","lifespan":"1786 - 1861","birthDate":"1786","deathDate":"1861","ascendancyNumber":"3"},"links":{"ancestry":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/ancestry"},"children":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/children"},"descendancy":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/descendancy"},"parents":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/parents"},"person":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P138"},"spouses":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/spouses"}}}],"links":{"person":{"href":"http://localhost:8080/collections/victoria-hanover-royal92/persons/P1"}}}
+{
+  "links": {
+    "person": {
+      "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1"
+    }
+  },
+  "persons": [
+    {
+      "display": {
+        "ascendancyNumber": "1",
+        "birthDate": "1819",
+        "birthPlace": "Kensington, Palace, London, England",
+        "deathDate": "1901",
+        "deathPlace": "Osborne House, Isle of Wight, England",
+        "gender": "Female",
+        "lifespan": "1819 - 1901",
+        "marriageDate": "10 Feb 1840",
+        "marriagePlace": "Chapel Royal, St. James Palace, England",
+        "name": "Victoria Hanover"
+      },
+      "facts": [
+        {
+          "date": {
+            "formal": "+1819-05-24",
+            "original": "24 May 1819"
+          },
+          "id": "E2",
+          "place": {
+            "original": "Kensington, Palace, London, England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL206"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Birth"
+        },
+        {
+          "date": {
+            "formal": "+1901-01-22",
+            "original": "22 Jan 1901"
+          },
+          "id": "E3",
+          "place": {
+            "original": "Osborne House, Isle of Wight, England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL207"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Death"
+        },
+        {
+          "id": "E1",
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/TitleOfNobility",
+          "value": "Queen of England"
+        },
+        {
+          "id": "E4",
+          "place": {
+            "original": "Royal Mausoleum, Frogmore, Berkshire, England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL208"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Burial"
+        },
+        {
+          "id": "E5",
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://rootsmagic.local/fact-type/Reference%20No",
+          "value": "1"
+        }
+      ],
+      "gender": {
+        "type": "http://gedcomx.org/Female"
+      },
+      "id": "P1",
+      "links": {
+        "ancestry": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/ancestry"
+        },
+        "children": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/children"
+        },
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "descendancy": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/descendancy"
+        },
+        "parents": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/parents"
+        },
+        "person": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1"
+        },
+        "spouses": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1/spouses"
+        }
+      },
+      "living": false,
+      "names": [
+        {
+          "id": "N1",
+          "nameForms": [
+            {
+              "fullText": "Victoria Hanover",
+              "parts": [
+                {
+                  "type": "http://gedcomx.org/Given",
+                  "value": "Victoria"
+                },
+                {
+                  "type": "http://gedcomx.org/Surname",
+                  "value": "Hanover"
+                }
+              ]
+            }
+          ],
+          "preferred": true
+        }
+      ],
+      "sources": [
+        {
+          "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+          "descriptionId": "S1"
+        }
+      ]
+    },
+    {
+      "display": {
+        "ascendancyNumber": "2",
+        "birthDate": "1767",
+        "birthPlace": "Buckingham House, , London, England",
+        "deathDate": "1820",
+        "deathPlace": "Sidmouth, Devon, , England",
+        "gender": "Male",
+        "lifespan": "1767 - 1820",
+        "marriageDate": "11 Jul 1818",
+        "marriagePlace": "Kew Palace",
+        "name": "Edward Augustus Hanover"
+      },
+      "facts": [
+        {
+          "date": {
+            "formal": "+1767-11-02",
+            "original": "2 Nov 1767"
+          },
+          "id": "E378",
+          "place": {
+            "original": "Buckingham House, , London, England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL313"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Birth"
+        },
+        {
+          "date": {
+            "formal": "+1820-01-23",
+            "original": "23 Jan 1820"
+          },
+          "id": "E379",
+          "place": {
+            "original": "Sidmouth, Devon, , England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL314"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Death"
+        },
+        {
+          "id": "E377",
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/TitleOfNobility",
+          "value": "Duke of Kent"
+        },
+        {
+          "id": "E380",
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://rootsmagic.local/fact-type/Reference%20No",
+          "value": "2"
+        }
+      ],
+      "gender": {
+        "type": "http://gedcomx.org/Male"
+      },
+      "id": "P133",
+      "links": {
+        "ancestry": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/ancestry"
+        },
+        "children": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/children"
+        },
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "descendancy": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/descendancy"
+        },
+        "parents": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/parents"
+        },
+        "person": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133"
+        },
+        "spouses": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133/spouses"
+        }
+      },
+      "living": false,
+      "names": [
+        {
+          "id": "N133",
+          "nameForms": [
+            {
+              "fullText": "Edward Augustus Hanover",
+              "parts": [
+                {
+                  "type": "http://gedcomx.org/Given",
+                  "value": "Edward Augustus"
+                },
+                {
+                  "type": "http://gedcomx.org/Surname",
+                  "value": "Hanover"
+                }
+              ]
+            }
+          ],
+          "preferred": true
+        }
+      ],
+      "sources": [
+        {
+          "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+          "descriptionId": "S1"
+        }
+      ]
+    },
+    {
+      "display": {
+        "ascendancyNumber": "3",
+        "birthDate": "1786",
+        "birthPlace": "Coburg",
+        "deathDate": "1861",
+        "deathPlace": "Frogmore House, Windsor, , England",
+        "gender": "Female",
+        "lifespan": "1786 - 1861",
+        "marriageDate": "11 Jul 1818",
+        "marriagePlace": "Kew Palace",
+        "name": "Victoria Mary Louisa"
+      },
+      "facts": [
+        {
+          "date": {
+            "formal": "+1786-08-17",
+            "original": "17 Aug 1786"
+          },
+          "id": "E391",
+          "place": {
+            "original": "Coburg",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL315"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Birth"
+        },
+        {
+          "date": {
+            "formal": "+1861-03-16",
+            "original": "16 Mar 1861"
+          },
+          "id": "E392",
+          "place": {
+            "original": "Frogmore House, Windsor, , England",
+            "resource": "http://localhost:8080/collections/victoria-hanover-royal92/places/PL316"
+          },
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://gedcomx.org/Death"
+        },
+        {
+          "id": "E393",
+          "sources": [
+            {
+              "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+              "descriptionId": "S1"
+            }
+          ],
+          "type": "http://rootsmagic.local/fact-type/Reference%20No",
+          "value": "3"
+        }
+      ],
+      "gender": {
+        "type": "http://gedcomx.org/Female"
+      },
+      "id": "P138",
+      "links": {
+        "ancestry": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/ancestry"
+        },
+        "children": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/children"
+        },
+        "collection": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92"
+        },
+        "descendancy": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/descendancy"
+        },
+        "parents": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/parents"
+        },
+        "person": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138"
+        },
+        "spouses": {
+          "href": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138/spouses"
+        }
+      },
+      "living": false,
+      "names": [
+        {
+          "id": "N138",
+          "nameForms": [
+            {
+              "fullText": "Victoria Mary Louisa",
+              "parts": [
+                {
+                  "type": "http://gedcomx.org/Given",
+                  "value": "Victoria Mary Louisa"
+                }
+              ]
+            }
+          ],
+          "preferred": true
+        }
+      ],
+      "sources": [
+        {
+          "description": "http://localhost:8080/collections/victoria-hanover-royal92/source-descriptions/S1",
+          "descriptionId": "S1"
+        }
+      ]
+    }
+  ],
+  "results": 3
+}

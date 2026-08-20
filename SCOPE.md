@@ -538,6 +538,200 @@ who *are* real `Person`s (below): the role type and its free-text details
 are always two distinct pieces of information, never one replacing the
 other.
 
+## Embedded relationship states on the `Person` state
+
+Prompted by direct review, not found independently: the RS spec's
+Section 4.10.5, "Embedded States," lists `child-relationships`,
+`parent-relationships`, and `spouse-relationships` as each `MUST` for
+the `Person` state -- *"If no link to `child-relationships` is
+provided, the list of child relationships MUST be included"* in the
+same response (and correspondingly for the other two). The separate
+"Link Relation Types" appendix (Section 5.2) confirms the same three
+rel names as "embedded link[s]." This server previously provided
+neither -- no `links.child-relationships`/etc., and `PersonDocument`
+had no field to embed the data in at all -- so a single `GET
+.../persons/{id}` never surfaced a person's own relationships, only
+links to the separate `.../parents`, `.../children`, `.../spouses`
+endpoints (which return lists of `Person`s, not `Relationship`s, and
+are a different rel name entirely from the three the spec requires
+here).
+
+Fixed by embedding rather than linking: `PersonDocument`
+(`internal/gedcomx/model.go`) gained a `Relationships` field,
+deliberately without `omitempty` -- an absent field would be
+indistinguishable from a person who genuinely has none, which is the
+whole ambiguity the spec's own `MUST` is there to resolve. `handlePerson`
+(`internal/api/handlers.go`) populates it with every `ParentChild`
+relationship where this person is a child, every `ParentChild`
+relationship where this person is a parent, and every `Couple`
+relationship this person is part of.
+
+Rather than duplicate that computation a fourth time, it reuses the
+identical logic `GET .../persons/{id}/parents`, `.../children`, and
+`.../spouses` already needed for their own, pre-existing
+`Relationships` fields (`PersonRelativesDocument`, which already
+embedded relationships correctly -- this gap was specific to the single
+`Person` state, not those three). Each of the three handlers'
+relationship-computation logic was extracted into its own
+`personParentRelationships`/`personChildRelationships`/
+`personSpouseRelationships` helper, with the three original handlers
+refactored to call their own helper rather than duplicate the logic
+inline -- checked against the full existing test suite immediately
+after the refactor, before adding anything new, to confirm this was a
+genuine extraction and not an accidental behavior change.
+
+Verified directly against real data, not just reasoned about: `GET
+.../persons/P1` (Victoria) now embeds exactly 12 relationships -- her
+two parents, all nine of her real children with Albert, and her own
+Couple relationship to Albert (complete with its `Marriage` fact,
+sources, and all) -- confirmed against the live response, not assumed
+from the code. The existing golden-file test for this exact endpoint
+(`cmd/server/testdata/get_person_expected.json`) was regenerated from a
+real server response rather than hand-edited, to avoid a transcription
+error in a file this large. A dedicated test also confirms a person
+with genuinely zero relationships gets `"relationships":[]`, not
+`null` or an absent field -- the specific failure mode the spec's
+`MUST` requirement is there to prevent, and the reason the new field
+was deliberately not marked `omitempty`.
+
+## `collection` link on the `Person` and `Relationship` states
+
+Also prompted by direct review: the RS spec's own "Transitions" tables
+for both states list a `collection` transition -- Section 4.10.4 for
+`Person` ("Link to the collection that contains this person"), Section
+4.21.4 for `Relationship` ("Link to the collection that contains this
+relationship"). Neither state produced one; `Person` had links to
+`parents`/`children`/`spouses`/`ancestry`/`descendancy`/itself, and
+`Relationship` had only a self-link, `relationship`.
+
+Fixed directly using the existing `s.collectionBaseURL` field
+(`internal/api/server.go`) -- already exactly `cfg.BaseURL +
+"/collections/" + cfg.ID`, i.e. the collection's own URL, computed once
+at server startup and already used (via the `s.url` helper, which
+appends a path to it) for every other link this server builds. The new
+`collection` link uses `s.collectionBaseURL` directly, with no path
+appended, since the collection state's own URL is exactly that value. In
+`internal/api/convert.go`: `buildPerson` gains it alongside `person`;
+`buildCoupleRelationship` and `buildParentChildRelationship` both gain
+it alongside `relationship`. `RelationshipDocument.Links` already
+mirrors a relationship's own `Links` field directly (`Links: rel.Links`
+in `handleRelationship`), so no separate change was needed there for it
+to propagate to the top level.
+
+Verified as a genuine round trip, not just a string match: fetched
+`.../persons/P1`'s and `.../relationships/F1`'s own `collection` link
+`href` values directly and confirmed each one resolves to this same
+collection's real `Collection` resource (`"id":"victoria-hanover-royal92"`
+in the response), not merely present with a plausible-looking value.
+Six existing golden files needed regenerating as a result
+(`get_persons_expected.json`, `get_person_expected.json`,
+`get_person_ancestry_expected.json`, `get_person_descendancy_expected.json`,
+`get_relationships_expected.json`, `get_relationship_expected.json`) --
+each diffed programmatically against its own prior version afterward
+(comparing the full set of JSON key names present, not just running the
+test suite) to confirm `collection`/`href` were the *only* keys added
+and nothing was accidentally removed, before trusting the regeneration
+and replacing the files.
+
+## `DisplayProperties`: `marriageDate`/`marriagePlace` were never implemented, `birthPlace`/`deathPlace` were implemented but never wired up
+
+Prompted by a direct report -- "`marriageDate`/`marriagePlace` appear to
+be omitted." Checked directly against the RS spec's own `DisplayProperties`
+properties table (Section 2.2) before touching anything: `name`, `gender`,
+`lifespan`, `birthDate`, `birthPlace`, `deathDate`, `deathPlace`,
+`marriageDate`, `marriagePlace`, `ascendancyNumber`, `descendancyNumber`,
+`familiesAsParent`, `familiesAsChild`. `marriageDate`/`marriagePlace`
+weren't just unpopulated -- the `DisplayProperties` struct
+(`internal/gedcomx/model.go`) had no fields for them at all, added as
+part of this fix. While investigating, `birthPlace`/`deathPlace` turned
+out to have the same underlying gap one level less visible: the struct
+fields already existed, but `buildDisplayProperties`
+(`internal/api/convert.go`) never actually populated either one --
+fixed alongside `marriageDate`/`marriagePlace`, since it's the exact
+same shape of gap against the same spec table, not a separate report.
+`familiesAsParent`/`familiesAsChild` are a real, separate gap too (also
+unpopulated) but are a meaningfully larger feature -- each `FamilyView`
+needs its own `parent1`/`parent2`/`children` construction across every
+family a person is in, both as parent and as child -- and weren't part
+of the report; left for their own turn rather than folded in here.
+
+`birthPlace`/`deathPlace` come directly from this same person's own
+Birth/Death facts -- `buildPerson` already computes these as
+`[]gedcomx.Fact` before calling `buildDisplayProperties`, so the
+already-built facts are reused rather than re-fetched. There's only
+ever one Birth and one Death fact per real person in practice, so no
+"which one" ambiguity the way marriage has.
+
+`marriageDate`/`marriagePlace` needed a real design decision the spec
+itself doesn't make: a person can have more than one marriage, and
+`DisplayProperties` has room for exactly one of each. Resolved the same
+way this project has resolved other "which one, when there are several"
+questions with no other spec guidance -- take the first, consistently
+ordered (`FamiliesAsParent`'s own query, `ORDER BY FamilyID`, matching
+the existing convention already used for a person's primary name and
+other "the first one" choices), and skip to the next family only if the
+first has no Marriage fact at all, rather than treating a family known
+not to have one as this person's answer. Verified against real,
+non-obvious data, not a constructed example: `royal92.rmtree`'s own
+person 21 (William II) has two real families where exactly this
+happens -- the first (FamilyID 136) has no Marriage fact, the second
+(146) does (5 Nov 1922) -- and this server correctly reports the
+second, not an empty result from the first. This required
+`buildDisplayProperties`'s own signature to change (it previously only
+took `names`/`sex`; now also takes `personID` and the already-built
+`facts`, and returns an error, since it now queries the database for
+this person's own families).
+
+Four golden files needed regenerating as a result
+(`get_persons_expected.json`, `get_person_expected.json`,
+`get_person_ancestry_expected.json`, `get_person_descendancy_expected.json`)
+-- each diffed programmatically against its own prior version, the same
+way as the `collection` link fix above, confirming `birthPlace`/
+`deathPlace`/`marriageDate`/`marriagePlace` were the only keys added.
+
+### A real, separate bug this surfaced: `Couple` relationship `facts` were silently discarded
+
+Building a self-contained test for the fix above (rather than relying
+only on `royal92.rmtree`'s existing data) required posting a `Couple`
+relationship with a `Marriage` fact through the real HTTP API -- which
+is when this was found: `handleCreateRelationships`
+(`internal/api/createrelationship.go`) read a relationship's own
+`Facts` for `ParentChild` (`relTypeFromFacts`, to detect
+`Adoptive`/`Biological`/etc.) but never even looked at `Facts` for
+`Couple` at all. `rmdb.NewCoupleRelationship` already has a `Facts`
+field the storage layer already knows how to write -- it just never
+received anything, since nothing on the API layer's `Couple` branch
+ever populated it. The request itself gave no indication anything was
+wrong: `POST /relationships` with a `Marriage` fact returned a normal
+`201 Created`; the fact was simply never written to `EventTable` at
+all, confirmed directly by querying the resulting database rather than
+just re-reading the API's own response.
+
+This had gone undetected because the two layers were each tested in
+isolation: `internal/rmdb`'s own tests construct
+`rmdb.NewCoupleRelationship{..., Facts: [...]}` directly, which
+correctly exercises `CreateCoupleRelationship`'s own fact-writing
+logic but never touches `handleCreateRelationships` at all; no existing
+HTTP-level test had ever posted a `Couple` relationship with `Facts`
+and then checked they actually round-tripped back on `GET`.
+
+Fixed by generalizing `buildNewPersonFact` (renamed `buildNewFact`,
+`internal/api/createperson.go`) to accept the fact's *expected* owner
+type as a parameter (`rmdb.OwnerTypePerson` or `rmdb.OwnerTypeFamily`)
+rather than hardcoding `Person` -- the conversion logic itself (date
+parsing and its own fallback chain, place handling, `Details`/`Value`)
+is identical either way; only the `FactTypeTable` ownership check
+differs. `handleCreateRelationships`'s `Couple` branch now converts
+`rel.Facts` the same way `ParentChild` already read them for
+`relTypeFromFacts`, and passes the result through to
+`CreateCoupleRelationship`. Verified with a dedicated regression test
+(`cmd/server/main_test.go`, `TestCreateRelationshipsHTTP`) posting a
+`Couple` relationship with a real `Marriage` fact and confirming it
+reads back correctly via `GET` -- deliberately placed and named
+independently of the `DisplayProperties` test that surfaced it, since
+this is a genuinely separate bug a future reader should be able to find
+by name.
+
 ## Write support
 
 Off by default. `-write` enables it; without it, this server behaves

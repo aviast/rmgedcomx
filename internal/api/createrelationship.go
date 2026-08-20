@@ -42,9 +42,10 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 
 	type resolved struct {
 		isCouple           bool
-		fatherID, motherID int64 // isCouple
-		parentID, childID  int64 // !isCouple
-		relType            int   // !isCouple; rmdb.RelTypeBirth or rmdb.RelTypeAdopted
+		fatherID, motherID int64                // isCouple
+		facts              []rmdb.NewPersonFact // isCouple
+		parentID, childID  int64                // !isCouple
+		relType            int                  // !isCouple; rmdb.RelTypeBirth or rmdb.RelTypeAdopted
 	}
 	toCreate := make([]resolved, 0, len(body.Relationships))
 	for i, rel := range body.Relationships {
@@ -65,7 +66,25 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("relationships[%d]: %v", i, err))
 				return
 			}
-			toCreate = append(toCreate, resolved{isCouple: true, fatherID: fatherID, motherID: motherID})
+			// A real, previously-undetected bug this fixes: rel.Facts
+			// was read for ParentChild (relTypeFromFacts, below) but
+			// silently never even looked at for Couple -- a Marriage
+			// fact sent alongside a Couple relationship got a 201
+			// Created with nothing actually written to EventTable, no
+			// error at all. Caught by a real test exercising the full
+			// write-then-read round trip for DisplayProperties'
+			// marriageDate/marriagePlace (see buildDisplayProperties's
+			// own comment), not found independently.
+			facts := make([]rmdb.NewPersonFact, 0, len(rel.Facts))
+			for j, f := range rel.Facts {
+				nf, err := s.buildNewFact(f, rmdb.OwnerTypeFamily)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Sprintf("relationships[%d].facts[%d]: %v", i, j, err))
+					return
+				}
+				facts = append(facts, nf)
+			}
+			toCreate = append(toCreate, resolved{isCouple: true, fatherID: fatherID, motherID: motherID, facts: facts})
 		case gedcomx.RelationshipTypeParentChild:
 			parentID, err := personIDFromReference(rel.Person1)
 			if err != nil {
@@ -94,7 +113,7 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 		var familyID int64
 		var err error
 		if rc.isCouple {
-			familyID, err = s.db.CreateCoupleRelationship(rmdb.NewCoupleRelationship{FatherID: rc.fatherID, MotherID: rc.motherID})
+			familyID, err = s.db.CreateCoupleRelationship(rmdb.NewCoupleRelationship{FatherID: rc.fatherID, MotherID: rc.motherID, Facts: rc.facts})
 		} else {
 			familyID, err = s.db.CreateParentChildRelationship(rmdb.NewParentChildRelationship{ParentID: rc.parentID, ChildID: rc.childID, RelType: rc.relType})
 		}
