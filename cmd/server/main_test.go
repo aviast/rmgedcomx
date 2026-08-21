@@ -1611,26 +1611,44 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 		createPerson(t, testServer, "http://gedcomx.org/Female", "Jane", "Adoptive")
 		createPerson(t, testServer, "http://gedcomx.org/Male", "Kid", "Smith")
 
+		// familyOf strips a ParentChild Location's own "-FC{child}"/
+		// "-MC{child}" suffix (see the dedicated Location-correctness
+		// test below) down to just its family id, since this test's own
+		// question is "did these two land in the same family," not
+		// "are these the literal same relationship" -- a father-child
+		// and a mother-child edge on the very same family are two
+		// distinct, correctly-different relationships, not a case where
+		// this test should expect equal Location values.
+		familyOf := func(location string) string {
+			t.Helper()
+			return location[:strings.LastIndex(location, "-")]
+		}
+
 		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/BiologicalParent"}]}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
-		bioFamily := headers.Get("Location")
+		bioFatherChildLoc := headers.Get("Location")
+		require.Contains(t, bioFatherChildLoc, "-FC5", "Robert is male, so this must be a father-child ref")
+		bioFamily := familyOf(bioFatherChildLoc)
 
 		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/AdoptiveParent"}]}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
-		adoptiveFamily := headers.Get("Location")
+		adoptiveFamily := familyOf(headers.Get("Location"))
 		require.NotEqual(t, bioFamily, adoptiveFamily, "biological and adoptive fathers must land in different families")
 
 		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P3"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/BiologicalParent"}]}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
-		require.Equal(t, bioFamily, headers.Get("Location"), "biological mother should complete the biological family, not be rejected as ambiguous")
+		bioMotherChildLoc := headers.Get("Location")
+		require.Contains(t, bioMotherChildLoc, "-MC5", "Mary is female, so this must be a mother-child ref")
+		require.Equal(t, bioFamily, familyOf(bioMotherChildLoc), "biological mother should complete the biological family, not be rejected as ambiguous")
+		require.NotEqual(t, bioFatherChildLoc, bioMotherChildLoc, "the father-child and mother-child edges on the same family are two distinct relationships, not one")
 
 		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
 			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P4"},"person2":{"resourceId":"P5"},"facts":[{"type":"http://gedcomx.org/AdoptiveParent"}]}]}`)
 		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
-		require.Equal(t, adoptiveFamily, headers.Get("Location"), "adoptive mother should complete the adoptive family, not be rejected as ambiguous")
+		require.Equal(t, adoptiveFamily, familyOf(headers.Get("Location")), "adoptive mother should complete the adoptive family, not be rejected as ambiguous")
 	})
 
 	// A real, previously-undetected bug: rel.Facts was read for
@@ -1656,6 +1674,52 @@ func TestCreateRelationshipsHTTP(t *testing.T) {
 		require.Contains(t, getBody, `"type":"http://gedcomx.org/Marriage"`)
 		require.Contains(t, getBody, `"original":"29 Dec 1812"`)
 		require.Contains(t, getBody, `"original":"Guiseley, Yorks."`)
+	})
+
+	// A real, reported bug: a successful single ParentChild creation
+	// always returned Location: /relationships/F{id} -- coupleRef's own
+	// shape -- regardless of what was actually created. That's wrong in
+	// two distinct ways checked directly against the RS spec before
+	// fixing anything: per Section 4.20.2, a single-create response's
+	// Location must identify the relationship actually created, and
+	// coupleRef and parentChildRef name genuinely different resources
+	// (GET on a ParentChild's coupleRef-shaped URL 404s, since that URL
+	// denotes a Couple relationship, which a single-parent family isn't
+	// and was never claimed to be). Verified as a full round trip for
+	// both parent roles, not just that the string looks right: each
+	// Location is actually fetched afterward and confirmed to return
+	// 200 with the correct relationship, not just pattern-matched.
+	t.Run("Location for a single ParentChild creation identifies the actual relationship, not just the family", func(t *testing.T) {
+		testServer := newTestServer(t, true)
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Father", "Test")
+		createPerson(t, testServer, "http://gedcomx.org/Female", "Mother", "Test")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Child1", "Test")
+		createPerson(t, testServer, "http://gedcomx.org/Male", "Child2", "Test")
+
+		status, respBody, headers := post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		fatherChildLoc := headers.Get("Location")
+		require.Contains(t, fatherChildLoc, "/relationships/F1-FC3", "father-child ref, not coupleRef's F1")
+		getStatus, getBody := get(t, testServer, "/collections/empty/relationships/F1-FC3")
+		require.Equal(t, http.StatusOK, getStatus, "the Location returned must itself resolve: %s", getBody)
+		require.Contains(t, getBody, `"id":"F1-FC3"`)
+		require.Contains(t, getBody, `"type":"http://gedcomx.org/ParentChild"`)
+
+		status, respBody, headers = post(t, testServer, "/collections/empty/relationships",
+			`{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P4"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		motherChildLoc := headers.Get("Location")
+		require.Contains(t, motherChildLoc, "/relationships/F2-MC4", "mother-child ref, not coupleRef's F2")
+		getStatus, getBody = get(t, testServer, "/collections/empty/relationships/F2-MC4")
+		require.Equal(t, http.StatusOK, getStatus, "the Location returned must itself resolve: %s", getBody)
+		require.Contains(t, getBody, `"id":"F2-MC4"`)
+
+		// coupleRef's own shape (what the bug used unconditionally)
+		// genuinely 404s for a ParentChild-only family -- confirming
+		// this isn't just "a different but still-working URL."
+		getStatus, getBody = get(t, testServer, "/collections/empty/relationships/F1")
+		require.Equal(t, http.StatusNotFound, getStatus, "body: %s", getBody)
 	})
 
 	t.Run("nonexistent person is rejected with 400, not 500", func(t *testing.T) {

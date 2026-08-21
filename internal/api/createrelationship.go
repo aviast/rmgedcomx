@@ -108,34 +108,73 @@ func (s *Server) handleCreateRelationships(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	createdFamilyIDs := make([]int64, 0, len(toCreate))
+	// A real, reported bug: the ref used for Location has to match the
+	// actual type of relationship created, not always assume Couple.
+	// coupleRef ("F{id}") and parentChildRef ("F{id}-FC{child}" /
+	// "F{id}-MC{child}") name genuinely different resources -- GET on a
+	// ParentChild relationship's own coupleRef-shaped URL 404s (it
+	// denotes a Couple relationship, which this single-parent family
+	// isn't and was never claimed to be), and even where a family does
+	// happen to also have a matching Couple resource, coupleRef doesn't
+	// identify *which* parent-child edge was actually created the way
+	// the RS spec's own single-create Location (Section 4.20.2)
+	// requires: it names the created relationship, not just the family
+	// it happens to belong to. Determined here from the created
+	// family's own FatherID/MotherID (fetched fresh after creation, not
+	// re-derived from the parent's sex a second time) -- directly
+	// authoritative about which role this specific parent actually
+	// ended up in, rather than assuming it matches a separately-run
+	// computation.
+	type createdRelationship struct {
+		familyID int64
+		ref      string
+	}
+	created := make([]createdRelationship, 0, len(toCreate))
 	for i, rc := range toCreate {
 		var familyID int64
 		var err error
+		var ref string
 		if rc.isCouple {
 			familyID, err = s.db.CreateCoupleRelationship(rmdb.NewCoupleRelationship{FatherID: rc.fatherID, MotherID: rc.motherID, Facts: rc.facts})
+			if err == nil {
+				ref = coupleRef(familyID)
+			}
 		} else {
 			familyID, err = s.db.CreateParentChildRelationship(rmdb.NewParentChildRelationship{ParentID: rc.parentID, ChildID: rc.childID, RelType: rc.relType})
+			if err == nil {
+				fam, famErr := s.db.GetFamily(familyID)
+				if famErr != nil {
+					err = famErr
+				} else if fam == nil {
+					err = fmt.Errorf("family %d was created but can't be found immediately afterward", familyID)
+				} else {
+					ref = parentChildRef(familyID, rc.childID, fam.FatherID == rc.parentID)
+				}
+			}
 		}
 		if err != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(err, rmdb.ErrNotFound) || errors.Is(err, rmdb.ErrAmbiguous) {
 				status = http.StatusBadRequest
 			}
-			if len(createdFamilyIDs) > 0 {
+			if len(created) > 0 {
+				createdFamilyIDs := make([]int64, len(created))
+				for j, c := range created {
+					createdFamilyIDs[j] = c.familyID
+				}
 				writeError(w, status, fmt.Sprintf(
 					"relationships[%d] failed after %d earlier relationship(s) in this request were already created (families %v) -- this request is not all-or-nothing across multiple relationships: %v",
-					i, len(createdFamilyIDs), createdFamilyIDs, err))
+					i, len(created), createdFamilyIDs, err))
 				return
 			}
 			writeError(w, status, err.Error())
 			return
 		}
-		createdFamilyIDs = append(createdFamilyIDs, familyID)
+		created = append(created, createdRelationship{familyID: familyID, ref: ref})
 	}
 
-	if len(createdFamilyIDs) == 1 {
-		w.Header().Set("Location", s.url("/relationships/"+coupleRef(createdFamilyIDs[0])))
+	if len(created) == 1 {
+		w.Header().Set("Location", s.url("/relationships/"+created[0].ref))
 		w.WriteHeader(http.StatusCreated)
 		return
 	}

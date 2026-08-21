@@ -732,6 +732,67 @@ independently of the `DisplayProperties` test that surfaced it, since
 this is a genuinely separate bug a future reader should be able to find
 by name.
 
+## `Location` on a single `ParentChild` creation identified the wrong resource
+
+Reported directly, precisely: a successful single `ParentChild`
+creation returned `Location: /relationships/F{id}` unconditionally --
+`coupleRef`'s own shape -- regardless of what was actually created.
+Confirmed exactly as described before changing anything:
+`handleCreateRelationships`'s final response construction
+(`internal/api/createrelationship.go`) called `coupleRef(familyID)`
+unconditionally for every successful single creation, `Couple` or
+`ParentChild` alike -- there was no branch on which type had actually
+been created at all.
+
+This is wrong in the two distinct ways named in the report, both
+checked directly rather than assumed. First, per the RS spec's own
+Section 4.20.2, a single-create response's `Location` has to identify
+the relationship actually created -- and `coupleRef` ("`F{id}`") and
+`parentChildRef` ("`F{id}-FC{child}`" / "`F{id}-MC{child}`") name
+genuinely different resources, not two equally-valid spellings of the
+same one: `GET` on a `ParentChild`'s `coupleRef`-shaped URL 404s, since
+that URL denotes a `Couple` relationship, which a newly-created
+single-parent family isn't and was never claimed to be -- confirmed
+directly, not asserted. Second, even for a family that *does* also have
+a matching `Couple` resource (both parents present), `coupleRef` alone
+doesn't identify *which* parent-child edge was actually created --
+`Location` naming the family a relationship happens to belong to isn't
+the same as naming the relationship itself.
+
+Fixed by determining, for each created relationship, its own correct
+ref immediately after creation -- `coupleRef(familyID)` unchanged for
+`Couple`; for `ParentChild`, `parentChildRef(familyID, childID,
+isFather)`, with `isFather` determined by fetching the just-created
+family fresh (`FatherID == parentID`) rather than re-deriving it a
+second, separate way (e.g. re-querying the parent's own sex
+independently) -- directly authoritative about which role this specific
+parent actually ended up in, including the idempotent case (linking an
+already-linked parent again), rather than assuming a separately-run
+computation agrees with what `CreateParentChildRelationship` itself
+determined.
+
+This also required correcting an existing test whose own assertion had
+been relying on the bug without meaning to: it linked a child's
+biological father, then biological mother, and asserted their two
+`Location` values were `Equal` -- true only because the old, buggy
+behavior collapsed both a father-child and a mother-child edge on the
+same family down to the same `coupleRef` value, masking that they were
+always two distinct relationships. Fixed to compare each `Location`'s
+own family-id prefix (its actual, real intent -- "did these two land in
+the same family") rather than the full ref, and strengthened with an
+explicit check that the father-child and mother-child refs are
+themselves different, which is now something meaningful to verify
+rather than something the old bug accidentally made true either way.
+
+Verified as a full round trip for both parent roles, not just that the
+returned string looks right: `cmd/server/main_test.go` gained a
+dedicated test that creates a father-child and a separate mother-child
+relationship, fetches each `Location` afterward and confirms `200` with
+the correct relationship (not just a plausible-looking string), and
+confirms the old, buggy `coupleRef`-shaped URL for that same family
+still correctly 404s -- reproducing the exact symptom in the original
+report, not a stand-in for it.
+
 ## Write support
 
 Off by default. `-write` enables it; without it, this server behaves
