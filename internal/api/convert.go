@@ -481,6 +481,19 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 			// same section, following the naming convention of the
 			// existing "source-descriptions" rel.
 			"place-descriptions": {Href: s.url("/places")},
+			// RS spec Section 4.5.4's own master transitions table
+			// (Section 5.2) lists "person-search" as a templated link
+			// to the Person Search Results state (RFC 6570 URI
+			// Template, per the GEDCOM X Atom Extensions spec's own
+			// "template" attribute -- checked directly, not assumed).
+			// "q" is the spec's own template variable name (Section 6);
+			// "limit"/"offset" match this server's own existing paging
+			// parameter names elsewhere (pagingParams, server.go)
+			// rather than the spec's generic "count"/"start" variable
+			// names, for consistency with every other paged endpoint in
+			// this server rather than introducing a second, different
+			// naming convention for this one endpoint alone.
+			"person-search": {Template: s.url("/persons/search") + "{?q,limit,offset}"},
 		},
 	}, nil
 }

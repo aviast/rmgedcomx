@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -605,6 +606,178 @@ func TestDisplayPropertiesFamiliesAsParentAndChild(t *testing.T) {
 		getStatus, body := get(t, testServer, hChild.Get("Location"))
 		require.Equal(t, http.StatusOK, getStatus, "body: %s", body)
 		require.Contains(t, body, `"familiesAsChild":[{"parent1":{"resource":"http://localhost:8080/collections/empty/persons/P1","resourceId":"P1"},"parent2":{"resource":"http://localhost:8080/collections/empty/persons/P2","resourceId":"P2"},"children":[{"resource":"http://localhost:8080/collections/empty/persons/P3","resourceId":"P3"},{"resource":"http://localhost:8080/collections/empty/persons/P4","resourceId":"P4"}]}]`)
+	})
+}
+
+// TestPersonSearchHTTP covers the Person Search Results state (RS spec
+// Section 4.11) for the 10 direct search parameters -- self-contained
+// via the write API against known, controlled data, rather than
+// depending on royal92.rmtree's specific values (which was used for the
+// original manual verification pass, including confirming this against
+// real, non-obvious data: royal92.rmtree's own William II has two real
+// families where the first has no Marriage fact and the second does,
+// confirming the "~" widen-to-year-only behavior lands on the right
+// family regardless -- see SCOPE.md for that account). A permanent
+// test using fixed, project-controlled data is more robust long-term
+// than one that would silently start asserting different result counts
+// if the reference database's own contents ever changed.
+func TestPersonSearchHTTP(t *testing.T) {
+	post := func(t *testing.T, testServer *httptest.Server, path, body string) (int, string, http.Header) {
+		t.Helper()
+		req, err := http.NewRequest("POST", testServer.URL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(respBody), resp.Header
+	}
+	newTestServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		tempDir := t.TempDir()
+		tempDBPath := filepath.Join(tempDir, "empty.rmtree")
+		copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
+		router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", true, 4, 200)
+		t.Cleanup(cleanup)
+		return httptest.NewServer(router)
+	}
+
+	// Every subtest below shares this same fixture: Joseph Kennedy (P1)
+	// and Rose Fitzgerald (P2), a real Birth/Death on P1, and a Marriage
+	// on their Couple relationship -- one person exercising all 10
+	// direct parameters, rather than a different fixture per parameter.
+	setup := func(t *testing.T) *httptest.Server {
+		testServer := newTestServer(t)
+		status, respBody, _ := post(t, testServer, "/collections/empty/persons", `{"persons":[{
+			"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Joseph"},{"type":"http://gedcomx.org/Surname","value":"Kennedy"}]}],"preferred":true}],
+			"gender":{"type":"http://gedcomx.org/Male"},
+			"facts":[
+				{"type":"http://gedcomx.org/Birth","date":{"original":"6 Sep 1888"},"place":{"original":"Boston, MA"}},
+				{"type":"http://gedcomx.org/Death","date":{"original":"18 Nov 1969"},"place":{"original":"Hyannis Port, MA"}}
+			]
+		}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P1
+		status, respBody, _ = post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"parts":[{"type":"http://gedcomx.org/Given","value":"Rose"},{"type":"http://gedcomx.org/Surname","value":"Fitzgerald"}]}]}],"gender":{"type":"http://gedcomx.org/Female"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P2
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{
+			"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"},
+			"facts":[{"type":"http://gedcomx.org/Marriage","date":{"original":"7 Oct 1914"},"place":{"original":"Boston, MA"}}]
+		}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		return testServer
+	}
+	search := func(t *testing.T, testServer *httptest.Server, q string) (int, string, http.Header) {
+		t.Helper()
+		u := testServer.URL + "/collections/empty/persons/search?q=" + url.QueryEscape(q)
+		req, err := http.NewRequest("GET", u, nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body), resp.Header
+	}
+
+	directParamCases := []struct {
+		name string
+		q    string
+	}{
+		{"name", `name:"Joseph Kennedy"`},
+		{"givenName", `givenName:Joseph`},
+		{"surname", `surname:Kennedy`},
+		{"gender", `gender:male surname:Kennedy`},
+		{"birthDate exact", `birthDate:"6 Sep 1888"`},
+		{"birthPlace", `birthPlace:Boston~`},
+		{"deathDate exact", `deathDate:"18 Nov 1969"`},
+		{"deathPlace", `deathPlace:"Hyannis Port"~`},
+		{"marriageDate exact", `marriageDate:"7 Oct 1914"`},
+		{"marriagePlace", `marriagePlace:Boston~`},
+	}
+	for _, tc := range directParamCases {
+		t.Run(tc.name, func(t *testing.T) {
+			testServer := setup(t)
+			status, body, headers := search(t, testServer, tc.q)
+			require.Equal(t, http.StatusOK, status, "q=%q body: %s", tc.q, body)
+			require.Equal(t, "application/x-gedcomx-atom+json", headers.Get("Content-Type"))
+			require.Contains(t, body, `"id":"P1"`, "q=%q should match Joseph Kennedy: %s", tc.q, body)
+		})
+	}
+
+	t.Run("non-exact birthDate widens to the whole year, exact does not", func(t *testing.T) {
+		testServer := setup(t)
+		// A different day/month in the same year: exact must NOT match.
+		status, body, _ := search(t, testServer, `birthDate:"1 Jan 1888"`)
+		require.Equal(t, http.StatusNoContent, status, "body: %s", body)
+		// The same wrong day/month, but non-exact: widened to the year, must match.
+		status, body, _ = search(t, testServer, `birthDate:"1 Jan 1888"~`)
+		require.Equal(t, http.StatusOK, status, "body: %s", body)
+		require.Contains(t, body, `"id":"P1"`)
+	})
+
+	t.Run("no results is 204, not 200 with an empty list", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `givenName:Zzznonexistent`)
+		require.Equal(t, http.StatusNoContent, status, "body: %s", body)
+	})
+
+	t.Run("missing q is rejected", func(t *testing.T) {
+		testServer := setup(t)
+		req, _ := http.NewRequest("GET", testServer.URL+"/collections/empty/persons/search", nil)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("unrecognized field is rejected", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `foo:bar`)
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Contains(t, body, "unrecognized search field")
+	})
+
+	t.Run("relation-prefixed field is rejected with its own specific message", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `fatherGivenName:John`)
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Contains(t, body, "aren't supported yet")
+	})
+
+	t.Run("invalid gender value is rejected", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `gender:other`)
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Contains(t, body, "valid values are")
+	})
+
+	t.Run("unparseable date is rejected, not silently matching nothing", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `birthDate:notadate`)
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Contains(t, body, "isn't a date this server can parse")
+	})
+
+	t.Run("Accept header requiring only the plain GEDCOM X profile is rejected", func(t *testing.T) {
+		testServer := setup(t)
+		req, _ := http.NewRequest("GET", testServer.URL+"/collections/empty/persons/search?q=givenName:Joseph", nil)
+		req.Header.Set("Accept", "application/x-gedcomx-v1+json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusNotAcceptable, resp.StatusCode)
+	})
+
+	t.Run("Collection response advertises the person-search templated link", func(t *testing.T) {
+		testServer := setup(t)
+		resp, err := http.Get(testServer.URL + "/collections/empty")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Contains(t, string(body), `"person-search":{"template":"http://localhost:8080/collections/empty/persons/search{?q,limit,offset}"}`)
 	})
 }
 
