@@ -263,19 +263,15 @@ func (s *Server) buildSourcesAndMedia(ownerType int, ownerID int64) (sources []g
 // familiesAsChild.
 //
 // A real, reported gap: marriageDate/marriagePlace weren't implemented
-// at all -- the struct itself had no fields for them until this change.
-// While fixing that, birthPlace/deathPlace turned out to have the exact
-// same problem one level less visible: the struct fields already
-// existed, but this function never actually populated them, silently
-// leaving both permanently empty since whoever added the fields never
-// wired them up. Fixed together, since both are the same shape of gap
-// against the same spec table -- flagged clearly rather than assumed to
-// be in scope: familiesAsParent/familiesAsChild are a real, separate gap
-// too (also unpopulated), but are a meaningfully larger feature (each
-// FamilyView needs its own parent1/parent2/children construction across
-// every family a person is in, both as parent and as child) and weren't
-// part of the reported request -- left for its own turn rather than
-// folded in here.
+// at all -- the struct itself had no fields for them until fixed.
+// birthPlace/deathPlace turned out to have the exact same problem one
+// level less visible: the struct fields already existed, but this
+// function never actually populated them. familiesAsParent/
+// familiesAsChild were flagged, at the time, as a real, separate gap
+// too large to fold into that same fix (each FamilyView needs its own
+// parent1/parent2/children construction across every family a person is
+// in, both as parent and as child) -- implemented here, in the
+// dedicated turn that was flagged for.
 //
 // birthPlace/deathPlace come from this same person's own Birth/Death
 // facts (already-built facts, reused directly rather than re-fetched --
@@ -293,6 +289,12 @@ func (s *Server) buildSourcesAndMedia(ownerType int, ownerID int64) (sources []g
 // primary name and other "the first one" choices), and skip to the next
 // family only if the first has no Marriage fact at all rather than
 // picking a family known not to have one.
+//
+// familiesAsParent/familiesAsChild carry no such ambiguity -- OPTIONAL,
+// "Order is preserved," lists rather than a single "which one" value,
+// so every family a person is a parent or a child in is included, not
+// just the first. See buildFamilyView's own comment for how each one is
+// built.
 func (s *Server) buildDisplayProperties(personID int64, names []rmdb.Name, facts []gedcomx.Fact, sex int) (*gedcomx.DisplayProperties, error) {
 	disp := &gedcomx.DisplayProperties{}
 	switch sex {
@@ -364,7 +366,70 @@ func (s *Server) buildDisplayProperties(personID int64, names []rmdb.Name, facts
 		break
 	}
 
+	// familiesAsParent/familiesAsChild: OPTIONAL (Section 2.2's own
+	// properties table), unlike PersonDocument.Relationships' own MUST
+	// (Section 4.10.5) -- left nil, not an empty slice, when a person
+	// has none, so they're correctly omitted (json:"...,omitempty")
+	// rather than serialized as "[]", matching the spec's own
+	// "OPTIONAL" rather than treating this the same as that separate,
+	// stronger requirement.
+	for _, fam := range families {
+		fv, err := s.buildFamilyView(fam)
+		if err != nil {
+			return nil, err
+		}
+		disp.FamiliesAsParent = append(disp.FamiliesAsParent, fv)
+	}
+
+	childRows, err := s.db.ChildRowsAsChild(personID)
+	if err != nil {
+		return nil, err
+	}
+	for _, cr := range childRows {
+		fam, err := s.db.GetFamily(cr.FamilyID)
+		if err != nil {
+			return nil, err
+		}
+		if fam == nil {
+			continue
+		}
+		fv, err := s.buildFamilyView(*fam)
+		if err != nil {
+			return nil, err
+		}
+		disp.FamiliesAsChild = append(disp.FamiliesAsChild, fv)
+	}
+
 	return disp, nil
+}
+
+// buildFamilyView assembles the RS "FamilyView" extension (Section 2.3)
+// for a single family -- "up to two parents and a list of children who
+// have that set of parents in common," per the spec's own description,
+// used for both DisplayProperties.familiesAsParent and
+// .familiesAsChild. parent1/parent2 (each OPTIONAL, spec doesn't define
+// which is which -- checked directly, not assumed) are assigned
+// Father/Mother respectively, matching buildCoupleRelationship's own
+// existing Person1=Father/Person2=Mother convention for the same
+// FatherID/MotherID pair, for consistency across this project rather
+// than introducing a second, different convention for the same
+// underlying data.
+func (s *Server) buildFamilyView(fam rmdb.Family) (gedcomx.FamilyView, error) {
+	fv := gedcomx.FamilyView{}
+	if fam.FatherID != 0 {
+		fv.Parent1 = &gedcomx.ResourceReference{Resource: s.url("/persons/" + personRef(fam.FatherID)), ResourceID: personRef(fam.FatherID)}
+	}
+	if fam.MotherID != 0 {
+		fv.Parent2 = &gedcomx.ResourceReference{Resource: s.url("/persons/" + personRef(fam.MotherID)), ResourceID: personRef(fam.MotherID)}
+	}
+	children, err := s.db.ChildRowsOfFamily(fam.FamilyID)
+	if err != nil {
+		return gedcomx.FamilyView{}, err
+	}
+	for _, c := range children {
+		fv.Children = append(fv.Children, gedcomx.ResourceReference{Resource: s.url("/persons/" + personRef(c.ChildID)), ResourceID: personRef(c.ChildID)})
+	}
+	return fv, nil
 }
 
 // --- Collection ---

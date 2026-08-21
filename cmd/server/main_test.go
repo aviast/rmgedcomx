@@ -486,6 +486,128 @@ func TestDisplayPropertiesBirthDeathMarriage(t *testing.T) {
 	})
 }
 
+// TestDisplayPropertiesFamiliesAsParentAndChild confirms
+// DisplayProperties.familiesAsParent/familiesAsChild (RS spec Section
+// 2.2) are populated -- checked directly against the spec's own
+// properties table and the separate FamilyView data type (Section 2.3)
+// before implementing any of this, not assumed. Unlike
+// marriageDate/marriagePlace, these carry no "which one" ambiguity --
+// OPTIONAL, "Order is preserved" *lists*, so every family a person is a
+// parent or a child in is included. Self-contained via the write API
+// rather than depending on royal92.rmtree's specific data, matching
+// this project's own established preference for a permanent regression
+// test.
+func TestDisplayPropertiesFamiliesAsParentAndChild(t *testing.T) {
+	post := func(t *testing.T, testServer *httptest.Server, path, body string) (int, string, http.Header) {
+		t.Helper()
+		req, err := http.NewRequest("POST", testServer.URL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(respBody), resp.Header
+	}
+	get := func(t *testing.T, testServer *httptest.Server, location string) (int, string) {
+		t.Helper()
+		url := strings.Replace(location, "http://localhost:8080", testServer.URL, 1)
+		resp, err := http.Get(url)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body)
+	}
+	newTestServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		tempDir := t.TempDir()
+		tempDBPath := filepath.Join(tempDir, "empty.rmtree")
+		copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
+		router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", true, 4, 200)
+		t.Cleanup(cleanup)
+		return httptest.NewServer(router)
+	}
+
+	t.Run("a person with no families at all has both fields absent, not empty arrays", func(t *testing.T) {
+		testServer := newTestServer(t)
+		status, respBody, headers := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Solo Person"}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, body := get(t, testServer, headers.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", body)
+		require.NotContains(t, body, `"familiesAsParent"`)
+		require.NotContains(t, body, `"familiesAsChild"`)
+	})
+
+	t.Run("familiesAsParent has parent1=father, parent2=mother, and every child", func(t *testing.T) {
+		testServer := newTestServer(t)
+		_, respBody, hFather := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Father"}]}],"gender":{"type":"http://gedcomx.org/Male"}}]}`)
+		require.Contains(t, hFather.Get("Location"), "/persons/P1", "body: %s", respBody)
+		status, respBody, _ := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Mother"}]}],"gender":{"type":"http://gedcomx.org/Female"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P2
+		status, respBody, _ = post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Child One"}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P3
+		status, respBody, _ = post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Child Two"}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P4
+
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/Couple","person1":{"resourceId":"P1"},"person2":{"resourceId":"P2"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		// Each child needs linking to BOTH parents separately -- a bare,
+		// single-parent ParentChild request never assumes the child
+		// belongs to that parent's existing family (see
+		// CreateParentChildRelationship's own comment in
+		// internal/rmdb/createparentchild.go); only linking to both
+		// merges the child into the same family as the Couple above.
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P4"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P4"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, body := get(t, testServer, hFather.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", body)
+		require.Contains(t, body, `"familiesAsParent":[{"parent1":{"resource":"http://localhost:8080/collections/empty/persons/P1","resourceId":"P1"},"parent2":{"resource":"http://localhost:8080/collections/empty/persons/P2","resourceId":"P2"},"children":[{"resource":"http://localhost:8080/collections/empty/persons/P3","resourceId":"P3"},{"resource":"http://localhost:8080/collections/empty/persons/P4","resourceId":"P4"}]}]`)
+	})
+
+	t.Run("familiesAsChild includes this person alongside any siblings", func(t *testing.T) {
+		testServer := newTestServer(t)
+		status, respBody, _ := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Father"}]}],"gender":{"type":"http://gedcomx.org/Male"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P1
+		status, respBody, _ = post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Mother"}]}],"gender":{"type":"http://gedcomx.org/Female"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P2
+		status, respBody, hChild := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"This Person"}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P3
+		status, respBody, _ = post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"Sibling"}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P4
+
+		// Both children need linking to BOTH parents separately, the
+		// same requirement as the familiesAsParent test above, for the
+		// same reason -- without a second, shared parent confirming it,
+		// nothing tells this server these two children actually belong
+		// to the same family rather than merely sharing one parent in
+		// common (a real, different scenario this project's own design
+		// has already had to distinguish -- see
+		// CreateParentChildRelationship's own comment).
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P4"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P4"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+
+		getStatus, body := get(t, testServer, hChild.Get("Location"))
+		require.Equal(t, http.StatusOK, getStatus, "body: %s", body)
+		require.Contains(t, body, `"familiesAsChild":[{"parent1":{"resource":"http://localhost:8080/collections/empty/persons/P1","resourceId":"P1"},"parent2":{"resource":"http://localhost:8080/collections/empty/persons/P2","resourceId":"P2"},"children":[{"resource":"http://localhost:8080/collections/empty/persons/P3","resourceId":"P3"},{"resource":"http://localhost:8080/collections/empty/persons/P4","resourceId":"P4"}]}]`)
+	})
+}
+
 // Pre-compile regex to replace dynamic timestamps in sqldiff output
 var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
 var familySearchIDRegex = regexp.MustCompile(`,\s*fsID=-?[0-9]+`)

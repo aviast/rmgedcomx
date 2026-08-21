@@ -12,6 +12,74 @@
         "birthPlace": "Kensington, Palace, London, England",
         "deathDate": "1901",
         "deathPlace": "Osborne House, Isle of Wight, England",
+        "familiesAsChild": [
+          {
+            "children": [
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+                "resourceId": "P1"
+              }
+            ],
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133",
+              "resourceId": "P133"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138",
+              "resourceId": "P138"
+            }
+          }
+        ],
+        "familiesAsParent": [
+          {
+            "children": [
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P3",
+                "resourceId": "P3"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P4",
+                "resourceId": "P4"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P5",
+                "resourceId": "P5"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P6",
+                "resourceId": "P6"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P7",
+                "resourceId": "P7"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P8",
+                "resourceId": "P8"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P9",
+                "resourceId": "P9"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P10",
+                "resourceId": "P10"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P11",
+                "resourceId": "P11"
+              }
+            ],
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2",
+              "resourceId": "P2"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+              "resourceId": "P1"
+            }
+          }
+        ],
         "gender": "Female",
         "lifespan": "1819 - 1901",
         "marriageDate": "10 Feb 1840",
@@ -155,6 +223,98 @@
         "birthPlace": "Buckingham House, , London, England",
         "deathDate": "1820",
         "deathPlace": "Sidmouth, Devon, , England",
+        "familiesAsChild": [
+          {
+            "children": [
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P141",
+                "resourceId": "P141"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P202",
+                "resourceId": "P202"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P203",
+                "resourceId": "P203"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P204",
+                "resourceId": "P204"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133",
+                "resourceId": "P133"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P209",
+                "resourceId": "P209"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P210",
+                "resourceId": "P210"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P212",
+                "resourceId": "P212"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P213",
+                "resourceId": "P213"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P132",
+                "resourceId": "P132"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P214",
+                "resourceId": "P214"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P215",
+                "resourceId": "P215"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P216",
+                "resourceId": "P216"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P217",
+                "resourceId": "P217"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P218",
+                "resourceId": "P218"
+              }
+            ],
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P130",
+              "resourceId": "P130"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P131",
+              "resourceId": "P131"
+            }
+          }
+        ],
+        "familiesAsParent": [
+          {
+            "children": [
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+                "resourceId": "P1"
+              }
+            ],
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133",
+              "resourceId": "P133"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138",
+              "resourceId": "P138"
+            }
+          }
+        ],
         "gender": "Male",
         "lifespan": "1767 - 1820",
         "marriageDate": "11 Jul 1818",
@@ -284,6 +444,76 @@
         "birthPlace": "Coburg",
         "deathDate": "1861",
         "deathPlace": "Frogmore House, Windsor, , England",
+        "familiesAsChild": [
+          {
+            "children": [
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2973",
+                "resourceId": "P2973"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2974",
+                "resourceId": "P2974"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2975",
+                "resourceId": "P2975"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P139",
+                "resourceId": "P139"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P205",
+                "resourceId": "P205"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138",
+                "resourceId": "P138"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1696",
+                "resourceId": "P1696"
+              }
+            ],
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2448",
+              "resourceId": "P2448"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2614",
+              "resourceId": "P2614"
+            }
+          }
+        ],
+        "familiesAsParent": [
+          {
+            "children": [
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+                "resourceId": "P1"
+              }
+            ],
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133",
+              "resourceId": "P133"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138",
+              "resourceId": "P138"
+            }
+          },
+          {
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2976",
+              "resourceId": "P2976"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138",
+              "resourceId": "P138"
+            }
+          }
+        ],
         "gender": "Female",
         "lifespan": "1786 - 1861",
         "marriageDate": "11 Jul 1818",
