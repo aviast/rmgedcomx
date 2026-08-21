@@ -29,6 +29,74 @@
         "birthPlace": "Kensington, Palace, London, England",
         "deathDate": "1901",
         "deathPlace": "Osborne House, Isle of Wight, England",
+        "familiesAsChild": [
+          {
+            "children": [
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+                "resourceId": "P1"
+              }
+            ],
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P133",
+              "resourceId": "P133"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P138",
+              "resourceId": "P138"
+            }
+          }
+        ],
+        "familiesAsParent": [
+          {
+            "children": [
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P3",
+                "resourceId": "P3"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P4",
+                "resourceId": "P4"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P5",
+                "resourceId": "P5"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P6",
+                "resourceId": "P6"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P7",
+                "resourceId": "P7"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P8",
+                "resourceId": "P8"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P9",
+                "resourceId": "P9"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P10",
+                "resourceId": "P10"
+              },
+              {
+                "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P11",
+                "resourceId": "P11"
+              }
+            ],
+            "parent1": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P2",
+              "resourceId": "P2"
+            },
+            "parent2": {
+              "resource": "http://localhost:8080/collections/victoria-hanover-royal92/persons/P1",
+              "resourceId": "P1"
+            }
+          }
+        ],
         "gender": "Female",
         "lifespan": "1819 - 1901",
         "marriageDate": "10 Feb 1840",

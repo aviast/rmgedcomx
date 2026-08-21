@@ -689,6 +689,74 @@ Four golden files needed regenerating as a result
 way as the `collection` link fix above, confirming `birthPlace`/
 `deathPlace`/`marriageDate`/`marriagePlace` were the only keys added.
 
+## `familiesAsParent`/`familiesAsChild`
+
+Flagged as a real, separate gap at the time `marriageDate`/
+`marriagePlace` were fixed (both fields already existed on the
+`DisplayProperties` struct and were already correctly `nil`/omitted
+when empty -- `FamilyView` itself, and both of these fields referencing
+it, were already modeled -- but neither was ever actually populated) and
+implemented here, in the dedicated turn that was flagged for rather than
+folded in earlier.
+
+Unlike `marriageDate`/`marriagePlace`, these carry no "which one, when
+there's more than one" ambiguity to resolve: both are `OPTIONAL`,
+"Order is preserved" *lists* (Section 2.2's own properties table), so
+every family a person is a parent or a child in belongs in the result,
+not just one. `buildFamilyView` (`internal/api/convert.go`) builds a
+single `FamilyView` from an `rmdb.Family` -- checked directly against
+the separate `FamilyView` data type (Section 2.3) before writing
+anything: `parent1`/`parent2` are each individually `OPTIONAL` ("up to
+two parents"), and `children` is "a list of references to the children
+... who have that set of parents in common." The spec is deliberately
+silent on which of `parent1`/`parent2` is which -- the same ambiguity
+already resolved for `Relationship.person1`/`person2` on a `Couple`
+relationship -- so `parent1`/`parent2` are assigned Father/Mother
+respectively, matching `buildCoupleRelationship`'s own existing
+`Person1`=Father/`Person2`=Mother convention for the exact same
+`FatherID`/`MotherID` pair, rather than introducing a second, different
+convention for the same underlying data. This one helper is shared by
+both `familiesAsParent` (built from `FamiliesAsParent`'s own
+already-fetched results, reused rather than re-queried a second time)
+and `familiesAsChild` (a new query, `ChildRowsAsChild`, one per family
+this person is a child in).
+
+A `familiesAsChild` entry for the person's own family as a child
+correctly includes that same person among `children` (alongside any
+siblings) -- not a special case, but a direct, correct consequence of
+`buildFamilyView` fetching *every* child of the family via
+`ChildRowsOfFamily`, which this person is trivially one of, by the
+spec's own definition of a family "view" as parents plus every child
+who shares them.
+
+Verified against real, non-obvious data: `royal92.rmtree`'s Victoria
+(`P1`) has exactly one `familiesAsChild` entry (her own two real
+parents, herself as the sole listed child -- no recorded siblings in
+this database) and one `familiesAsParent` entry (herself and Albert as
+parents -- Albert in `parent1`, confirming the Father/Mother convention
+holds in practice, not just in the code) with all nine of her and
+Albert's real children, in order.
+
+Two of the three new permanent tests (`cmd/server/main_test.go`,
+`TestDisplayPropertiesFamiliesAsParentAndChild`) initially failed for a
+revealing reason worth recording, not just fixing quietly: the test
+itself, not `buildFamilyView`, had the bug. Linking two children to only
+their shared father -- no mother at all -- correctly produced two
+separate single-parent families, not one shared family, because a bare,
+single-parent `ParentChild` request never assumes an unnamed second
+parent (see `CreateParentChildRelationship`'s own comment, and "A real
+design mistake, corrected" earlier in this document, for the full,
+previously-established reasoning this test had briefly forgotten).
+Corrected by linking each child to both parents separately, the same
+requirement already established for every other multi-child scenario in
+this project.
+
+Four golden files needed regenerating as a result of implementing this
+(the same four as the `marriageDate`/`marriagePlace` fix, since all four
+embed a full `Person` with its own `display`), diffed the same way,
+confirming `familiesAsParent`/`familiesAsChild`/`parent1`/`parent2`/
+`children`/`resource`/`resourceId` were the only keys added.
+
 ### A real, separate bug this surfaced: `Couple` relationship `facts` were silently discarded
 
 Building a self-contained test for the fix above (rather than relying
