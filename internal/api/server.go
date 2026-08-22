@@ -154,6 +154,7 @@ func (s *Server) resourceHandler() http.Handler {
 	mux.HandleFunc("GET /relationships/{id}", s.handleRelationship)
 
 	mux.HandleFunc("GET /places", s.handlePlaces)
+	mux.HandleFunc("GET /places/search", s.handlePlaceSearch)
 	mux.HandleFunc("GET /places/{id}", s.handlePlace)
 
 	mux.HandleFunc("GET /source-descriptions", s.handleSourceDescriptions)
@@ -217,15 +218,17 @@ const gedcomXMediaType = "application/x-gedcomx-v1+json"
 // so neither "must accept our JSON profile" nor "force our JSON
 // Content-Type" applies to it.
 //
-// GET .../persons/search is exempt for a different reason: it's a real
-// GEDCOM X RS state (Person Search Results, Section 4.11), but one with
-// its own, different required media type (gedcomXAtomMediaType,
-// personsearch.go) -- handlePersonSearch does its own Accept-header
-// check and Content-Type instead of this one.
+// GET .../persons/search and GET .../places/search are exempt for a
+// different reason: they're real GEDCOM X RS states (Person Search
+// Results, Section 4.11; Place Search Results, Section 4.17), but each
+// with its own, different required media type (gedcomXAtomMediaType,
+// personsearch.go/placesearch.go) -- handlePersonSearch/
+// handlePlaceSearch each do their own Accept-header check and
+// Content-Type instead of this one.
 func withContentNegotiation(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Vary", "Accept")
-		if strings.HasSuffix(r.URL.Path, "/content") || strings.HasSuffix(r.URL.Path, "/persons/search") {
+		if strings.HasSuffix(r.URL.Path, "/content") || strings.HasSuffix(r.URL.Path, "/persons/search") || strings.HasSuffix(r.URL.Path, "/places/search") {
 			next.ServeHTTP(w, r)
 			return
 		}

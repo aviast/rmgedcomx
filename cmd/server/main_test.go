@@ -865,6 +865,130 @@ func TestPersonSearchHTTP(t *testing.T) {
 	})
 }
 
+// TestPlaceSearchHTTP covers the Place Search Results state (RS spec
+// Section 4.17) -- self-contained via the write API, the same as
+// TestPersonSearchHTTP. There's no direct "create a place" endpoint;
+// places are created implicitly whenever a fact's own place.original
+// text doesn't match an existing PlaceTable row, so the fixture below
+// creates a person with two Birth-fact places specifically to get two
+// distinct, known, controlled PlaceTable rows to search against.
+func TestPlaceSearchHTTP(t *testing.T) {
+	post := func(t *testing.T, testServer *httptest.Server, path, body string) (int, string, http.Header) {
+		t.Helper()
+		req, err := http.NewRequest("POST", testServer.URL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(respBody), resp.Header
+	}
+	newTestServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		tempDir := t.TempDir()
+		tempDBPath := filepath.Join(tempDir, "empty.rmtree")
+		copyFile(t, "../../testdata/empty.rmtree", tempDBPath)
+		router, cleanup := SetupRouter([]string{tempDBPath}, "http://localhost:8080", "testdata/media", true, 4, 200)
+		t.Cleanup(cleanup)
+		return httptest.NewServer(router)
+	}
+	search := func(t *testing.T, testServer *httptest.Server, q string) (int, string, http.Header) {
+		t.Helper()
+		u := testServer.URL + "/collections/empty/places/search"
+		if q != "" {
+			u += "?q=" + url.QueryEscape(q)
+		}
+		req, err := http.NewRequest("GET", u, nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body), resp.Header
+	}
+	setup := func(t *testing.T) *httptest.Server {
+		testServer := newTestServer(t)
+		status, respBody, _ := post(t, testServer, "/collections/empty/persons", `{"persons":[{
+			"names":[{"nameForms":[{"fullText":"Test Person"}]}],
+			"facts":[
+				{"type":"http://gedcomx.org/Birth","place":{"original":"Boston, Suffolk, Massachusetts"}},
+				{"type":"http://gedcomx.org/Death","place":{"original":"Quincy, Norfolk, Massachusetts"}}
+			]
+		}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		return testServer
+	}
+
+	t.Run("exact name match", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, headers := search(t, testServer, `name:"Boston, Suffolk, Massachusetts"`)
+		require.Equal(t, http.StatusOK, status, "body: %s", body)
+		require.Equal(t, "application/x-gedcomx-atom+json", headers.Get("Content-Type"))
+		require.Contains(t, body, `"results":1,"places":[{"id":`, "an exact match must return exactly one place")
+		require.Contains(t, body, `"value":"Boston, Suffolk, Massachusetts"`)
+		require.NotContains(t, body, "Quincy", "an exact match for Boston should not also return Quincy")
+	})
+
+	t.Run("non-exact substring match", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `name:Massachusetts~`)
+		require.Equal(t, http.StatusOK, status, "body: %s", body)
+		require.Contains(t, body, `"value":"Boston, Suffolk, Massachusetts"`)
+		require.Contains(t, body, `"value":"Quincy, Norfolk, Massachusetts"`, "both places share \"Massachusetts\", so a substring search should find both")
+	})
+
+	t.Run("no results is 204", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `name:Zzznonexistent`)
+		require.Equal(t, http.StatusNoContent, status, "body: %s", body)
+	})
+
+	t.Run("missing q is rejected", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, "")
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Contains(t, body, `missing required`)
+	})
+
+	t.Run("only name is supported, other fields are rejected", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `placeType:city`)
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Contains(t, body, "only supports")
+	})
+
+	t.Run("each entry links to the place description via the description rel, not person", func(t *testing.T) {
+		testServer := setup(t)
+		status, body, _ := search(t, testServer, `name:"Boston, Suffolk, Massachusetts"`)
+		require.Equal(t, http.StatusOK, status, "body: %s", body)
+		require.Contains(t, body, `"description":{"href":"http://localhost:8080/collections/empty/places/PL`)
+	})
+
+	t.Run("routing does not confuse the literal /places/search with the {id} wildcard", func(t *testing.T) {
+		testServer := setup(t)
+		resp, err := http.Get(testServer.URL + "/collections/empty/places/PL1")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		getBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", getBody)
+		require.Contains(t, string(getBody), `"id":"PL1"`)
+	})
+
+	t.Run("Collection response advertises the place-search templated link", func(t *testing.T) {
+		testServer := setup(t)
+		resp, err := http.Get(testServer.URL + "/collections/empty")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Contains(t, string(body), `"place-search":{"template":"http://localhost:8080/collections/empty/places/search{?q,limit,offset}"}`)
+	})
+}
+
 // Pre-compile regex to replace dynamic timestamps in sqldiff output
 var utcModDateRegex = regexp.MustCompile(`UTCModDate=[0-9.]+`)
 var familySearchIDRegex = regexp.MustCompile(`,\s*fsID=-?[0-9]+`)

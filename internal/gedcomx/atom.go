@@ -38,12 +38,17 @@ type AtomEntry struct {
 // restricted to GEDCOM X Atom Extensions' own content processing model
 // (Section 2.3.1/3.2): "the content of an entry MAY have at most a
 // single member, 'gedcomx', to supply the genealogical data associated
-// with the entry." Section 4.11.3 (Person Search Results' own "Data
-// Elements") further specifies this is "a GEDCOM X document" containing
-// at least one Person -- matched here by reusing PersonDocument
-// directly, the same document shape every other Person-returning
-// endpoint already produces, rather than inventing a second, narrower
-// type for exactly the same data.
+// with the entry." Which concrete GEDCOM X document shape that member
+// holds depends on which search state produced it -- Person Search
+// Results (Section 4.11.3) requires "at least one Person"; Place Search
+// Results (Section 4.17.3) requires "at least one PlaceDescription,"
+// with the "main" one first if there's more than one. GedcomX is typed
+// `any` rather than a single concrete document type so both reuse the
+// exact same document shape every other Person- or PlaceDescription-
+// returning endpoint already produces (PersonDocument,
+// PlaceDescriptionsDocument) instead of each search state inventing its
+// own narrower type for data this server already has a real
+// representation of.
 type AtomContent struct {
-	GedcomX *PersonDocument `json:"gedcomx,omitempty"`
+	GedcomX any `json:"gedcomx,omitempty"`
 }

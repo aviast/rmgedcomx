@@ -1100,6 +1100,93 @@ different relation groups genuinely AND'ed together, and an
 unrecognized relation-field name rejected with its own specific
 message.
 
+## Place Search Results
+
+The other Atom-based search state the RS spec defines (Section 4.17),
+extending the same infrastructure Person Search Results already built
+rather than duplicating it.
+
+**Media type and content negotiation are identical to Person Search
+Results** -- checked directly, not assumed: Section 4.17.1 states the
+same `application/x-gedcomx-atom+json` MUST / `application/atom+xml`
+RECOMMENDED requirement, word for word, as Section 4.11.1. `handlePlaceSearch`
+reuses `gedcomXAtomMediaType`/`acceptsGedcomXAtomJSON` directly rather
+than a second, parallel copy, and `GET .../places/search` is exempted
+from the global `withContentNegotiation` middleware (`server.go`) the
+same way `.../persons/search` already is.
+
+**A real, surprising spec gap, found and confirmed before writing any
+code against it**: unlike Person Search Results, the RS spec's own "q"
+template variable documentation (Section 5.3) defines search parameters
+*exclusively* for persons -- the direct parameters and all 36
+relation-prefixed ones this project has already implemented. No
+"Place Search Parameters" table exists anywhere in the specification;
+the `Place Search Results` state itself, its media type, its
+operations, and its data elements are all fully specified, but which
+query fields are actually valid against it is left entirely undefined.
+Resolved by supporting exactly one parameter, `name` -- the one
+reasonable, minimal choice available without inventing spec text that
+doesn't exist: `PlaceDescription` (`internal/gedcomx/model.go`) has
+essentially one searchable text attribute at all (`Names`;
+`Latitude`/`Longitude` aren't meaningfully "searched" the same way),
+and reusing the field name `name` keeps this consistent with Person
+Search Results' own `name` parameter for the same underlying concept
+rather than inventing a different name for it. Any other field is
+rejected outright with a message naming `name` as the only one
+supported, not silently ignored.
+
+**`AtomContent.GedcomX` was generalized from `*PersonDocument` to
+`any`** (`internal/gedcomx/atom.go`) specifically to support this:
+Section 4.17.3 ("Data Elements") requires each entry's content to be "a
+GEDCOM X document that MUST contain at least one instance of the
+`PlaceDescription` Data Type," the same "reuse the real document shape
+this server already produces" approach Person Search Results already
+established, just for a different existing type
+(`PlaceDescriptionsDocument`, the same one `GET /places` already
+returns) rather than a second, place-specific content type invented
+for identical data. The spec's further requirement -- if more than one
+`PlaceDescription` were provided, the "main" one must be first -- is
+trivially satisfied here, since exactly one is always provided per
+entry, never more.
+
+**Each entry links via `description`, not `person`** -- checked
+directly against Section 4.17.4's own Transitions table, the one
+transition it defines for this state, rather than assumed to mirror
+Person Search Results' own `person` rel.
+
+**`atom:updated` reuses the identical `UTCModDate` conversion** Person
+Search Results already established, applied to `PlaceTable` instead
+of `PersonTable` -- confirmed directly that `PlaceTable` has the exact
+same `UTCModDate FLOAT` column, storing the same OLE Automation epoch,
+before assuming the existing conversion logic could be reused as-is
+(`GetPlaceUTCModDate`, `internal/rmdb/queries.go`).
+
+**Routing**: `GET /places/search` is registered as its own literal
+route alongside the existing `GET /places/{id}` wildcard, the same
+pattern (and the same already-verified Go 1.22 `net/http.ServeMux`
+literal-over-wildcard precedence) as `/persons/search`.
+
+**Discovery**: the `Collection` state gained a `place-search` templated
+link, alongside `person-search`, using the same `q`/`limit`/`offset`
+template variables for the same reasons already established there.
+
+Verified end to end through the real HTTP API against `royal92.rmtree`
+(an exact match against a real place's full name, a substring match
+against "Kensington" correctly returning all five real places
+containing it, and confirming the routing and Collection-discovery
+behavior), then locked down with a self-contained permanent test suite
+(`cmd/server/main_test.go`, `TestPlaceSearchHTTP`) covering exact and
+non-exact matching, empty results, the single-parameter restriction,
+the `description` rel, routing, and Collection discovery. Two of the
+new tests initially failed for a reason worth recording -- not a bug in
+the implementation, but a mistaken assumption in the test itself: newly
+created places in `testdata/empty.rmtree` don't start at `PL1`, since
+that database already ships with 205 pre-loaded LDS temple places
+(`PL1`-`PL205`); a fresh place created during a test gets `PL206`
+onward. Fixed by asserting on the place's own name in the response
+rather than a hardcoded, assumed ID -- both more correct and more
+robust against that count ever changing.
+
 ## Write support
 
 Off by default. `-write` enables it; without it, this server behaves

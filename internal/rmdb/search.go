@@ -31,7 +31,7 @@ type SearchDateCriterion struct {
 }
 
 // RelationCriteria holds the 9 "{relation}"-prefixed GEDCOM X RS search
-// parameters (RS spec Section 6) for one relation -- {relation}Name,
+// parameters (RS spec Section 5.3, "q") for one relation -- {relation}Name,
 // GivenName, Surname, BirthDate, BirthPlace, DeathDate, DeathPlace,
 // MarriageDate, MarriagePlace. {relation} substitutes "father",
 // "mother", "spouse", or "parent"; SearchCriteria holds up to one of
@@ -393,6 +393,65 @@ func (db *DB) SearchPersons(criteria SearchCriteria, limit, offset int) ([]Perso
 	for rows.Next() {
 		var p Person
 		if err := rows.Scan(&p.PersonID, &p.Sex, &p.Living, &p.ParentID, &p.SpouseID); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// SearchPlaces implements the Place Search Results state's own query
+// (RS spec Section 4.17). Unlike Person Search Results (Section 4.11),
+// the RS spec's own "q" template variable documentation (Section 5.3)
+// defines search parameters exclusively for persons -- no
+// "Place Search Parameters" table exists anywhere in the spec at all,
+// checked directly, not assumed, since this genuinely surprised the
+// author on first finding it (the state itself, its media type,
+// operations, and data elements are all fully specified; only which
+// query fields are valid for it is left undefined). A single "name"
+// parameter is supported here as the one reasonable, minimal choice
+// available without inventing spec text that doesn't exist:
+// PlaceDescription (internal/gedcomx/model.go) has essentially one
+// searchable text attribute at all (Names -- Latitude/Longitude aren't
+// meaningfully "searched" the same way), and reusing the field name
+// "name" keeps the one parameter this state does support consistent
+// with Person Search Results' own "name" parameter rather than
+// inventing a different name for the same concept.
+func (db *DB) SearchPlaces(name *SearchTextCriterion, limit, offset int) ([]Place, int, error) {
+	var conditions []string
+	var args []any
+	if name != nil {
+		cond, a := textCondition("Name", name)
+		conditions = append(conditions, cond)
+		args = append(args, a...)
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	var total int
+	countQuery := "SELECT COUNT(*) FROM PlaceTable " + where
+	if err := db.sql.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("counting place search results: %w", err)
+	}
+
+	query := "SELECT PlaceID, PlaceType, Name, Latitude, Longitude, Note FROM PlaceTable " + where + " ORDER BY Name, PlaceID LIMIT ? OFFSET ?"
+	pagedArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := db.sql.Query(query, pagedArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("searching places: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Place
+	for rows.Next() {
+		var p Place
+		if err := rows.Scan(&p.PlaceID, &p.PlaceType, &p.Name, &p.Latitude, &p.Longitude, &p.Note); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, p)
