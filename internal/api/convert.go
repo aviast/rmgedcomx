@@ -494,6 +494,14 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 			// this server rather than introducing a second, different
 			// naming convention for this one endpoint alone.
 			"person-search": {Template: s.url("/persons/search") + "{?q,limit,offset}"},
+			// Same master transitions table (Section 5.2) as
+			// person-search above, this time for the Place Search
+			// Results state (Section 4.17). Unlike person-search,
+			// "q" here only ever accepts a single "name" parameter --
+			// see rmdb.SearchPlaces's own comment for why the RS spec
+			// itself gives no further guidance on place-specific
+			// search parameters.
+			"place-search": {Template: s.url("/places/search") + "{?q,limit,offset}"},
 		},
 	}, nil
 }

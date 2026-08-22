@@ -52,6 +52,9 @@
         "place-descriptions": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/places"
         },
+        "place-search": {
+          "template": "http://localhost:8080/collections/victoria-hanover-royal92/places/search{?q,limit,offset}"
+        },
         "relationships": {
           "href": "http://localhost:8080/collections/victoria-hanover-royal92/relationships"
         },

@@ -46,6 +46,22 @@ func (db *DB) GetPersonUTCModDate(id int64) (int64, error) {
 	return int64((days - daysFrom1899To1970) * msPerDay), nil
 }
 
+// GetPlaceUTCModDate is GetPersonUTCModDate's own counterpart for
+// PlaceTable, which has the identical UTCModDate column (confirmed
+// directly, not assumed) -- needed for atom:updated on a Place Search
+// Results entry (RS spec Section 4.17), the same requirement
+// GetPersonUTCModDate exists for on the Person side.
+func (db *DB) GetPlaceUTCModDate(id int64) (int64, error) {
+	var days float64
+	err := db.sql.QueryRow(`SELECT UTCModDate FROM PlaceTable WHERE PlaceID = ?`, id).Scan(&days)
+	if err != nil {
+		return 0, fmt.Errorf("querying UTCModDate for place %d: %w", id, err)
+	}
+	const daysFrom1899To1970 = 25569.0
+	const msPerDay = 86400000.0
+	return int64((days - daysFrom1899To1970) * msPerDay), nil
+}
+
 // ListPersons returns a page of persons ordered by PersonID, optionally
 // filtered by a case-insensitive substring match against the primary name
 // (surname or given name), along with the total count of matching persons.
