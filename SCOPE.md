@@ -14,17 +14,14 @@ support things a single-user desktop database doesn't need:
 - **`Records`** — this models a hosted archive of historical records (e.g. "the
   1940 U.S. Census" as a queryable collection in its own right). RootsMagic
   doesn't have an equivalent concept.
-- **Atom search-result feeds** (`Person Search Results`, `Place Search Results`) — a
-  real search implementation (indexing, ranking, paging as Atom/JSON feeds) is a
-  project in itself. `GET /persons?name=...` is provided instead, as a simpler
-  non-Atom filter, and is a natural place to grow real search later.
 - **Write operations** — off by default, and the vast majority of resources are
   still read-only even when write support is enabled. See the "Write support"
   section below for what's actually implemented, staged incrementally, and why.
 
-`Collections` / `Collection`, `Artifacts`, and `Events` / `Event` **are**
-implemented -- see the "Multiple databases / Collections", "Multimedia", and
-"Events" sections below for why and how.
+`Collections` / `Collection`, `Artifacts`, `Events` / `Event`, and `Person Search
+Results` / `Place Search Results` **are** implemented -- see the "Multiple
+databases / Collections", "Multimedia", "Events", and "Person Search Results" /
+"Place Search Results" sections below for why and how.
 
 ### What is included
 
@@ -38,7 +35,9 @@ generator, a Digital Asset Management tool, a chatbot, etc.):
 `Source Descriptions`, `Artifacts` (backed by `MultimediaTable` -- scanned
 certificates, photos, and similar), `Events` / `Event` (backed by `EventTable` +
 `WitnessTable` + `RoleTable` -- shared events with multiple participants, like a
-marriage with witnesses).
+marriage with witnesses), `Person Search Results`, `Place Search Results`
+(Atom/JSON-based query search -- see their own sections below for what's actually
+supported).
 
 Each `Person` embeds its conclusions (names, gender, facts) directly in the same
 response, per the spec's fallback rule in Section 4.10.5 ("If no link to
@@ -867,6 +866,25 @@ Prompted by a direct request, discussed in two parts -- an effort
 assessment first, then the implementation once its two open design
 questions (response format, non-exact matching) had actual answers
 rather than assumptions.
+
+This section (and its two follow-ups below, covering the
+`"{relation}"`-prefixed parameters and Place Search Results)
+supersedes an earlier design note in this document. Early in this
+project, real Atom-based search looked like enough effort on its own
+to be out of scope entirely -- a plain, non-Atom `GET
+/persons?name=...` substring filter (`ListPersons`'s own `nameFilter`
+parameter, `internal/rmdb/queries.go`) was added as a stand-in, with
+this same section of `SCOPE.md` explicitly noting it as "a natural
+place to grow real search later." That real search now exists, so the
+stand-in it was explicitly meant to be temporary until has been
+removed outright -- not deprecated or left running alongside the real
+thing, since a client with any reason to prefer the old, far weaker
+filter over the real thing implemented below shouldn't exist. `GET
+/persons?name=...` is inert now: `name` is simply an unrecognized
+query parameter `handlePersons` never looks at, the same as any other
+one would be, silently ignored rather than erroring, consistent with
+how that endpoint has always treated a query parameter it doesn't
+recognize.
 
 **The response format turned out to be far smaller than "Atom" first
 suggests.** Checked directly against the RS spec before assuming a full

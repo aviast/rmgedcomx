@@ -18,9 +18,8 @@ import (
 
 func (s *Server) handlePersons(w http.ResponseWriter, r *http.Request) {
 	limit, offset := s.pagingParams(r)
-	nameFilter := r.URL.Query().Get("name")
 
-	rows, total, err := s.db.ListPersons(limit, offset, nameFilter)
+	rows, total, err := s.db.ListPersons(limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
