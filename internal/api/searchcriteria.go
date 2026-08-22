@@ -46,19 +46,94 @@ func searchDateFieldRange(term searchTerm) (rmdb.SearchDateCriterion, error) {
 	}, nil
 }
 
+// relationCriteriaFor returns a pointer to the RelationCriteria for the
+// given relation ("father", "mother", "spouse", or "parent") on
+// criteria, lazily creating it on first use so a relation group with no
+// fields set is never sent to rmdb (SearchPersons only iterates
+// relations criteria actually has one of).
+func relationCriteriaFor(criteria *rmdb.SearchCriteria, relation string) *rmdb.RelationCriteria {
+	switch relation {
+	case "father":
+		if criteria.Father == nil {
+			criteria.Father = &rmdb.RelationCriteria{}
+		}
+		return criteria.Father
+	case "mother":
+		if criteria.Mother == nil {
+			criteria.Mother = &rmdb.RelationCriteria{}
+		}
+		return criteria.Mother
+	case "spouse":
+		if criteria.Spouse == nil {
+			criteria.Spouse = &rmdb.RelationCriteria{}
+		}
+		return criteria.Spouse
+	case "parent":
+		if criteria.Parent == nil {
+			criteria.Parent = &rmdb.RelationCriteria{}
+		}
+		return criteria.Parent
+	default:
+		return nil // unreachable: callers only pass one of the 4 relationPrefixes below
+	}
+}
+
+// applyRelationField sets the one field on rc that suffix names,
+// returning false if suffix isn't one of the 9 the RS spec defines for
+// a "{relation}"-prefixed parameter (Name, GivenName, Surname,
+// BirthDate, BirthPlace, DeathDate, DeathPlace, MarriageDate,
+// MarriagePlace) -- checked directly against the spec's own "Relation
+// Search Parameters" table (Section 6) before writing this, not
+// assumed, including confirming MarriagePlace is part of that table
+// too (an earlier internal accounting of this work had miscounted 8
+// fields per relation, 32 total, rather than the actual 9 and 36 --
+// corrected before implementing anything, not after).
+func applyRelationField(rc *rmdb.RelationCriteria, suffix string, term searchTerm) (bool, error) {
+	switch suffix {
+	case "Name":
+		rc.Name = &rmdb.SearchTextCriterion{Value: term.Value, Exact: term.Exact}
+	case "GivenName":
+		rc.GivenName = &rmdb.SearchTextCriterion{Value: term.Value, Exact: term.Exact}
+	case "Surname":
+		rc.Surname = &rmdb.SearchTextCriterion{Value: term.Value, Exact: term.Exact}
+	case "BirthDate":
+		r, err := searchDateFieldRange(term)
+		if err != nil {
+			return true, err
+		}
+		rc.BirthDate = &r
+	case "BirthPlace":
+		rc.BirthPlace = &rmdb.SearchTextCriterion{Value: term.Value, Exact: term.Exact}
+	case "DeathDate":
+		r, err := searchDateFieldRange(term)
+		if err != nil {
+			return true, err
+		}
+		rc.DeathDate = &r
+	case "DeathPlace":
+		rc.DeathPlace = &rmdb.SearchTextCriterion{Value: term.Value, Exact: term.Exact}
+	case "MarriageDate":
+		r, err := searchDateFieldRange(term)
+		if err != nil {
+			return true, err
+		}
+		rc.MarriageDate = &r
+	case "MarriagePlace":
+		rc.MarriagePlace = &rmdb.SearchTextCriterion{Value: term.Value, Exact: term.Exact}
+	default:
+		return false, nil
+	}
+	return true, nil
+}
+
 // buildSearchCriteria parses a GEDCOM X RS search query string (the "q"
 // template variable, RS spec Section 6) into rmdb.SearchCriteria,
-// covering the 10 "direct" search parameters that section defines:
-// name, givenName, surname, gender, birthDate, birthPlace, deathDate,
-// deathPlace, marriageDate, marriagePlace.
-//
-// The "{relation}"-prefixed parameters (father/mother/spouse/parent,
-// applied to 8 of the above) are deliberately not yet supported -- an
-// unrecognized field name is rejected outright, naming it specifically
-// as a relation-parameter if it matches that shape, rather than
-// silently ignored, the same "don't silently drop what a client asked
-// for" principle this project has applied to unrecognized JSON fields
-// throughout its own write support.
+// covering the 10 "direct" search parameters that section defines
+// (name, givenName, surname, gender, birthDate, birthPlace, deathDate,
+// deathPlace, marriageDate, marriagePlace) and all 4 possible
+// "{relation}"-prefixed groups (father/mother/spouse/parent, each
+// covering the same 9 fields RelationCriteria models -- see its own
+// comment in internal/rmdb/search.go for how these are matched).
 func buildSearchCriteria(q string) (rmdb.SearchCriteria, error) {
 	terms, err := parseSearchQuery(q)
 	if err != nil {
@@ -111,12 +186,26 @@ func buildSearchCriteria(q string) (rmdb.SearchCriteria, error) {
 		case "marriagePlace":
 			criteria.MarriagePlace = &rmdb.SearchTextCriterion{Value: term.Value, Exact: term.Exact}
 		default:
+			matched := false
 			for _, prefix := range relationPrefixes {
-				if len(term.Field) > len(prefix) && term.Field[:len(prefix)] == prefix {
-					return rmdb.SearchCriteria{}, fmt.Errorf("%s: relation-based search parameters (father/mother/spouse/parent) aren't supported yet, only the 10 direct parameters", term.Field)
+				if len(term.Field) <= len(prefix) || term.Field[:len(prefix)] != prefix {
+					continue
 				}
+				suffix := term.Field[len(prefix):]
+				rc := relationCriteriaFor(&criteria, prefix)
+				ok, err := applyRelationField(rc, suffix, term)
+				if err != nil {
+					return rmdb.SearchCriteria{}, err
+				}
+				if !ok {
+					return rmdb.SearchCriteria{}, fmt.Errorf("%s: unrecognized field for the %q relation (expected one of Name, GivenName, Surname, BirthDate, BirthPlace, DeathDate, DeathPlace, MarriageDate, MarriagePlace)", term.Field, prefix)
+				}
+				matched = true
+				break
 			}
-			return rmdb.SearchCriteria{}, fmt.Errorf("%s: unrecognized search field", term.Field)
+			if !matched {
+				return rmdb.SearchCriteria{}, fmt.Errorf("%s: unrecognized search field", term.Field)
+			}
 		}
 	}
 	return criteria, nil

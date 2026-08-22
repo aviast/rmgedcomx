@@ -987,15 +987,118 @@ match this server's own existing paging parameter names used
 everywhere else, for consistency with the rest of this API rather than
 a second, different naming convention for this one endpoint.
 
-**Deliberately not yet implemented, consistent with the original,
-explicit scoping of this work**: the 32 "`{relation}`"-prefixed search
-parameters (`father`/`mother`/`spouse`/`parent`, each with 8 of the same
-fields) are rejected outright with a message naming them specifically
-as unsupported (`fatherGivenName: relation-based search parameters ...
-aren't supported yet`), not silently dropped -- this project's
-established principle for a request a client makes that this server
-doesn't (yet) act on. `Place Search Results` (a separate, similarly
-Atom-based RS state) is likewise not addressed here.
+`Place Search Results` (a separate, similarly Atom-based RS state) is
+not addressed here.
+
+## Person Search Results: the "{relation}"-prefixed search parameters
+
+The follow-up to the 10 direct parameters above. The relation search
+parameters table (RS spec Section 6) was re-checked directly before
+starting this, not worked from the earlier summary of it: `{relation}`
+substitutes `father`/`mother`/`spouse`/`parent`, each with **9** fields
+(`Name`, `GivenName`, `Surname`, `BirthDate`, `BirthPlace`, `DeathDate`,
+`DeathPlace`, `MarriageDate`, `MarriagePlace`), for 36 total -- the
+project's own earlier running total of "32, 8 each" had simply missed
+`MarriagePlace` from the table; caught and corrected before writing any
+code against the wrong count, not after.
+
+**The central design question the spec doesn't answer directly**: do
+several fields for the same relation (`fatherGivenName:John
+fatherSurname:Smith`) have to be satisfied by *one* father, or could a
+father named John and a separately-recorded father named Smith each
+satisfy one field independently? Resolved by the spec's own wording --
+"the given name of **the** father" (singular, definite article) is only
+consistent with one specific person's own facts, not a disjunction
+across everyone who has ever held that role for the searched person.
+`RelationCriteria` (`internal/rmdb/search.go`) and `relativeConditions`
+enforce this directly: every field in one relation group is matched
+against the *same* candidate relative's row, via one combined,
+AND-joined condition, not independent EXISTS subqueries the way the 10
+direct parameters (deliberately) are. Verified as a real behavioral
+distinction, not just reasoned about: a test with a father whose given
+name is correct but whose surname is a value that belongs to nobody
+correctly returns no match -- confirming this isn't silently treated as
+"OR across different relatives," which would have been the wrong,
+easier-to-accidentally-implement reading.
+
+**Resolving each relation to a candidate relative and family**:
+`father`/`mother` go through `ChildTable`/`FamilyTable` -- the same
+"which family is this person a child in" relationship
+`buildDisplayProperties`'s own `familiesAsChild` already uses -- and
+match if *any* of the person's families-as-child qualifies (the same
+"any of several, not all" precedent the direct `marriageDate` parameter
+already established for someone with more than one marriage).
+`parent` is father OR mother -- but, per the same-relative rule above,
+each side of that OR still has to satisfy every field of the `parent`
+group internally by itself; a father half-matching and a mother
+half-matching the rest doesn't combine into a match either. `spouse`
+resolves the other way, through `FamilyTable` directly (families where
+the searched person is one of the two parents), matching whichever of
+`FatherID`/`MotherID` isn't them -- two symmetric branches, since which
+column holds "the other one" depends on which role the searched person
+themselves occupies.
+
+**`{relation}MarriageDate`/`{relation}MarriagePlace` are tied to the
+specific family that established the relation**, not just any marriage
+the relative has ever had -- a real, considered choice among more than
+one reasonable reading. For `father`/`mother`/`parent`, that's the
+marriage of the specific family the searched person was found to be a
+child of; for `spouse`, it's the searched person's own marriage to that
+specific spouse. This was available without extra cost, since that
+family is already resolved by the time any of `relativeConditions`'s
+own fields are being matched, and it avoids the same "which one, if
+there's more than one" ambiguity direct `marriageDate` doesn't have to
+answer (there, "any of the person's own marriages" is a reasonable
+default; here, tying it to a specific, already-identified family is
+more precise and just as available). Verified against real,
+non-obvious data: `royal92.rmtree`'s own Victoria has a real
+`fatherMarriageDate`/`fatherMarriagePlace` distinct from her own
+`marriageDate`/`marriagePlace` (her parents' 1818 marriage at Kew
+Palace, versus her own 1840 marriage to Albert) -- confirmed both
+resolve to the correct, different family, not accidentally the same
+one.
+
+**A real mistake caught during manual verification, before it became a
+permanent test**: an initial check of `spouseGivenName:Albert` failed
+to match Victoria, which looked at first like a bug in the `spouse`
+resolution logic. It wasn't -- Albert's actual stored given name in
+`royal92.rmtree` is "Albert Augustus Charles," not "Albert," and the
+test used exact matching against an unverified guess at the value
+rather than the real one. Re-run against the correct, verified value
+(and separately with `~` for a substring match against just "Albert"),
+both matched correctly, confirming the `spouse` logic itself was right
+all along -- the value worth recording isn't the mistake itself so much
+as the discipline that caught it: treating an unexpected result as a
+reason to verify the real data before concluding the code was wrong.
+
+**Argument-order care**: since `relativeIDExpr`/`familyIDExpr` are
+inlined raw SQL fragments (e.g. `"f.FatherID"`), not bind parameters,
+each relation-condition builder has to keep its Go-side argument slice
+in exactly the order its own `?` placeholders appear in the assembled
+SQL text -- particularly for `spouse`'s and `parent`'s two OR'd
+branches, where getting this wrong wouldn't produce an error, just
+silently wrong results (a value bound to the wrong placeholder).
+Verified empirically against real data for every relation and every
+field, not just by inspection, specifically because a mismatch here is
+exactly the kind of bug that wouldn't announce itself.
+
+Deterministic SQL text, not Go map iteration, is used to combine the
+four possible relation groups in `SearchPersons` -- each `(condition,
+args)` pair is self-contained and appended atomically regardless of
+processing order, so map iteration's randomization wouldn't have
+actually misaligned anything, but non-deterministic SQL text is worth
+avoiding for predictable logging and debugging on its own merits, not
+just where correctness strictly requires it.
+
+Verified end to end through the real HTTP API against `royal92.rmtree`
+for every one of the 9 fields across all 4 relations, then locked down
+with a comprehensive, self-contained permanent test suite
+(`cmd/server/main_test.go`, `TestPersonSearchHTTP`) covering all 9
+fields for `father` plus representative coverage of `mother`/`spouse`/
+`parent`, the same-relative-not-different-relatives distinction, two
+different relation groups genuinely AND'ed together, and an
+unrecognized relation-field name rejected with its own specific
+message.
 
 ## Write support
 

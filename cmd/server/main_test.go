@@ -739,11 +739,95 @@ func TestPersonSearchHTTP(t *testing.T) {
 		require.Contains(t, body, "unrecognized search field")
 	})
 
-	t.Run("relation-prefixed field is rejected with its own specific message", func(t *testing.T) {
+	// Extends the fixture above with a child (P3) linked to both Joseph
+	// and Rose, specifically to exercise the "{relation}"-prefixed
+	// parameters -- father/mother resolved via P3's own real
+	// ChildTable/FamilyTable row, spouse/parent via the same Couple
+	// relationship the base fixture already established.
+	setupWithChild := func(t *testing.T) *httptest.Server {
 		testServer := setup(t)
-		status, body, _ := search(t, testServer, `fatherGivenName:John`)
+		status, respBody, _ := post(t, testServer, "/collections/empty/persons", `{"persons":[{"names":[{"nameForms":[{"fullText":"John F. Kennedy"}]}]}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody) // P3
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P1"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		status, respBody, _ = post(t, testServer, "/collections/empty/relationships", `{"relationships":[{"type":"http://gedcomx.org/ParentChild","person1":{"resourceId":"P2"},"person2":{"resourceId":"P3"}}]}`)
+		require.Equal(t, http.StatusCreated, status, "body: %s", respBody)
+		return testServer
+	}
+
+	relationParamCases := []struct {
+		name string
+		q    string
+	}{
+		{"fatherName", `fatherName:"Joseph Kennedy"`},
+		{"fatherGivenName", `fatherGivenName:Joseph`},
+		{"fatherSurname", `fatherSurname:Kennedy`},
+		{"fatherBirthDate", `fatherBirthDate:"6 Sep 1888"`},
+		{"fatherBirthPlace", `fatherBirthPlace:Boston~`},
+		{"fatherDeathDate", `fatherDeathDate:"18 Nov 1969"`},
+		{"fatherDeathPlace", `fatherDeathPlace:"Hyannis Port"~`},
+		{"fatherMarriageDate", `fatherMarriageDate:"7 Oct 1914"`},
+		{"fatherMarriagePlace", `fatherMarriagePlace:Boston~`},
+		{"motherGivenName", `motherGivenName:Rose`},
+		{"motherSurname", `motherSurname:Fitzgerald`},
+		{"parentGivenName matches via father", `parentGivenName:Joseph`},
+		{"parentGivenName matches via mother", `parentGivenName:Rose`},
+	}
+	for _, tc := range relationParamCases {
+		t.Run(tc.name, func(t *testing.T) {
+			testServer := setupWithChild(t)
+			status, body, headers := search(t, testServer, tc.q)
+			require.Equal(t, http.StatusOK, status, "q=%q body: %s", tc.q, body)
+			require.Equal(t, "application/x-gedcomx-atom+json", headers.Get("Content-Type"))
+			require.Contains(t, body, `"id":"P3"`, "q=%q should match the child via this relation: %s", tc.q, body)
+		})
+	}
+
+	t.Run("spouseGivenName matches via the other parent in a Couple relationship", func(t *testing.T) {
+		testServer := setupWithChild(t)
+		status, body, _ := search(t, testServer, `spouseGivenName:Rose`)
+		require.Equal(t, http.StatusOK, status, "body: %s", body)
+		require.Contains(t, body, `"id":"P1"`, "Joseph should be found via his spouse Rose")
+	})
+
+	t.Run("spouseMarriageDate matches the searched person's own marriage", func(t *testing.T) {
+		testServer := setupWithChild(t)
+		status, body, _ := search(t, testServer, `spouseMarriageDate:"7 Oct 1914"`)
+		require.Equal(t, http.StatusOK, status, "body: %s", body)
+		require.Contains(t, body, `"id":"P1"`)
+	})
+
+	t.Run("all fields within one relation group must match the SAME relative, not different ones", func(t *testing.T) {
+		testServer := setupWithChild(t)
+		// Both correct, same father: matches.
+		status, body, _ := search(t, testServer, `fatherGivenName:Joseph fatherSurname:Kennedy`)
+		require.Equal(t, http.StatusOK, status, "body: %s", body)
+		require.Contains(t, body, `"id":"P3"`)
+		// Correct given name, but a surname that belongs to nobody: must NOT match --
+		// confirms this isn't silently treated as "a father named Joseph, OR a
+		// father named (anyone) Zzzwrong" (an OR-across-different-relatives
+		// reading this project deliberately rejected -- see RelationCriteria's
+		// own comment, internal/rmdb/search.go).
+		status, body, _ = search(t, testServer, `fatherGivenName:Joseph fatherSurname:Zzzwrong`)
+		require.Equal(t, http.StatusNoContent, status, "body: %s", body)
+	})
+
+	t.Run("combining two different relation groups is a genuine AND across both", func(t *testing.T) {
+		testServer := setupWithChild(t)
+		status, body, _ := search(t, testServer, `fatherSurname:Kennedy motherGivenName:Rose`)
+		require.Equal(t, http.StatusOK, status, "body: %s", body)
+		require.Contains(t, body, `"id":"P3"`)
+
+		status, body, _ = search(t, testServer, `fatherSurname:Kennedy motherGivenName:Zzzwrong`)
+		require.Equal(t, http.StatusNoContent, status, "body: %s", body)
+	})
+
+	t.Run("unrecognized relation field is rejected with its own specific message", func(t *testing.T) {
+		testServer := setupWithChild(t)
+		status, body, _ := search(t, testServer, `fatherBogusField:x`)
 		require.Equal(t, http.StatusBadRequest, status)
-		require.Contains(t, body, "aren't supported yet")
+		require.Contains(t, body, `unrecognized field for the`)
+		require.Contains(t, body, `father`)
 	})
 
 	t.Run("invalid gender value is rejected", func(t *testing.T) {
