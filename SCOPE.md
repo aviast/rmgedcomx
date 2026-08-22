@@ -861,6 +861,245 @@ confirms the old, buggy `coupleRef`-shaped URL for that same family
 still correctly 404s -- reproducing the exact symptom in the original
 report, not a stand-in for it.
 
+## Person Search Results: the 10 direct search parameters
+
+Prompted by a direct request, discussed in two parts -- an effort
+assessment first, then the implementation once its two open design
+questions (response format, non-exact matching) had actual answers
+rather than assumptions.
+
+**The response format turned out to be far smaller than "Atom" first
+suggests.** Checked directly against the RS spec before assuming a full
+RFC 4287 XML serializer was needed: `application/x-gedcomx-atom+json`
+(the GEDCOM X Atom Extensions specification's own JSON representation)
+is the `MUST`-support media type for this state (Section 4.11.1); full
+`application/atom+xml` is only `RECOMMENDED`. Matching this project's
+own existing choice not to build XML support for the rest of the API
+(`gedcomXMediaType`'s own comment), only the JSON representation is
+implemented here either. That representation turned out to be a thin,
+flat envelope (`internal/gedcomx/atom.go`: `AtomFeed`/`AtomEntry`/
+`AtomContent`) whose `content.gedcomx` member is exactly the same
+`PersonDocument` every other Person-returning endpoint already
+produces -- checked against the Atom Extensions spec's own JSON member
+table and the Content Processing Model section (3.2) before writing
+any of this, not assumed. `ID`/`Title`/`Updated` are deliberately not
+`omitempty` on either type, matching this project's own established
+"don't let an omitted field be ambiguous with a genuinely absent value"
+principle (`PersonDocument.Relationships`'s own precedent) -- checked
+directly against RFC 4287's own RELAX NG grammar for `atomFeed`/
+`atomEntry` (`atomId & atomTitle & atomUpdated`, none of them optional
+or repeatable) before deciding this, since RFC 4287 itself requires
+all three, exactly once.
+
+**Non-exact ("~") matching is a plain SQL substring match**, per
+direct instruction, after confirming there's no free, better option:
+`NameTable.GivenMP`/`SurnameMP` turned out to be accent-folded
+(`FoldAccents`) copies of `Given`/`Surname`, not a phonetic (Metaphone/
+Soundex) encoding despite the column name -- RootsMagic has no fuzzy-
+matching infrastructure to build on here. `internal/rmdb/search.go`'s
+own `textCondition` applies `LIKE '%value%'` for non-exact, `=` for
+exact, both sides wrapped in `LOWER(...)` throughout (not relying on an
+implicit per-column collation, since `PersonTable.Sex` isn't even text
+and `PlaceTable.Name`/`NameTable.Given` aren't guaranteed to share
+one).
+
+**Date matching reuses `gedcomx.ParseGedcom5Date`** -- the same GEDCOM
+5.x date grammar this project already parses `Date.original` with for
+write support -- rather than inventing a second date parser, since a
+search client typing `birthDate:"30 June 1900"` is producing exactly
+that kind of text. The parsed (year, month, day) becomes a `SortDate`
+range (`ComputeSortDate`, already used for write support's own sort
+values): exact match narrows to only the precision actually given (a
+bare year widens to the whole year, a month+year to the whole month,
+never narrower than what was specified); non-exact always widens to
+the whole year regardless of how precise the given date was -- a
+plain, defensible reading of "less precise" consistent with the
+project's own preference for a simple, stated rule over an invented
+fuzzy-date scheme this data has no real support for either. An
+unparseable date is rejected with `400`, not silently matched against
+nothing -- this project's established "reject clearly rather than
+silently produce wrong results" principle, applied here as much as
+anywhere else.
+
+**Fact-based criteria (birth/death/marriage) use `EXISTS` subqueries,
+not `JOIN`s** -- deliberately, since a person can have more than one
+marriage (and, in principle, more than one recorded Birth/Death fact);
+a `JOIN` would multiply `PersonID` rows in a way a bare `SELECT
+DISTINCT` could mask incorrectly specifically for the separate `COUNT`
+query this needs for `gx:results` (RS spec's own paging semantics).
+Marriage criteria join through `FamilyTable` (`FatherID = ? OR
+MotherID = ?`) to each of a person's own families, matching every
+other "which of this person's families" query already built for
+`buildDisplayProperties` and the embedded-relationships work.
+
+**`atom:updated` needed a real, verified unit conversion this project
+hadn't needed before.** `PersonTable.UTCModDate` is stored as days
+since 1899-12-30 (the OLE Automation epoch, confirmed via
+`utcModDateExpr`'s own definition, `internal/rmdb/writes.go`), but the
+Atom Extensions JSON format requires milliseconds since the Unix
+epoch. The 25569-day gap between the two epochs was verified directly
+via date arithmetic, not assumed from memory, and the resulting
+conversion (`GetPersonUTCModDate`, `internal/rmdb/queries.go`) was
+checked against a real value from `royal92.rmtree` before trusting it
+-- confirming a plausible, sane date, not just a number that compiled.
+Kept as its own, separate query rather than added to the shared
+`Person` struct every other query already populates, since this is
+specifically a Person Search Results need, not something
+`GetPerson`/`ListPersons`/etc. have ever required.
+
+**A real correctness issue caught while writing the handler, not after:**
+an entry's own `content.gedcomx` reuses `PersonDocument` directly, whose
+`Relationships` field is deliberately never `omitempty` (see its own
+comment) specifically so an empty result can't be mistaken for "not
+computed." An earlier draft of this handler populated that field with a
+bare `[]gedcomx.Relationship{}` for every search result rather than
+actually computing it, which would have silently, incorrectly implied
+every matching person has no relationships at all. Fixed by reusing
+`personParentRelationships`/`personChildRelationships`/
+`personSpouseRelationships` (the same helpers `handlePerson` itself
+uses) for each search result too, rather than shipping a document that
+happened to satisfy the type system while quietly lying about its own
+content.
+
+**Routing**: `GET /persons/search` is registered as its own, literal
+route alongside the existing `GET /persons/{id}` wildcard -- verified
+directly, not assumed, that Go 1.22's `net/http.ServeMux` correctly
+prioritizes the literal pattern for a request to exactly `/persons/search`
+rather than treating "search" as a `{id}` value (a small, standalone Go
+program confirmed this precisely before relying on it in the real
+router).
+
+**Content negotiation**: this endpoint's required media type
+(`gedcomXAtomMediaType`) differs from every other endpoint in this
+server (`gedcomXMediaType`), so it's exempted from the global
+`withContentNegotiation` middleware (`server.go`) the same way
+`.../content` already is, with its own Accept-header check and
+`Content-Type` inside `handlePersonSearch` itself
+(`internal/api/personsearch.go`).
+
+**Discovery**: the `Collection` state gained a `person-search`
+templated link (RS spec's own master transitions table, Section 5.2:
+"Templated Link to the query used to search for persons") using
+`gedcomx.Link`'s existing, already-modeled but previously-unused
+`Template` field. `q` is the spec's own template variable name
+(Section 6); `limit`/`offset` (not the spec's generic `count`/`start`)
+match this server's own existing paging parameter names used
+everywhere else, for consistency with the rest of this API rather than
+a second, different naming convention for this one endpoint.
+
+`Place Search Results` (a separate, similarly Atom-based RS state) is
+not addressed here.
+
+## Person Search Results: the "{relation}"-prefixed search parameters
+
+The follow-up to the 10 direct parameters above. The relation search
+parameters table (RS spec Section 6) was re-checked directly before
+starting this, not worked from the earlier summary of it: `{relation}`
+substitutes `father`/`mother`/`spouse`/`parent`, each with **9** fields
+(`Name`, `GivenName`, `Surname`, `BirthDate`, `BirthPlace`, `DeathDate`,
+`DeathPlace`, `MarriageDate`, `MarriagePlace`), for 36 total -- the
+project's own earlier running total of "32, 8 each" had simply missed
+`MarriagePlace` from the table; caught and corrected before writing any
+code against the wrong count, not after.
+
+**The central design question the spec doesn't answer directly**: do
+several fields for the same relation (`fatherGivenName:John
+fatherSurname:Smith`) have to be satisfied by *one* father, or could a
+father named John and a separately-recorded father named Smith each
+satisfy one field independently? Resolved by the spec's own wording --
+"the given name of **the** father" (singular, definite article) is only
+consistent with one specific person's own facts, not a disjunction
+across everyone who has ever held that role for the searched person.
+`RelationCriteria` (`internal/rmdb/search.go`) and `relativeConditions`
+enforce this directly: every field in one relation group is matched
+against the *same* candidate relative's row, via one combined,
+AND-joined condition, not independent EXISTS subqueries the way the 10
+direct parameters (deliberately) are. Verified as a real behavioral
+distinction, not just reasoned about: a test with a father whose given
+name is correct but whose surname is a value that belongs to nobody
+correctly returns no match -- confirming this isn't silently treated as
+"OR across different relatives," which would have been the wrong,
+easier-to-accidentally-implement reading.
+
+**Resolving each relation to a candidate relative and family**:
+`father`/`mother` go through `ChildTable`/`FamilyTable` -- the same
+"which family is this person a child in" relationship
+`buildDisplayProperties`'s own `familiesAsChild` already uses -- and
+match if *any* of the person's families-as-child qualifies (the same
+"any of several, not all" precedent the direct `marriageDate` parameter
+already established for someone with more than one marriage).
+`parent` is father OR mother -- but, per the same-relative rule above,
+each side of that OR still has to satisfy every field of the `parent`
+group internally by itself; a father half-matching and a mother
+half-matching the rest doesn't combine into a match either. `spouse`
+resolves the other way, through `FamilyTable` directly (families where
+the searched person is one of the two parents), matching whichever of
+`FatherID`/`MotherID` isn't them -- two symmetric branches, since which
+column holds "the other one" depends on which role the searched person
+themselves occupies.
+
+**`{relation}MarriageDate`/`{relation}MarriagePlace` are tied to the
+specific family that established the relation**, not just any marriage
+the relative has ever had -- a real, considered choice among more than
+one reasonable reading. For `father`/`mother`/`parent`, that's the
+marriage of the specific family the searched person was found to be a
+child of; for `spouse`, it's the searched person's own marriage to that
+specific spouse. This was available without extra cost, since that
+family is already resolved by the time any of `relativeConditions`'s
+own fields are being matched, and it avoids the same "which one, if
+there's more than one" ambiguity direct `marriageDate` doesn't have to
+answer (there, "any of the person's own marriages" is a reasonable
+default; here, tying it to a specific, already-identified family is
+more precise and just as available). Verified against real,
+non-obvious data: `royal92.rmtree`'s own Victoria has a real
+`fatherMarriageDate`/`fatherMarriagePlace` distinct from her own
+`marriageDate`/`marriagePlace` (her parents' 1818 marriage at Kew
+Palace, versus her own 1840 marriage to Albert) -- confirmed both
+resolve to the correct, different family, not accidentally the same
+one.
+
+**A real mistake caught during manual verification, before it became a
+permanent test**: an initial check of `spouseGivenName:Albert` failed
+to match Victoria, which looked at first like a bug in the `spouse`
+resolution logic. It wasn't -- Albert's actual stored given name in
+`royal92.rmtree` is "Albert Augustus Charles," not "Albert," and the
+test used exact matching against an unverified guess at the value
+rather than the real one. Re-run against the correct, verified value
+(and separately with `~` for a substring match against just "Albert"),
+both matched correctly, confirming the `spouse` logic itself was right
+all along -- the value worth recording isn't the mistake itself so much
+as the discipline that caught it: treating an unexpected result as a
+reason to verify the real data before concluding the code was wrong.
+
+**Argument-order care**: since `relativeIDExpr`/`familyIDExpr` are
+inlined raw SQL fragments (e.g. `"f.FatherID"`), not bind parameters,
+each relation-condition builder has to keep its Go-side argument slice
+in exactly the order its own `?` placeholders appear in the assembled
+SQL text -- particularly for `spouse`'s and `parent`'s two OR'd
+branches, where getting this wrong wouldn't produce an error, just
+silently wrong results (a value bound to the wrong placeholder).
+Verified empirically against real data for every relation and every
+field, not just by inspection, specifically because a mismatch here is
+exactly the kind of bug that wouldn't announce itself.
+
+Deterministic SQL text, not Go map iteration, is used to combine the
+four possible relation groups in `SearchPersons` -- each `(condition,
+args)` pair is self-contained and appended atomically regardless of
+processing order, so map iteration's randomization wouldn't have
+actually misaligned anything, but non-deterministic SQL text is worth
+avoiding for predictable logging and debugging on its own merits, not
+just where correctness strictly requires it.
+
+Verified end to end through the real HTTP API against `royal92.rmtree`
+for every one of the 9 fields across all 4 relations, then locked down
+with a comprehensive, self-contained permanent test suite
+(`cmd/server/main_test.go`, `TestPersonSearchHTTP`) covering all 9
+fields for `father` plus representative coverage of `mother`/`spouse`/
+`parent`, the same-relative-not-different-relatives distinction, two
+different relation groups genuinely AND'ed together, and an
+unrecognized relation-field name rejected with its own specific
+message.
+
 ## Write support
 
 Off by default. `-write` enables it; without it, this server behaves

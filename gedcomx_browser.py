@@ -41,6 +41,56 @@ class GedcomXBrowserApp:
         self.is_fetching_page = False
         self._ignore_tree_select = False
 
+        # State for the Left Pane filter box. _unfiltered_entities is a
+        # snapshot of (values, entity_type, data) for whatever's currently
+        # loaded, kept so the non-exact client-side fallback filter (used
+        # whenever server-side search isn't available) always narrows from
+        # the real list rather than a previously-filtered subset.
+        # _current_browse_rel/_current_browse_href record what's loaded so
+        # clearing the filter can reload it. _current_entity_type is which
+        # of the GEDCOM X document shapes (persons/places/etc.) the current
+        # browse rel actually produced -- deliberately NOT the same thing as
+        # _current_browse_rel: RS spec Section 5.2's master link-relation
+        # table never actually names a rel for browsing a list of places
+        # (see buildCollection's own comment in convert.go -- confirmed
+        # against the attached spec, there's a defined "Place Descriptions"
+        # state, Section 4.15, but no formally-named rel for it), so servers
+        # are free to call it whatever they like ("place-descriptions" here).
+        # Keying search support off the rel name would silently break the
+        # moment a server used a different name; keying it off which GEDCOM
+        # X data actually came back is rel-name-agnostic and matches how
+        # _append_entities_to_tree already dispatches.
+        self._unfiltered_entities = []
+        self._current_browse_rel = None
+        self._current_browse_href = None
+        self._current_entity_type = None
+        self._filter_active = False
+        self._filter_after_id = None
+
+        # The two ATOM search states RS spec Section 4 actually defines
+        # (4.11 Person Search Results, 4.17 Place Search Results), keyed by
+        # the GEDCOM X document field their results come back under. Each
+        # entry's own transition rel (RS spec Sections 4.11.4/4.17.4) is
+        # what a strictly-compliant client uses to navigate to a result --
+        # not any self-link the embedded Person/PlaceDescription happens to
+        # carry, since the spec never guarantees the latter.
+        self.SEARCH_STATES = {
+            "persons": {
+                "search_rel": "person-search", "entry_rel": "person",
+                "media_section": "4.11.1", "noun": "person", "noun_plural": "persons",
+            },
+            "places": {
+                "search_rel": "place-search", "entry_rel": "description",
+                "media_section": "4.17.1", "noun": "place", "noun_plural": "places",
+            },
+        }
+        # The complete set of URI Template variables RS spec Section 5.3
+        # defines. A search link's template declaring anything outside this
+        # set (e.g. this project's own server using "limit"/"offset"
+        # instead of the spec's "count"/"start") is a real, reportable
+        # non-conformance -- see run_atom_search.
+        self.SPEC_TEMPLATE_VARIABLES = {"q", "count", "start", "access_token", "generations"}
+
         # State for Family Tab
         self.visual_parents = []
         self.family_groups = []
@@ -104,8 +154,28 @@ class GedcomXBrowserApp:
         ttk.Label(left_header, text="Browse Collection Entities:").pack(side=tk.TOP, anchor=tk.W)
         self.coll_link_var = tk.StringVar()
         self.coll_link_combo = ttk.Combobox(left_header, textvariable=self.coll_link_var, state="readonly")
-        self.coll_link_combo.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
+        self.coll_link_combo.pack(side=tk.TOP, fill=tk.X, pady=(0, 8))
         self.coll_link_combo.bind("<<ComboboxSelected>>", self.on_collection_link_selected)
+
+        # Filter box: non-exact match against the list below. Uses the
+        # server's own ATOM Search Results state (RS spec Section 4.11 for
+        # persons, 4.17 for places) when the Collection currently being
+        # browsed advertises one; otherwise falls back to filtering
+        # whatever's already loaded, and says which of the two it did (see
+        # apply_filter_now). Typing pauses for a second auto-submit the
+        # filter (self._filter_after_id, scheduled by
+        # on_filter_text_changed); the button is there for anyone who'd
+        # rather not wait, and Enter in the box does the same.
+        ttk.Label(left_header, text="Filter (non-exact match):").pack(side=tk.TOP, anchor=tk.W)
+        filter_row = ttk.Frame(left_header)
+        filter_row.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
+        self.filter_var = tk.StringVar()
+        self.filter_entry = ttk.Entry(filter_row, textvariable=self.filter_var)
+        self.filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.filter_entry.bind("<Return>", lambda event: self.apply_filter_now())
+        self.filter_var.trace_add("write", self.on_filter_text_changed)
+        self.filter_btn = ttk.Button(filter_row, text="Filter", command=self.apply_filter_now, width=8)
+        self.filter_btn.pack(side=tk.LEFT, padx=(5, 0))
 
         # Treeview Configuration
         tree_frame = ttk.Frame(left_frame)
@@ -423,6 +493,9 @@ class GedcomXBrowserApp:
         if rel in self.NON_LIST_COLLECTION_RELS:
             self.navigate_to(href, navigation_mode="new")
         else:
+            self._current_browse_rel = rel
+            self._current_browse_href = href
+            self._reset_filter_ui()
             self.load_collection_list(href, append=False)
 
     def load_collection_list(self, href, append=False):
@@ -439,6 +512,8 @@ class GedcomXBrowserApp:
                         for item in self.entity_tree.get_children():
                             self.entity_tree.delete(item)
                         self.loaded_entities.clear()
+                        self._unfiltered_entities = []
+                        self._current_entity_type = None
                     self.show_notification(f"No entries found at {href}.", "warning")
                     return
 
@@ -448,6 +523,17 @@ class GedcomXBrowserApp:
                     for item in self.entity_tree.get_children():
                         self.entity_tree.delete(item)
                     self.loaded_entities.clear()
+                    self._unfiltered_entities = []
+                    # Which GEDCOM X document shape this rel actually
+                    # produces -- see the field's own comment in __init__
+                    # for why this, not the rel name, is what search
+                    # support is keyed off of.
+                    for shape in ("persons", "places", "sourceDescriptions", "relationships", "events"):
+                        if doc.get(shape):
+                            self._current_entity_type = shape
+                            break
+                    else:
+                        self._current_entity_type = None
 
                 before = len(self.entity_tree.get_children())
                 self._append_entities_to_tree(doc)
@@ -485,6 +571,324 @@ class GedcomXBrowserApp:
             self.show_notification("Loading next page of entities...", "info")
             self.load_collection_list(self.next_page_url, append=True)
             self.show_notification("Collection list loaded.", "success")
+
+    # --- Left Pane Filter Box ---
+    def _evaluate_search_link(self, link):
+        """Classifies a Collection-level link (e.g. "person-search") per
+        the "Link" Data Type's own constraints (RS spec Section 2.1: `href`
+        is OPTIONAL only if `template` is provided, and vice versa -- so a
+        real Link object MUST carry at least one of the two). Returns
+        (status, base_url, raw_template):
+          "missing"   -- the rel isn't present on the Collection at all.
+          "malformed" -- present, but has neither `href` nor `template`: a
+                         genuine protocol violation, not just an unimplemented
+                         state.
+          "ok"        -- usable; raw_template is the original template string
+                         (for run_atom_search to read its declared variables
+                         from) or None if this link only ever had a plain
+                         `href`.
+        """
+        if not isinstance(link, dict):
+            return "missing", None, None
+        href = link.get("href")
+        template = link.get("template")
+        if not href and not template:
+            return "malformed", None, None
+        if template:
+            return "ok", template.split("{", 1)[0], template
+        return "ok", href, None
+
+    def _template_query_vars(self, template):
+        """Extracts the variable names declared by a URI Template's
+        (RFC 6570) form-style query expression -- the "{?a,b,c}" or
+        "{&a,b,c}" part -- so run_atom_search can tell which of the RS
+        spec's own template variables (Section 5.3: q, count, start,
+        access_token, generations) this server's link actually offers,
+        rather than assuming it matches the spec's naming."""
+        match = re.search(r'\{[?&]([^}]*)\}', template)
+        if not match:
+            return []
+        return [v.strip() for v in match.group(1).split(',') if v.strip()]
+
+    def _reset_filter_ui(self):
+        """Clears the filter box and any in-flight debounce timer without
+        reloading anything -- used when switching to a freshly-loaded
+        browse rel, whose own load_collection_list call already produces
+        the correct (unfiltered) list."""
+        if self._filter_after_id is not None:
+            self.root.after_cancel(self._filter_after_id)
+            self._filter_after_id = None
+        self._filter_active = False
+        self.filter_var.set("")
+
+    def on_filter_text_changed(self, *_args):
+        """Fires on every keystroke in the filter box (StringVar trace).
+        Deleting back to empty clears the filter immediately; otherwise
+        (re)schedules the filter to run after a second of no further
+        typing, so a fast typist doesn't trigger a request/re-render per
+        keystroke."""
+        if self._filter_after_id is not None:
+            self.root.after_cancel(self._filter_after_id)
+            self._filter_after_id = None
+        if self.filter_var.get().strip():
+            self._filter_after_id = self.root.after(1000, self.apply_filter_now)
+        else:
+            self.clear_filter()
+
+    def apply_filter_now(self):
+        """Runs the filter immediately -- the Filter button, Enter in the
+        box, and the debounce timer all land here. Uses the server's own
+        ATOM search state (RS spec Section 4.11 for persons, 4.17 for
+        places) when the Collection advertises one for whatever's currently
+        loaded; otherwise narrows the already-loaded list client-side, and
+        says plainly which of those two it did and why -- this client
+        exists to test servers for spec conformance, so a server that's
+        missing or has broken a state the spec defines should be surfaced,
+        not silently worked around."""
+        if self._filter_after_id is not None:
+            self.root.after_cancel(self._filter_after_id)
+            self._filter_after_id = None
+        text = self.filter_var.get().strip()
+        if not text:
+            self.clear_filter()
+            return
+        if self.is_fetching_page:
+            return
+        self._filter_active = True
+
+        meta = self.SEARCH_STATES.get(self._current_entity_type)
+        if meta is None:
+            # RS spec Section 4 defines no search state at all for this
+            # entity type (relationships, source descriptions, events,
+            # artifacts) -- nothing to hold the server non-compliant for.
+            self.run_client_side_filter(text)
+            return
+
+        link = self._collection_level_links.get(meta["search_rel"])
+        status, base, template = self._evaluate_search_link(link)
+
+        if status == "ok":
+            self.run_atom_search(text, meta, base, template)
+            return
+
+        if status == "malformed":
+            compliance_note = (
+                f'non-compliant: the "{meta["search_rel"]}" link is present but has neither "href" nor '
+                f'"template" (RS spec Section 2.1 requires at least one)'
+            )
+        else:  # "missing"
+            compliance_note = (
+                f'this server doesn\'t advertise a "{meta["search_rel"]}" link on its Collection '
+                f'(RS spec Section 4.5.4 lists it as an available transition, but implementing it is optional)'
+            )
+        self.run_client_side_filter(text, notices=[compliance_note])
+
+    def clear_filter(self):
+        """Empties the filter box back out to the full, real list. A no-op
+        if no filter is currently applied, so an already-empty box doesn't
+        trigger a needless reload."""
+        if not self._filter_active:
+            return
+        self._filter_active = False
+        if self._current_browse_href and not self.is_fetching_page:
+            self.load_collection_list(self._current_browse_href, append=False)
+
+    def run_atom_search(self, text, meta, base, template):
+        """Uses the server's ATOM Search Results state for whatever's
+        currently browsed -- Person Search Results (RS spec Section 4.11)
+        or Place Search Results (Section 4.17) -- rather than merely
+        filtering what happens to already be loaded. Both states share the
+        same "q" query grammar (Section 5.3): field:value pairs, double
+        quotes around a value with white space, a trailing "~" for a
+        non-exact match. "name" is confirmed by Section 5.3's own
+        search-parameter table as a valid field for Person Search -- but
+        that table is written entirely in terms of "the person being
+        searched" and the spec defines no equivalent table for Place
+        Search at all, so using "name" there too is this client's own
+        best-effort choice by analogy, not something the spec confirms.
+
+        Reports (rather than silently absorbing) protocol violations found
+        along the way: template variables the server invented outside RS
+        spec Section 5.3's fixed set, a missing "q" variable, a response
+        media type other than the required application/x-gedcomx-atom+json,
+        and an Atom feed missing one of its REQUIRED id/title/updated
+        members (GEDCOM X Atom Extensions Section 2 / RFC 4287)."""
+        self.is_fetching_page = True
+        self.show_notification(f'Searching {meta["noun_plural"]} for "{text}"…', "info")
+        self.root.update()
+        notices = []
+        try:
+            base_url = self.server_url_var.get().strip().rstrip('/')
+            search_url = urllib.parse.urljoin(f"{base_url}/", base)
+
+            # The "q" grammar (RS spec Section 5.3) has no escape for a
+            # literal '"' inside a quoted value, so one is simply dropped
+            # rather than risking a query the server can't parse.
+            safe_value = text.replace('"', '')
+            q_value = f'name:"{safe_value}"~'
+            params = {"q": q_value}
+
+            if template:
+                declared = self._template_query_vars(template)
+                unknown = sorted(v for v in declared if v not in self.SPEC_TEMPLATE_VARIABLES)
+                if unknown:
+                    notices.append(
+                        f'non-compliant: "{meta["search_rel"]}" template declares variable(s) '
+                        f'{", ".join(unknown)}, not part of the fixed set RS spec Section 5.3 defines '
+                        f'(q, count, start, access_token, generations)'
+                    )
+                if "q" not in declared:
+                    notices.append(
+                        f'non-compliant: "{meta["search_rel"]}" template omits the "q" variable that '
+                        f'RS spec Section 5.3 defines for search -- sending it anyway'
+                    )
+                # Only ever add the spec's OWN paging variable names, and
+                # only when the server's template actually declares them --
+                # never a same-meaning name it invented instead (e.g. this
+                # project's own server uses "limit"/"offset"), since
+                # sending that would just be re-deriving compliance from
+                # server source again.
+                if "count" in declared:
+                    params["count"] = 200
+                if "start" in declared:
+                    params["start"] = 0
+
+            full_url = f"{search_url}?{urllib.parse.urlencode(params)}"
+            headers = dict(self.headers)
+            headers['Accept'] = 'application/x-gedcomx-atom+json'
+            req = urllib.request.Request(full_url, headers=headers)
+            with urllib.request.urlopen(req) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'x-gedcomx-atom+json' not in content_type.casefold():
+                    notices.append(
+                        f'non-compliant: response Content-Type was "{content_type or "(none)"}", not '
+                        f'application/x-gedcomx-atom+json (RS spec Section {meta["media_section"]})'
+                    )
+
+                if response.status == 204:
+                    self._display_search_results([], meta)
+                    self.show_notification(
+                        f'No {meta["noun_plural"]} match "{text}".{self._notice_suffix(notices)}', "warning"
+                    )
+                    return
+
+                raw = response.read().decode('utf-8')
+                atom_doc = json.loads(raw) if raw.strip() else {}
+                for required in ("id", "title", "updated"):
+                    if required not in atom_doc:
+                        notices.append(
+                            f'non-compliant: Atom feed is missing the REQUIRED "{required}" member '
+                            f'(GEDCOM X Atom Extensions, RFC 4287)'
+                        )
+
+                results = []
+                for entry in atom_doc.get('entries', []):
+                    gedcomx_doc = (entry.get('content') or {}).get('gedcomx') or {}
+                    items = gedcomx_doc.get(self._current_entity_type) or []
+                    if not items:
+                        continue
+                    # Only the first ("main") instance is this entry's
+                    # actual result -- RS spec 4.11.3/4.17.3: any further
+                    # instances are embedded relatives, not more results.
+                    item = dict(items[0])
+                    item_links = dict(item.get('links') or {})
+                    if meta["entry_rel"] not in item_links:
+                        # The spec only ever guarantees navigability via the
+                        # Atom Entry's own link (4.11.4/4.17.4), never via a
+                        # self-link on the embedded Person/PlaceDescription
+                        # itself -- fall back to it so on_entity_select can
+                        # still navigate from a search result even against a
+                        # server that omits the latter.
+                        entry_href = self._link_href(entry.get('links', {}), meta["entry_rel"])
+                        if entry_href:
+                            item_links[meta["entry_rel"]] = {"href": entry_href}
+                    item['links'] = item_links
+                    results.append(item)
+
+                self._display_search_results(results, meta)
+
+                if results:
+                    total = atom_doc.get('results', len(results))
+                    noun = meta["noun"] if total == 1 else meta["noun_plural"]
+                    suffix = f" (showing first {len(results)})" if total > len(results) else ""
+                    self.show_notification(
+                        f'Found {total} {noun} matching "{text}"{suffix}.{self._notice_suffix(notices)}',
+                        "warning" if notices else "success",
+                    )
+                else:
+                    self.show_notification(
+                        f'No {meta["noun_plural"]} match "{text}".{self._notice_suffix(notices)}', "warning"
+                    )
+
+        except urllib.error.HTTPError as e:
+            detail = None
+            try:
+                detail = json.loads(e.read().decode('utf-8')).get('detail')
+            except Exception:
+                pass
+            logger.exception(f'{meta["noun"]} search failed')
+            self.show_notification(f'{meta["noun"].capitalize()} search failed: HTTP {e.code} {detail or e.reason}', "error")
+        except Exception as e:
+            logger.exception(f'{meta["noun"]} search failed')
+            self.show_notification(f'{meta["noun"].capitalize()} search failed: {e}', "error")
+        finally:
+            self.is_fetching_page = False
+
+    @staticmethod
+    def _notice_suffix(notices):
+        """Formats accumulated compliance notices as a trailing clause for
+        a notification, or "" if there were none."""
+        return f' [{"; ".join(notices)}]' if notices else ""
+
+    def _display_search_results(self, results, meta):
+        """Replaces the left pane's contents with a set of search results.
+        Deliberately doesn't touch self._unfiltered_entities
+        (track_unfiltered=False): these are filtered results, not a real
+        (unfiltered) load, so they must never become what a later
+        client-side filter narrows from."""
+        for item in self.entity_tree.get_children():
+            self.entity_tree.delete(item)
+        self.loaded_entities.clear()
+        self._append_entities_to_tree({self._current_entity_type: results}, track_unfiltered=False)
+        self._apply_current_sort()
+        self.next_page_url = None
+
+    def run_client_side_filter(self, text, notices=None):
+        """Fallback for whenever server-side search isn't available --
+        either RS spec Section 4 defines no ATOM search state at all for
+        what's currently browsed, or it does and this server doesn't
+        advertise (or has malformed) the corresponding link -- callers pass
+        that explanation in `notices` so it reaches the user in the same
+        notification as the filter's own outcome, rather than being
+        clobbered by it a moment later. Just narrows the already-loaded
+        list to rows whose Type/ID/Name text contains the typed text
+        (case-insensitive), rather than reaching the server at all. Only
+        ever sees what's actually been scrolled into view, since that's
+        all this UI has loaded -- the notification says so."""
+        needle = text.casefold()
+        for item in self.entity_tree.get_children():
+            self.entity_tree.delete(item)
+        self.loaded_entities.clear()
+
+        matched = 0
+        for values, entity_type, data in self._unfiltered_entities:
+            haystack = " ".join(str(v) for v in values).casefold()
+            if needle in haystack:
+                tree_id = self.entity_tree.insert("", tk.END, values=values)
+                self.loaded_entities[tree_id] = (entity_type, data)
+                matched += 1
+        self._apply_current_sort()
+        self.next_page_url = None
+
+        level = "warning" if notices else "success"
+        if matched:
+            self.show_notification(
+                f'Filtered to {matched} of {len(self._unfiltered_entities)} loaded entries matching '
+                f'"{text}".{self._notice_suffix(notices or [])}',
+                level,
+            )
+        else:
+            self.show_notification(f'No loaded entries match "{text}".{self._notice_suffix(notices or [])}', "warning")
 
     # --- Hypermedia Navigation System (Right Pane Details) ---
     def navigate_to(self, href, navigation_mode="new"):
@@ -677,31 +1081,45 @@ class GedcomXBrowserApp:
                 return prefix, int(number)
         return text,
 
-    def _append_entities_to_tree(self, doc):
+    def _append_entities_to_tree(self, doc, track_unfiltered=True):
+        """Inserts doc's entities into the tree. track_unfiltered controls
+        whether they're also recorded in self._unfiltered_entities, the
+        snapshot the client-side filter narrows from -- True for a real
+        (unfiltered) load, False when this is itself displaying filtered
+        results (run_atom_search/_display_search_results), so a
+        search result doesn't get mistaken for the full list."""
+        def record(tree_id, values, entity_type, data):
+            self.loaded_entities[tree_id] = (entity_type, data)
+            if track_unfiltered:
+                self._unfiltered_entities.append((values, entity_type, data))
+
         for person in doc.get('persons', []):
             pid = person.get('id', 'Unknown')
             name = person.get('display', {}).get('name', 'Unknown Name')
             if name == 'Unknown Name':
                 try: name = person['names'][0]['nameForms'][0]['fullText']
                 except Exception: logger.exception(f"Failed to extract name for person {pid}")
-            tree_id = self.entity_tree.insert("", tk.END, values=("Person", pid, name))
-            self.loaded_entities[tree_id] = ("Person", person)
+            values = ("Person", pid, name)
+            tree_id = self.entity_tree.insert("", tk.END, values=values)
+            record(tree_id, values, "Person", person)
 
         for place in doc.get('places', []):
             pid = place.get('id', 'Unknown')
             name = "Unknown Place"
             try: name = place['names'][0]['value']
             except Exception: logger.exception(f"Failed to extract name for place {pid}")
-            tree_id = self.entity_tree.insert("", tk.END, values=("Place", pid, name))
-            self.loaded_entities[tree_id] = ("Place", place)
+            values = ("Place", pid, name)
+            tree_id = self.entity_tree.insert("", tk.END, values=values)
+            record(tree_id, values, "Place", place)
 
         for src in doc.get('sourceDescriptions', []):
             sid = src.get('id', 'Unknown')
             title = "Unknown Source"
             try: title = src['titles'][0]['value']
             except Exception: logger.exception(f"Failed to extract title for source {sid}")
-            tree_id = self.entity_tree.insert("", tk.END, values=("Source", sid, title))
-            self.loaded_entities[tree_id] = ("Source", src)
+            values = ("Source", sid, title)
+            tree_id = self.entity_tree.insert("", tk.END, values=values)
+            record(tree_id, values, "Source", src)
 
         for rel in doc.get('relationships', []):
             rid = rel.get('id', 'Unknown')
@@ -711,8 +1129,9 @@ class GedcomXBrowserApp:
             p2 = rel.get('person2', {}).get('resourceId', '?')
             arrow = '→' if type_label == 'ParentChild' else '+'
             summary = f"{type_label}: {p1} {arrow} {p2}"
-            tree_id = self.entity_tree.insert("", tk.END, values=("Relationship", rid, summary))
-            self.loaded_entities[tree_id] = ("Relationship", rel)
+            values = ("Relationship", rid, summary)
+            tree_id = self.entity_tree.insert("", tk.END, values=values)
+            record(tree_id, values, "Relationship", rel)
 
         for ev in doc.get('events', []):
             eid = ev.get('id', 'Unknown')
@@ -724,8 +1143,9 @@ class GedcomXBrowserApp:
             if date_text: detail_parts.append(date_text)
             if place_text: detail_parts.append(place_text)
             summary = f"{type_label}: {', '.join(detail_parts)}" if detail_parts else type_label
-            tree_id = self.entity_tree.insert("", tk.END, values=("Event", eid, summary))
-            self.loaded_entities[tree_id] = ("Event", ev)
+            values = ("Event", eid, summary)
+            tree_id = self.entity_tree.insert("", tk.END, values=values)
+            record(tree_id, values, "Event", ev)
 
     def highlight_entity_in_tree(self, entity_id):
         """Visually selects an entity in the list without triggering navigation."""

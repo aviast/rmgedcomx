@@ -18,6 +18,34 @@ func (db *DB) GetPerson(id int64) (*Person, error) {
 	return &p, nil
 }
 
+// GetPersonUTCModDate returns PersonTable.UTCModDate as milliseconds
+// since the Unix epoch -- for atom:updated (RFC 4287's own Date
+// construct), which the GEDCOM X Atom Extensions JSON format represents
+// this way (Section 3, "the JSON format provides the date as a number
+// indicating the number of milliseconds since January 1, 1970"). A
+// separate, dedicated query rather than added to the shared Person
+// struct every other query already populates: UTCModDate is
+// specifically a Person Search Results need (an atom:entry's own
+// required timestamp), not part of what GetPerson/ListPersons/etc. have
+// ever needed to fetch, and adding an unused column fetch to every one
+// of those existing, working queries isn't worth the churn for one
+// caller's own requirement.
+//
+// UTCModDate's own encoding (confirmed via utcModDateExpr,
+// internal/rmdb/writes.go): days since 1899-12-30 (the OLE Automation /
+// spreadsheet epoch), not the Unix epoch -- 25569.0 days apart, verified
+// directly (not assumed) via date arithmetic before using it here.
+func (db *DB) GetPersonUTCModDate(id int64) (int64, error) {
+	var days float64
+	err := db.sql.QueryRow(`SELECT UTCModDate FROM PersonTable WHERE PersonID = ?`, id).Scan(&days)
+	if err != nil {
+		return 0, fmt.Errorf("querying UTCModDate for person %d: %w", id, err)
+	}
+	const daysFrom1899To1970 = 25569.0
+	const msPerDay = 86400000.0
+	return int64((days - daysFrom1899To1970) * msPerDay), nil
+}
+
 // ListPersons returns a page of persons ordered by PersonID, optionally
 // filtered by a case-insensitive substring match against the primary name
 // (surname or given name), along with the total count of matching persons.
