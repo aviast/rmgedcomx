@@ -62,27 +62,14 @@ func (db *DB) GetPlaceUTCModDate(id int64) (int64, error) {
 	return int64((days - daysFrom1899To1970) * msPerDay), nil
 }
 
-// ListPersons returns a page of persons ordered by PersonID, optionally
-// filtered by a case-insensitive substring match against the primary name
-// (surname or given name), along with the total count of matching persons.
-func (db *DB) ListPersons(limit, offset int, nameFilter string) ([]Person, int, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if nameFilter != "" {
-		like := "%" + nameFilter + "%"
-		query := `
-			SELECT DISTINCT p.PersonID, p.Sex, p.Living, p.ParentID, p.SpouseID
-			FROM PersonTable p
-			JOIN NameTable n ON n.OwnerID = p.PersonID
-			WHERE n.Surname LIKE ? OR n.Given LIKE ?
-			ORDER BY p.PersonID
-			LIMIT ? OFFSET ?`
-		rows, err = db.sql.Query(query, like, like, limit, offset)
-	} else {
-		rows, err = db.sql.Query(`SELECT PersonID, Sex, Living, ParentID, SpouseID FROM PersonTable ORDER BY PersonID LIMIT ? OFFSET ?`, limit, offset)
-	}
+// ListPersons returns a page of persons ordered by PersonID, along with
+// the total count of persons. A simple `?name=` substring filter used
+// to live here as a stand-in before this project's real Atom-based
+// search (Person Search Results, GET /persons/search) existed --
+// removed now that that search is fully implemented and supersedes it;
+// see SCOPE.md's own account of why.
+func (db *DB) ListPersons(limit, offset int) ([]Person, int, error) {
+	rows, err := db.sql.Query(`SELECT PersonID, Sex, Living, ParentID, SpouseID FROM PersonTable ORDER BY PersonID LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing persons: %w", err)
 	}
@@ -100,31 +87,11 @@ func (db *DB) ListPersons(limit, offset int, nameFilter string) ([]Person, int, 
 		return nil, 0, err
 	}
 
-	total, err := db.countPersons(nameFilter)
-	if err != nil {
-		return nil, 0, err
+	var total int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM PersonTable`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("counting persons: %w", err)
 	}
 	return out, total, nil
-}
-
-func (db *DB) countPersons(nameFilter string) (int, error) {
-	var count int
-	if nameFilter != "" {
-		like := "%" + nameFilter + "%"
-		query := `
-			SELECT COUNT(DISTINCT p.PersonID)
-			FROM PersonTable p
-			JOIN NameTable n ON n.OwnerID = p.PersonID
-			WHERE n.Surname LIKE ? OR n.Given LIKE ?`
-		if err := db.sql.QueryRow(query, like, like).Scan(&count); err != nil {
-			return 0, fmt.Errorf("counting persons: %w", err)
-		}
-		return count, nil
-	}
-	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM PersonTable`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("counting persons: %w", err)
-	}
-	return count, nil
 }
 
 // GetNames returns all NameTable rows for a person, primary name first, then
