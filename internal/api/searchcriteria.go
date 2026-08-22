@@ -83,7 +83,8 @@ func relationCriteriaFor(criteria *rmdb.SearchCriteria, relation string) *rmdb.R
 // a "{relation}"-prefixed parameter (Name, GivenName, Surname,
 // BirthDate, BirthPlace, DeathDate, DeathPlace, MarriageDate,
 // MarriagePlace) -- checked directly against the spec's own "Relation
-// Search Parameters" table (Section 6) before writing this, not
+// Search Parameters" table (Section 5.3, under the "q" template variable)
+// before writing this, not
 // assumed, including confirming MarriagePlace is part of that table
 // too (an earlier internal accounting of this work had miscounted 8
 // fields per relation, 32 total, rather than the actual 9 and 36 --
@@ -127,7 +128,7 @@ func applyRelationField(rc *rmdb.RelationCriteria, suffix string, term searchTer
 }
 
 // buildSearchCriteria parses a GEDCOM X RS search query string (the "q"
-// template variable, RS spec Section 6) into rmdb.SearchCriteria,
+// template variable, RS spec Section 5.3) into rmdb.SearchCriteria,
 // covering the 10 "direct" search parameters that section defines
 // (name, givenName, surname, gender, birthDate, birthPlace, deathDate,
 // deathPlace, marriageDate, marriagePlace) and all 4 possible
@@ -158,7 +159,7 @@ func buildSearchCriteria(q string) (rmdb.SearchCriteria, error) {
 			case "female":
 				sex = 1
 			default:
-				return rmdb.SearchCriteria{}, fmt.Errorf(`gender: %q -- valid values are "male" and "female" (RS spec Section 6)`, term.Value)
+				return rmdb.SearchCriteria{}, fmt.Errorf(`gender: %q -- valid values are "male" and "female" (RS spec Section 5.3)`, term.Value)
 			}
 			criteria.Gender = &sex
 		case "birthDate":

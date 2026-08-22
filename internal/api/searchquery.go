@@ -6,7 +6,7 @@ import (
 )
 
 // searchTerm is one parsed name:value pair from a GEDCOM X RS search
-// query string (RS spec Section 6, "q" template variable).
+// query string (RS spec Section 5.3, "q" template variable).
 type searchTerm struct {
 	Field string
 	Value string

@@ -486,7 +486,7 @@ func (s *Server) buildCollection() (gedcomx.Collection, error) {
 			// to the Person Search Results state (RFC 6570 URI
 			// Template, per the GEDCOM X Atom Extensions spec's own
 			// "template" attribute -- checked directly, not assumed).
-			// "q" is the spec's own template variable name (Section 6);
+			// "q" is the spec's own template variable name (Section 5.3);
 			// "limit"/"offset" match this server's own existing paging
 			// parameter names elsewhere (pagingParams, server.go)
 			// rather than the spec's generic "count"/"start" variable

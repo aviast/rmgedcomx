@@ -53,7 +53,7 @@ func acceptsGedcomXAtomJSON(accept string) bool {
 // different (gedcomXAtomMediaType, above), so this handler does its own
 // Accept-header check and Content-Type instead.
 //
-// The 10 "direct" search parameters (RS spec Section 6) are supported:
+// The 10 "direct" search parameters (RS spec Section 5.3, "q") are supported:
 // name, givenName, surname, gender, birthDate, birthPlace, deathDate,
 // deathPlace, marriageDate, marriagePlace. The "{relation}"-prefixed
 // parameters (father/mother/spouse/parent) are a deliberately separate,
@@ -71,7 +71,7 @@ func (s *Server) handlePersonSearch(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query().Get("q")
 	if q == "" {
-		writeError(w, http.StatusBadRequest, `missing required "q" search query parameter (RS spec Section 6)`)
+		writeError(w, http.StatusBadRequest, `missing required "q" search query parameter (RS spec Section 5.3)`)
 		return
 	}
 	criteria, err := buildSearchCriteria(q)
