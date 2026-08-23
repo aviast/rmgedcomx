@@ -23,6 +23,7 @@ resources:
 - `Source Descriptions` / `Source Description`
 - `Artifacts` (scanned certificates, photos, and other multimedia)
 - `Events` / `Event` (shared events with multiple participants, e.g. a marriage with witnesses)
+- `Person Search Results` / `Place Search Results` (Atom/JSON-based query search)
 
 ### Writing (`-write`)
 
@@ -31,15 +32,15 @@ resources:
   list being preferred, and a nickname attached to the primary name rather than a row of its
   own), facts (with a `formal` date, a `Date.original` fallback parsed from GEDCOM 5.x syntax
   when `formal` is absent or invalid, a place, and/or a free-text `value` -- e.g. `Occupation`
-  or `Religion`), and gender. See [SCOPE.md](./SCOPE.md#stage-3----creating-people-and-relationships-done)
-  for the full account, including several real bugs found and fixed by checking actual
-  RootsMagic behavior rather than assuming it.
+  or `Religion`), and gender. See [SCOPE.md](./SCOPE.md#creating-person-records) for the
+  full account of what's supported, and [HISTORY.md](./HISTORY.md) for several real bugs
+  found and fixed by checking actual RootsMagic behavior rather than assuming it.
 - **Create a `Couple` or `ParentChild` relationship, or several** (`POST /relationships`) --
   resolves Father/Mother roles from each person's own recorded sex, reuses or completes an
   existing family rather than creating a duplicate when the same two people are already
   paired, and never guesses which of a parent's existing families a bare parent-child link
   belongs to (a real design mistake, corrected during development -- see
-  [SCOPE.md](./SCOPE.md#a-real-design-mistake-corrected)). Supports marking a `ParentChild`
+  [HISTORY.md](./HISTORY.md#a-design-mistake-in-relationship-creation-corrected)). Supports marking a `ParentChild`
   relationship as adoptive, step, or foster via GEDCOM X's own dedicated fact types
   (`AdoptiveParent`, `StepParent`, `FosterParent`, `GuardianParent`, `BiologicalParent`).
 - **Attach or replace linked media** on an existing `Person`, `Event`, `Relationship`
@@ -60,8 +61,8 @@ than left standing.
 
 **Not implemented**, and out of scope for this build: `DELETE` of any kind; changing a
 `Person`'s or `Event`'s own names, facts, or gender once created (only linked media can be
-updated on an existing one); OAuth2 authentication; `Records`, `Agents`, and Atom
-search-result feeds. See [SCOPE.md](./SCOPE.md) for details, rationale, and notes on
+updated on an existing one); OAuth2 authentication; `Records`, `Agents`, and `Person
+Matches`. See [SCOPE.md](./SCOPE.md) for details, rationale, and notes on
 extending the server later if you need any of this.
 
 ## RootsMagic schema
@@ -203,7 +204,7 @@ in one request get `204 No Content` instead, per the RS spec's own paging/collec
 semantics for a multi-resource `POST` -- see [SCOPE.md](./SCOPE.md) for the exact reasoning.
 Link two existing people as a couple, then link a child to each of them separately (a bare,
 single-parent link never assumes which of a parent's existing families it belongs to -- see
-[SCOPE.md](./SCOPE.md#a-real-design-mistake-corrected)):
+[SCOPE.md](./SCOPE.md#creating-relationship-records-couple-and-parentchild)):
 
 ```sh
 curl -X POST http://localhost:8080/collections/victoria-hanover-royal92/relationships \

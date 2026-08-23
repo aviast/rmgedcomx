@@ -30,8 +30,8 @@ for them.** Don't try to make this server's behavior match one specific captured
 four fields -- there isn't a single correct value to match in the first place.
 
 All four are downstream, on RootsMagic's own side, of a real-time lookup against FamilySearch's
-and/or Ancestry's own services -- not something this server does at all (see SCOPE.md's "Write
-support" section for why: a live, third-party network dependency is a fundamentally different kind
+and/or Ancestry's own services -- not something this server does at all (see SCOPE.md's "Why
+'core resources' and not the whole spec" section for why: a live, third-party network dependency is a fundamentally different kind
 of feature than writing a field to SQLite, and deliberately out of scope). That lookup is a race
 against a timeout, not a reliable success/fail signal, which makes RootsMagic's own resulting value
 for these fields non-deterministic from one edit to the next -- confirmed directly, not assumed,
@@ -63,8 +63,8 @@ timing -- `DataRec` is a ~15KB, undocumented XML blob holding RootsMagic's own U
 layout state, not genealogical data. A real capture for a plain "add a comment to a Source" edit
 showed RootsMagic rewriting the entire blob over one changed tag
 (`MediaCollapsed_Citations`) -- confirmed, by decoding and diffing it against a separate reference
-copy, to be unrelated to the edit that triggered its capture (see SCOPE.md's "Write support" section
-for the full account). This server doesn't and won't write `DataRec` at all. Unlike the other four
+copy, to be unrelated to the edit that triggered its capture (see HISTORY.md's "Write support:
+staged rollout" section for the full account). This server doesn't and won't write `DataRec` at all. Unlike the other four
 fields, you don't have to remember to strip this one by hand: `configTableDataRecRegex` in
 `cmd/server/main_test.go` strips it automatically from *both* sides of the comparison (the golden
 file's own raw content included, not just this server's actual output) -- deliberately more
@@ -101,7 +101,7 @@ macOS isn't specifically handled -- not tested against, not a supported claim ei
 | 6 | A second write in the same running session: no second backup file appears. | Manual/Go-native -- file existence check, no golden file. |
 | 7 | `POST` a place, `names` only. | **Done** -- `testdata/post_places_name_expected.sql` (currently covers this exact case: name-only change on `PL423`). |
 | 8 | `POST` a place, `notes` only. | **Done** -- `testdata/post_places_note_expected.sql` (currently covers this exact case: note-only change on `PL423`). |
-| 9 | `POST` a place, `latitude`/`longitude` only. Also confirm the decimal-to-integer conversion is exact (`value × 10,000,000`) for a coordinate with several decimal places -- a real bug here (float64 truncation instead of rounding) was found and fixed via this exact test; see SCOPE.md's "Write support" section. | **Done** -- `testdata/post_places_coordinates_expected.sql`. |
+| 9 | `POST` a place, `latitude`/`longitude` only. Also confirm the decimal-to-integer conversion is exact (`value × 10,000,000`) for a coordinate with several decimal places -- a real bug here (float64 truncation instead of rounding) was found and fixed via this exact test; see HISTORY.md's "Write support: staged rollout" section. | **Done** -- `testdata/post_places_coordinates_expected.sql`. |
 | 10 | `POST` a place, all four fields (`names`, `notes`, `latitude`, `longitude`) at once. | **Done** -- `testdata/post_places_all_fields_expected.sql`. `fsID`/`anID`/`LatLongExact` stripped from it -- see "Non-deterministic fields" above, this is the exact case that finding came from. |
 | 11 | Partial-update semantics: set a note (one request), then a second request that only sends `names` (omitting `notes`) -- confirm the note from the first request survives untouched. | No golden file needed -- Go-native: two sequential API calls plus a `GET` to confirm, not a RootsMagic-comparable single edit. |
 | 12 | `latitude` without `longitude` (or vice versa): `400`, and the place is confirmed unchanged afterward. | No golden file -- request rejected before any write. |
