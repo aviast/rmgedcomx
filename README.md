@@ -23,6 +23,7 @@ resources:
 - `Source Descriptions` / `Source Description`
 - `Artifacts` (scanned certificates, photos, and other multimedia)
 - `Events` / `Event` (shared events with multiple participants, e.g. a marriage with witnesses)
+- `Person Search Results` / `Place Search Results` (Atom/JSON-based query search)
 
 ### Writing (`-write`)
 
@@ -31,15 +32,15 @@ resources:
   list being preferred, and a nickname attached to the primary name rather than a row of its
   own), facts (with a `formal` date, a `Date.original` fallback parsed from GEDCOM 5.x syntax
   when `formal` is absent or invalid, a place, and/or a free-text `value` -- e.g. `Occupation`
-  or `Religion`), and gender. See [SCOPE.md](./SCOPE.md#stage-3----creating-people-and-relationships-done)
-  for the full account, including several real bugs found and fixed by checking actual
-  RootsMagic behavior rather than assuming it.
+  or `Religion`), and gender. See [SCOPE.md](./SCOPE.md#creating-person-records) for the
+  full account of what's supported, and [HISTORY.md](./HISTORY.md) for several real bugs
+  found and fixed by checking actual RootsMagic behavior rather than assuming it.
 - **Create a `Couple` or `ParentChild` relationship, or several** (`POST /relationships`) --
   resolves Father/Mother roles from each person's own recorded sex, reuses or completes an
   existing family rather than creating a duplicate when the same two people are already
   paired, and never guesses which of a parent's existing families a bare parent-child link
   belongs to (a real design mistake, corrected during development -- see
-  [SCOPE.md](./SCOPE.md#a-real-design-mistake-corrected)). Supports marking a `ParentChild`
+  [HISTORY.md](./HISTORY.md#a-design-mistake-in-relationship-creation-corrected)). Supports marking a `ParentChild`
   relationship as adoptive, step, or foster via GEDCOM X's own dedicated fact types
   (`AdoptiveParent`, `StepParent`, `FosterParent`, `GuardianParent`, `BiologicalParent`).
 - **Attach or replace linked media** on an existing `Person`, `Event`, `Relationship`
@@ -60,8 +61,8 @@ than left standing.
 
 **Not implemented**, and out of scope for this build: `DELETE` of any kind; changing a
 `Person`'s or `Event`'s own names, facts, or gender once created (only linked media can be
-updated on an existing one); OAuth2 authentication; `Records`, `Agents`, and Atom
-search-result feeds. See [SCOPE.md](./SCOPE.md) for details, rationale, and notes on
+updated on an existing one); OAuth2 authentication; `Records`, `Agents`, and `Person
+Matches`. See [SCOPE.md](./SCOPE.md) for details, rationale, and notes on
 extending the server later if you need any of this.
 
 ## RootsMagic schema
@@ -203,7 +204,7 @@ in one request get `204 No Content` instead, per the RS spec's own paging/collec
 semantics for a multi-resource `POST` -- see [SCOPE.md](./SCOPE.md) for the exact reasoning.
 Link two existing people as a couple, then link a child to each of them separately (a bare,
 single-parent link never assumes which of a parent's existing families it belongs to -- see
-[SCOPE.md](./SCOPE.md#a-real-design-mistake-corrected)):
+[SCOPE.md](./SCOPE.md#creating-relationship-records-couple-and-parentchild)):
 
 ```sh
 curl -X POST http://localhost:8080/collections/victoria-hanover-royal92/relationships \
@@ -249,3 +250,76 @@ each session -- but that's a safety net for mistakes *this server* makes, not
 a substitute for your own backups, and it does not, and cannot, protect
 against RootsMagic itself running at the same time (which `-write` refuses to
 start alongside, on Windows).
+
+## Python tools
+
+Two standalone Python scripts live alongside the server in this repo. Neither
+is part of rmgedcomx itself or required to run it -- both are separate,
+optional clients that talk to a running instance over HTTP, and are useful
+for exploring and populating one while testing.
+
+### `gedcomx_browser.py` -- a GUI hypermedia browser
+
+A Tkinter desktop app that browses a running server the way a real GEDCOM X
+RS client is meant to: it follows the server's own hypermedia links
+(`collections`, `persons`, `parents`/`children`/`spouses`, `person-search`,
+...) rather than hardcoding URLs, so using it against this server also
+exercises those links for real. It provides a paged, filterable list of
+whatever collection/resource you're browsing (the filter box uses this
+server's own Atom-based search, `person-search`/`place-search`, when the
+current list supports it, falling back to a client-side, non-exact filter
+otherwise -- and says plainly which of the two it did, and why, rather than
+silently working around a server that's missing or has broken a state the
+spec defines), a person detail view, interactive ancestry and descendancy
+tree visualizations, and a place tab with an optional embedded OpenStreetMap
+view. Back/forward navigation works like a regular browser.
+
+Set up its dependencies (just `tkintermapview`, for the optional map view --
+the app still runs fine without it, just without maps) with either:
+
+```sh
+pip install -r requirements.txt
+```
+
+or, for a reproducible conda environment:
+
+```sh
+conda env create -f environment.yml
+conda activate rmgedcomx
+```
+
+Then run it and point it at a running server from its own connection dialog
+(`http://localhost:8080` by default):
+
+```sh
+python gedcomx_browser.py
+```
+
+### `gedcom_to_gedcomx.py` -- import a GEDCOM 5.x file over the write API
+
+A command-line importer: parses a standard GEDCOM 5.x (`.ged`) file and
+uploads it to a running server via `POST /persons` and `POST /relationships`
+-- the same write API described above, not a separate mechanism, so it needs
+`-write` enabled on the target server. It discovers those two endpoints the
+same hypermedia way the browser does (fetches the server's root, then reads
+the first collection's own `persons`/`relationships` links), rather than
+assuming a fixed URL shape. Per family, it creates a `Couple` relationship
+(carrying `Marriage`/`Divorce`/`Annulment`/`Engagement`/`Separation` facts,
+where present in the file) and a `ParentChild` relationship to each child
+from each parent separately -- one `POST` per parent, matching how this
+server's own `ParentChild` creation is designed to be used (see
+[SCOPE.md](./SCOPE.md#creating-relationship-records-couple-and-parentchild))
+-- carrying an `AdoptiveParent`/`BiologicalParent`/`FosterParent`/
+`StepParent`/`GuardianParent` fact when the file records a pedigree type for
+that child.
+
+```sh
+pip install requests
+python gedcom_to_gedcomx.py <gedcom-file> [server-url]
+```
+
+`server-url` defaults to `http://localhost:8080/`. This project's own
+`testdata/royal92.ged` -- the original GEDCOM file `royal92.rmtree` was
+imported from -- is a ready-to-try example; point it at a fresh, empty
+database (`testdata/empty.rmtree`) running with `-write` to see it populate
+one end to end.
