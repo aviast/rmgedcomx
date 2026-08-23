@@ -250,3 +250,76 @@ each session -- but that's a safety net for mistakes *this server* makes, not
 a substitute for your own backups, and it does not, and cannot, protect
 against RootsMagic itself running at the same time (which `-write` refuses to
 start alongside, on Windows).
+
+## Python tools
+
+Two standalone Python scripts live alongside the server in this repo. Neither
+is part of rmgedcomx itself or required to run it -- both are separate,
+optional clients that talk to a running instance over HTTP, and are useful
+for exploring and populating one while testing.
+
+### `gedcomx_browser.py` -- a GUI hypermedia browser
+
+A Tkinter desktop app that browses a running server the way a real GEDCOM X
+RS client is meant to: it follows the server's own hypermedia links
+(`collections`, `persons`, `parents`/`children`/`spouses`, `person-search`,
+...) rather than hardcoding URLs, so using it against this server also
+exercises those links for real. It provides a paged, filterable list of
+whatever collection/resource you're browsing (the filter box uses this
+server's own Atom-based search, `person-search`/`place-search`, when the
+current list supports it, falling back to a client-side, non-exact filter
+otherwise -- and says plainly which of the two it did, and why, rather than
+silently working around a server that's missing or has broken a state the
+spec defines), a person detail view, interactive ancestry and descendancy
+tree visualizations, and a place tab with an optional embedded OpenStreetMap
+view. Back/forward navigation works like a regular browser.
+
+Set up its dependencies (just `tkintermapview`, for the optional map view --
+the app still runs fine without it, just without maps) with either:
+
+```sh
+pip install -r requirements.txt
+```
+
+or, for a reproducible conda environment:
+
+```sh
+conda env create -f environment.yml
+conda activate rmgedcomx
+```
+
+Then run it and point it at a running server from its own connection dialog
+(`http://localhost:8080` by default):
+
+```sh
+python gedcomx_browser.py
+```
+
+### `gedcom_to_gedcomx.py` -- import a GEDCOM 5.x file over the write API
+
+A command-line importer: parses a standard GEDCOM 5.x (`.ged`) file and
+uploads it to a running server via `POST /persons` and `POST /relationships`
+-- the same write API described above, not a separate mechanism, so it needs
+`-write` enabled on the target server. It discovers those two endpoints the
+same hypermedia way the browser does (fetches the server's root, then reads
+the first collection's own `persons`/`relationships` links), rather than
+assuming a fixed URL shape. Per family, it creates a `Couple` relationship
+(carrying `Marriage`/`Divorce`/`Annulment`/`Engagement`/`Separation` facts,
+where present in the file) and a `ParentChild` relationship to each child
+from each parent separately -- one `POST` per parent, matching how this
+server's own `ParentChild` creation is designed to be used (see
+[SCOPE.md](./SCOPE.md#creating-relationship-records-couple-and-parentchild))
+-- carrying an `AdoptiveParent`/`BiologicalParent`/`FosterParent`/
+`StepParent`/`GuardianParent` fact when the file records a pedigree type for
+that child.
+
+```sh
+pip install requests
+python gedcom_to_gedcomx.py <gedcom-file> [server-url]
+```
+
+`server-url` defaults to `http://localhost:8080/`. This project's own
+`testdata/royal92.ged` -- the original GEDCOM file `royal92.rmtree` was
+imported from -- is a ready-to-try example; point it at a fresh, empty
+database (`testdata/empty.rmtree`) running with `-write` to see it populate
+one end to end.
